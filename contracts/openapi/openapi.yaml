@@ -1,0 +1,233 @@
+openapi: 3.1.0
+info:
+  title: SessionLayer Control Plane API
+  version: 0.1.0
+  summary: Contract-first REST surface for the SessionLayer Control Plane.
+  description: |
+    The **SessionLayer Control Plane API** is the contract-first source of truth
+    for the platform's REST surface (Design §13, FR-API-1). The UI and the GitOps
+    reconciler are *clients* of this contract; server interfaces and typed clients
+    are code-generated from this document, and CI fails if generated code drifts
+    from the spec.
+
+    **Session One scope.** Only the operational probes `GET /v1/healthz` and
+    `GET /v1/version` are defined here. The full resource surface (nodes, rules,
+    roles, sessions, recordings, JIT requests, locks, join-tokens, OTP,
+    device-flow, pins, service-accounts, audit-events) is authored in later
+    sessions. The security schemes below are declared now so later operations can
+    reference them without re-litigating the contract.
+
+    **Versioning.** The API is URI-versioned (`/v1`). See
+    `contracts/VERSIONING.md` for the URI-versioning and N-1 compatibility policy.
+  license:
+    name: GPL-3.0-only
+    identifier: GPL-3.0-only
+  contact:
+    name: SessionLayer
+    url: https://github.com/SessionLayer
+servers:
+  - url: https://{host}
+    description: Control Plane public base URL.
+    variables:
+      host:
+        default: controlplane.sessionlayer.example
+        description: The operator-configured Control Plane hostname.
+tags:
+  - name: meta
+    description: Liveness, readiness, and version metadata probes. Public and unauthenticated.
+# Default security applied to operations that do not override it. The public
+# meta probes below explicitly opt out with `security: []`. Declaring the three
+# first-class schemes here (Design §13, FR-AUTH-17) fixes them in the contract.
+security:
+  - oidcBearer: []
+  - clientCredentials: []
+  - mtls: []
+paths:
+  /v1/healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness/readiness probe.
+      description: |
+        Reports whether the Control Plane is able to serve requests. Intended for
+        load balancers and orchestrators. Public and unauthenticated; it MUST NOT
+        disclose any identity, node, or policy information.
+      tags:
+        - meta
+      security: []
+      responses:
+        '200':
+          description: The Control Plane is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              examples:
+                healthy:
+                  value:
+                    status: pass
+        '503':
+          description: The Control Plane is not ready to serve requests.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '4XX':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/version:
+    get:
+      operationId: getVersion
+      summary: Component and protocol version metadata.
+      description: |
+        Returns the Control Plane component name, its build version (SemVer), and
+        the protocol version ranges it speaks on the CP<->Gateway gRPC plane and
+        the Agent<->Gateway wire protocol. Public and unauthenticated.
+      tags:
+        - meta
+      security: []
+      responses:
+        '200':
+          description: Version metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionInfo'
+              examples:
+                current:
+                  value:
+                    component: SessionLayer Control Plane
+                    version: 0.1.0
+                    protocols:
+                      controlPlaneGatewayGrpc:
+                        min: '1.0'
+                        max: '1.0'
+                      agentGatewayWire:
+                        min: '1.0'
+                        max: '1.0'
+        '4XX':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+components:
+  securitySchemes:
+    oidcBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        OIDC bearer access via an ID/JWT token validated by the Control Plane
+        (Design §5.7, FR-AUTH-17). The ID token is the authentication proof.
+    clientCredentials:
+      type: oauth2
+      description: |
+        OAuth 2.0 client-credentials for machine consumers (Design §5.6,
+        FR-AUTH-12). `private_key_jwt`/mTLS client authentication is preferred
+        over static secrets.
+      flows:
+        clientCredentials:
+          tokenUrl: https://controlplane.sessionlayer.example/oauth2/token
+          scopes: {}
+    mtls:
+      type: mutualTLS
+      description: |
+        Mutual TLS client-certificate authentication (Design §5.7, FR-AUTH-17),
+        also used by the internal CP<->Gateway plane.
+  responses:
+    Problem:
+      description: An error occurred. The body is an RFC 9457 problem document.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+  schemas:
+    ProblemDetails:
+      type: object
+      title: RFC 9457 Problem Details
+      description: |
+        Problem details for HTTP APIs as defined by RFC 9457 (obsoletes RFC 7807).
+        Error responses use media type `application/problem+json`.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          default: about:blank
+          description: A URI reference identifying the problem type.
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+        status:
+          type: integer
+          format: int32
+          minimum: 100
+          maximum: 599
+          description: The HTTP status code.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri-reference
+          description: A URI reference identifying the specific occurrence.
+      additionalProperties: true
+    HealthStatus:
+      type: object
+      title: Health Status
+      description: Liveness/readiness result, loosely modelled on the IETF health-check draft.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: Overall health indicator.
+          enum:
+            - pass
+            - fail
+            - warn
+      additionalProperties: false
+    ProtocolVersionRange:
+      type: object
+      title: Protocol Version Range
+      description: An inclusive range of supported protocol versions, `major.minor` strings.
+      required:
+        - min
+        - max
+      properties:
+        min:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+$'
+          description: Inclusive lowest supported protocol version, e.g. "1.0".
+        max:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+$'
+          description: Inclusive highest supported protocol version, e.g. "1.0".
+      additionalProperties: false
+    VersionInfo:
+      type: object
+      title: Version Info
+      description: Component build version and the protocol ranges it negotiates.
+      required:
+        - component
+        - version
+        - protocols
+      properties:
+        component:
+          type: string
+          description: Formal component name.
+        version:
+          type: string
+          description: Component build version (SemVer 2.0.0).
+        protocols:
+          type: object
+          title: Protocol Ranges
+          description: Supported protocol version ranges by plane.
+          required:
+            - controlPlaneGatewayGrpc
+            - agentGatewayWire
+          properties:
+            controlPlaneGatewayGrpc:
+              $ref: '#/components/schemas/ProtocolVersionRange'
+            agentGatewayWire:
+              $ref: '#/components/schemas/ProtocolVersionRange'
+          additionalProperties: false
+      additionalProperties: false

@@ -1,0 +1,23 @@
+# buf module configuration for the SessionLayer CP<->Gateway gRPC contract.
+# Run `buf lint` and `buf breaking` from this directory (contracts/proto).
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # The version-negotiation service is deliberately named `Handshake` (not
+    # `HandshakeService`) and exchanges `ClientHello`/`ServerHello` messages,
+    # mirroring the TLS handshake vocabulary the design leans on. These three
+    # STANDARD rules only enforce a *naming convention* (service suffix, and
+    # `<Rpc>Request`/`<Rpc>Response` message names); every substantive rule
+    # (package/version/directory match, casing, import hygiene, enum-zero) stays
+    # on. This is an intentional, documented convention, not a weakened gate.
+    - SERVICE_SUFFIX
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+  disallow_comment_ignores: true
+breaking:
+  use:
+    - FILE
