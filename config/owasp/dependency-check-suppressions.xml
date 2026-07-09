@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP dependency-check suppression file.
+
+  Every suppression MUST carry a justification and, where possible, an expiry
+  (`until="yyyy-MM-dd"`). A suppression is an accepted-risk decision and should
+  be mirrored by an `audit/F-*.md` finding with Status: Accepted-Risk.
+
+  Empty by design at the Session One baseline: no CVE has been accepted. If the
+  build fails on a genuine CVSS>=7 finding, the correct first response is to
+  upgrade the offending dependency, not to suppress it.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+</suppressions>

@@ -10,62 +10,135 @@
 	</parent>
 	<groupId>io.sessionlayer</groupId>
 	<artifactId>controlplane</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
-	<name/>
-	<description/>
-	<url/>
+	<version>0.1.0</version>
+	<name>SessionLayer Control Plane</name>
+	<description>SessionLayer Control Plane — API-first control/management plane (Session One foundation scaffold).</description>
+	<url>https://github.com/SessionLayer/ControlPlane-API</url>
 	<licenses>
-		<license/>
+		<license>
+			<name>GPL-3.0-only</name>
+			<url>https://www.gnu.org/licenses/gpl-3.0.txt</url>
+		</license>
 	</licenses>
-	<developers>
-		<developer/>
-	</developers>
-	<scm>
-		<connection/>
-		<developerConnection/>
-		<tag/>
-		<url/>
-	</scm>
+
 	<properties>
 		<java.version>25</java.version>
-		<spring-cloud.version>2025.1.2</spring-cloud.version>
+
+		<!--
+		  Quality-tooling versions NOT managed by the Spring Boot BOM.
+		  Everything gRPC/protobuf-related (grpc-java, protobuf-java, the ascopes
+		  protobuf-maven-plugin, spring-grpc) IS managed by Spring Boot 4.1.0, so it
+		  carries no version here on purpose.
+		-->
+		<spotless-maven-plugin.version>2.44.5</spotless-maven-plugin.version>
+		<maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+		<checkstyle.version>10.26.1</checkstyle.version>
+		<openapi-generator.version>7.14.0</openapi-generator.version>
+		<dependency-check-maven.version>12.1.3</dependency-check-maven.version>
+
+		<!--
+		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
+		  42.7.11 is affected by CVE-2026-54291 (GHSA-j92g-9f8w-j867, channel-binding
+		  downgrade), fixed in 42.7.12. This is the Flyway-only JDBC driver; the
+		  R2DBC runtime driver (r2dbc-postgresql) is a separate artifact.
+		-->
+		<postgresql.version>42.7.13</postgresql.version>
+
+		<!--
+		  OWASP dependency-check NVD API key. Empty by default; CI passes the real
+		  key via -DnvdApiKey=${NVD_API_KEY} when the secret is present (an empty
+		  value simply falls back to unauthenticated, rate-limited NVD access).
+		-->
+		<nvdApiKey/>
 	</properties>
+
 	<dependencies>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-security</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-webclient</artifactId>
-		</dependency>
+		<!-- ================= Web (reactive, fully non-blocking) ================= -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webflux</artifactId>
 		</dependency>
 		<dependency>
-			<groupId>org.springframework.cloud</groupId>
-			<artifactId>spring-cloud-starter-vault-config</artifactId>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<!-- jakarta.validation used by the OpenAPI-generated request/response models. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
 
+		<!-- ============ gRPC server (Spring gRPC) — Handshake plane ============ -->
+		<!--
+		  CP<->Gateway version-negotiation plane. Runs PLAINTEXT on :9090 this
+		  session (insecure, dev-only, replaced by mTLS in Session Four). Spring
+		  gRPC binds any BindableService bean to a standalone Netty gRPC server.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-grpc-server</artifactId>
+		</dependency>
+
+		<!-- ============ Fully-async data access: R2DBC runtime ================ -->
+		<!--
+		  The application runtime talks to Postgres over R2DBC ONLY (no blocking
+		  JDBC on the WebFlux path). The blocking JDBC driver below is scoped to
+		  Flyway alone. See CLAUDE.md "R2DBC-runtime / JDBC-Flyway split".
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-r2dbc</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>r2dbc-postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<!-- ============ Flyway migrations: JDBC-ONLY, startup-only ============ -->
+		<!--
+		  Flyway is JDBC-only (no R2DBC support) and runs once at startup against a
+		  DEDICATED migration datasource built from spring.flyway.* . It never
+		  serves request traffic. HikariCP below is the pool for that datasource
+		  only; the blocking postgresql JDBC driver exists solely for Flyway.
+
+		  spring-boot-flyway is Boot 4.x's modular Flyway auto-configuration; it
+		  pulls flyway-core + spring-boot-jdbc (the JDBC autoconfig module — NOT
+		  spring-boot-starter-jdbc). The primary blocking DataSource is disabled by
+		  a DataSourceAutoConfiguration exclude in ControlplaneApplication, so the
+		  app runtime stays R2DBC-only. See CLAUDE.md.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-flyway</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
 		<dependency>
+			<!-- JDBC connection pool for Flyway's dedicated migration datasource ONLY. -->
+			<groupId>com.zaxxer</groupId>
+			<artifactId>HikariCP</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<!-- ============================ Tooling =============================== -->
+		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
 			<optional>true</optional>
 		</dependency>
+
+		<!-- ============================== Test =============================== -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-security-test</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-webclient-test</artifactId>
+			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
@@ -73,25 +146,248 @@
 			<artifactId>spring-boot-starter-webflux-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<dependency>
+			<groupId>io.projectreactor</groupId>
+			<artifactId>reactor-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- In-process gRPC transport for the Handshake service test (no ports). -->
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-inprocess</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
-	<dependencyManagement>
-		<dependencies>
-			<dependency>
-				<groupId>org.springframework.cloud</groupId>
-				<artifactId>spring-cloud-dependencies</artifactId>
-				<version>${spring-cloud.version}</version>
-				<type>pom</type>
-				<scope>import</scope>
-			</dependency>
-		</dependencies>
-	</dependencyManagement>
 
 	<build>
 		<plugins>
+			<!-- ========= Contract-first gRPC codegen (from contracts/proto) ========= -->
+			<!--
+			  protoc version + the protoc-gen-grpc-java plugin + the `generate`
+			  execution are all inherited from spring-boot-starter-parent's plugin
+			  management. We only redirect the proto source root at the FROZEN
+			  contracts so `import "sessionlayer/controlplane/v1/common.proto"`
+			  resolves. Generated code is written to target/ and never committed;
+			  a spec change that breaks the API surface fails the compile (drift gate).
+			-->
+			<plugin>
+				<groupId>io.github.ascopes</groupId>
+				<artifactId>protobuf-maven-plugin</artifactId>
+				<configuration>
+					<sourceDirectories>
+						<sourceDirectory>${project.basedir}/contracts/proto</sourceDirectory>
+					</sourceDirectories>
+				</configuration>
+			</plugin>
+
+			<!-- ========= Contract-first REST codegen (from contracts/openapi) ======= -->
+			<!--
+			  Generates Spring WebFlux API interfaces + models from the FROZEN
+			  OpenAPI spec on every build. Controllers implement the generated
+			  interfaces, so a spec change that alters the surface fails the compile
+			  (this is the drift gate FR-API-1 requires). Generated code is not committed.
+			-->
+			<plugin>
+				<groupId>org.openapitools</groupId>
+				<artifactId>openapi-generator-maven-plugin</artifactId>
+				<version>${openapi-generator.version}</version>
+				<executions>
+					<execution>
+						<id>generate-controlplane-api</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>generate</goal>
+						</goals>
+						<configuration>
+							<inputSpec>${project.basedir}/contracts/openapi/openapi.yaml</inputSpec>
+							<generatorName>spring</generatorName>
+							<library>spring-boot</library>
+							<apiPackage>io.sessionlayer.controlplane.api</apiPackage>
+							<modelPackage>io.sessionlayer.controlplane.api.model</modelPackage>
+							<output>${project.build.directory}/generated-sources/openapi</output>
+							<generateApiTests>false</generateApiTests>
+							<generateApiDocumentation>false</generateApiDocumentation>
+							<generateModelTests>false</generateModelTests>
+							<generateModelDocumentation>false</generateModelDocumentation>
+							<configOptions>
+								<interfaceOnly>true</interfaceOnly>
+								<reactive>true</reactive>
+								<useSpringBoot3>true</useSpringBoot3>
+								<useJakartaEe>true</useJakartaEe>
+								<useTags>true</useTags>
+								<useResponseEntity>true</useResponseEntity>
+								<useBeanValidation>true</useBeanValidation>
+								<performBeanValidation>false</performBeanValidation>
+								<openApiNullable>false</openApiNullable>
+								<annotationLibrary>none</annotationLibrary>
+								<documentationProvider>none</documentationProvider>
+								<hideGenerationTimestamp>true</hideGenerationTimestamp>
+								<sourceFolder>src/main/java</sourceFolder>
+							</configOptions>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- ===================== Formatting (spotless) ===================== -->
+			<plugin>
+				<groupId>com.diffplug.spotless</groupId>
+				<artifactId>spotless-maven-plugin</artifactId>
+				<version>${spotless-maven-plugin.version}</version>
+				<configuration>
+					<java>
+						<!-- Only hand-written sources; generated code under target/ is excluded. -->
+						<includes>
+							<include>src/main/java/**/*.java</include>
+							<include>src/test/java/**/*.java</include>
+						</includes>
+						<importOrder/>
+						<!--
+						  cleanthat engine (JavaParser-based) rather than the default
+						  google-java-format engine: it removes unused imports without
+						  reaching into JDK compiler internals.
+						-->
+						<removeUnusedImports>
+							<engine>cleanthat-javaparser-unnecessaryimport</engine>
+						</removeUnusedImports>
+						<!--
+						  Eclipse JDT formatter (Spring's tab-indented house style). We
+						  deliberately do NOT use palantir-java-format / google-java-format:
+						  both reach into com.sun.tools.javac internals that changed in
+						  JDK 25 (NoSuchMethodError on Log$DeferredDiagnosticHandler), and
+						  no released version supports JDK 25 yet. The Eclipse JDT engine
+						  has an independent parser and runs on any JDK. Swap back to a
+						  google-style formatter once one supports JDK 25. See CLAUDE.md.
+						-->
+						<eclipse/>
+						<trimTrailingWhitespace/>
+						<endWithNewline/>
+					</java>
+				</configuration>
+				<executions>
+					<execution>
+						<id>spotless-check</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>check</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- ===================== Static analysis (checkstyle) ===================== -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-checkstyle-plugin</artifactId>
+				<version>${maven-checkstyle-plugin.version}</version>
+				<dependencies>
+					<dependency>
+						<groupId>com.puppycrawl.tools</groupId>
+						<artifactId>checkstyle</artifactId>
+						<version>${checkstyle.version}</version>
+					</dependency>
+				</dependencies>
+				<configuration>
+					<configLocation>${project.basedir}/config/checkstyle/checkstyle.xml</configLocation>
+					<!-- Lint hand-written sources only; never the generated code under target/. -->
+					<sourceDirectories>
+						<sourceDirectory>${project.basedir}/src/main/java</sourceDirectory>
+					</sourceDirectories>
+					<testSourceDirectories>
+						<testSourceDirectory>${project.basedir}/src/test/java</testSourceDirectory>
+					</testSourceDirectories>
+					<includeTestSourceDirectory>true</includeTestSourceDirectory>
+					<consoleOutput>true</consoleOutput>
+					<failsOnError>true</failsOnError>
+					<failOnViolation>true</failOnViolation>
+					<violationSeverity>warning</violationSeverity>
+				</configuration>
+				<executions>
+					<execution>
+						<id>checkstyle-check</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>check</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- ============ Dependency CVE gate (OWASP dependency-check) ============ -->
+			<!--
+			  Fails the build on any dependency with CVSS >= 7 (high+). NVD data is
+			  cached under .dependency-check-data (git-ignored, cached in CI). CI
+			  passes an NVD API key when available for faster, more reliable updates.
+			-->
+			<plugin>
+				<groupId>org.owasp</groupId>
+				<artifactId>dependency-check-maven</artifactId>
+				<version>${dependency-check-maven.version}</version>
+				<configuration>
+					<failBuildOnCVSS>7</failBuildOnCVSS>
+					<nvdApiKey>${nvdApiKey}</nvdApiKey>
+					<nvdApiDelay>6000</nvdApiDelay>
+					<nvdMaxRetryCount>15</nvdMaxRetryCount>
+					<nvdValidForHours>168</nvdValidForHours>
+					<dataDirectory>${project.basedir}/.dependency-check-data</dataDirectory>
+					<suppressionFiles>
+						<suppressionFile>${project.basedir}/config/owasp/dependency-check-suppressions.xml</suppressionFile>
+					</suppressionFiles>
+					<!-- Trim analyzers irrelevant to a JVM service (reduces remote calls / flakiness). -->
+					<assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
+					<ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+					<nodeAnalyzerEnabled>false</nodeAnalyzerEnabled>
+					<nodeAuditAnalyzerEnabled>false</nodeAuditAnalyzerEnabled>
+					<retireJsAnalyzerEnabled>false</retireJsAnalyzerEnabled>
+				</configuration>
+				<executions>
+					<execution>
+						<id>owasp-dependency-check</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>check</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- ===== Integration tests (*IT) — the Testcontainers smoke runs here ===== -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>integration-tests</id>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- ===================== GraalVM native (unused this session) ===================== -->
 			<plugin>
 				<groupId>org.graalvm.buildtools</groupId>
 				<artifactId>native-maven-plugin</artifactId>
 			</plugin>
+
+			<!-- ===================== Spring Boot repackage ===================== -->
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
@@ -104,41 +400,19 @@
 					</excludes>
 				</configuration>
 			</plugin>
+
+			<!-- ===================== Compiler (lombok processor) ===================== -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>default-compile</id>
-						<phase>compile</phase>
-						<goals>
-							<goal>compile</goal>
-						</goals>
-						<configuration>
-							<annotationProcessorPaths>
-								<path>
-									<groupId>org.projectlombok</groupId>
-									<artifactId>lombok</artifactId>
-								</path>
-							</annotationProcessorPaths>
-						</configuration>
-					</execution>
-					<execution>
-						<id>default-testCompile</id>
-						<phase>test-compile</phase>
-						<goals>
-							<goal>testCompile</goal>
-						</goals>
-						<configuration>
-							<annotationProcessorPaths>
-								<path>
-									<groupId>org.projectlombok</groupId>
-									<artifactId>lombok</artifactId>
-								</path>
-							</annotationProcessorPaths>
-						</configuration>
-					</execution>
-				</executions>
+				<configuration>
+					<annotationProcessorPaths>
+						<path>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok</artifactId>
+						</path>
+					</annotationProcessorPaths>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>

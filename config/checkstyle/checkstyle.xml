@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+<!--
+  SessionLayer Control Plane — Checkstyle hygiene rules.
+
+  Intentionally NON-overlapping with Spotless: Spotless (palantir-java-format)
+  owns all whitespace/indentation/wrapping. Checkstyle here enforces only
+  structural hygiene that a formatter does not catch (import discipline, brace
+  discipline, naming, common bug patterns). LineLength is set to 120 to match
+  palantir-java-format so the two tools never disagree.
+-->
+<module name="Checker">
+	<property name="charset" value="UTF-8"/>
+	<property name="severity" value="warning"/>
+	<property name="fileExtensions" value="java"/>
+
+	<!-- Files. Tabs are intentional (Spring house style, applied by the Eclipse
+	     JDT formatter via Spotless), so no FileTabCharacter check here. Line
+	     length / wrapping is owned entirely by the formatter (Spotless), so there
+	     is deliberately no LineLength check — the two tools never disagree. -->
+	<module name="NewlineAtEndOfFile"/>
+
+	<module name="TreeWalker">
+		<!-- Imports -->
+		<module name="AvoidStarImport"/>
+		<module name="RedundantImport"/>
+		<module name="UnusedImports">
+			<property name="processJavadoc" value="true"/>
+		</module>
+		<module name="IllegalImport"/>
+
+		<!-- Naming -->
+		<module name="PackageName"/>
+		<module name="TypeName"/>
+		<module name="MethodName"/>
+		<module name="MemberName"/>
+		<module name="ParameterName"/>
+		<module name="LocalVariableName"/>
+		<module name="ConstantName"/>
+
+		<!-- Blocks / braces -->
+		<module name="NeedBraces"/>
+		<module name="EmptyBlock">
+			<property name="option" value="text"/>
+		</module>
+		<module name="EmptyCatchBlock"/>
+		<module name="LeftCurly"/>
+		<module name="RightCurly"/>
+
+		<!-- Common bug patterns -->
+		<module name="EqualsHashCode"/>
+		<module name="MissingSwitchDefault"/>
+		<module name="FallThrough"/>
+		<module name="StringLiteralEquality"/>
+		<module name="SimplifyBooleanExpression"/>
+		<module name="SimplifyBooleanReturn"/>
+		<module name="OneStatementPerLine"/>
+
+		<!-- Modifiers -->
+		<module name="ModifierOrder"/>
+		<module name="RedundantModifier"/>
+
+		<!-- Structure -->
+		<module name="OneTopLevelClass"/>
+		<module name="OuterTypeFilename"/>
+		<module name="UpperEll"/>
+		<module name="ArrayTypeStyle"/>
+	</module>
+</module>
