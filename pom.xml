@@ -83,9 +83,14 @@
 			<artifactId>spring-boot-starter-data-r2dbc</artifactId>
 		</dependency>
 		<dependency>
+			<!--
+			  COMPILE scope (was runtime in S1): the R2DBC jsonb converters map
+			  com.fasterxml.jackson JsonNode <-> io.r2dbc.postgresql.codec.Json, so the
+			  driver's Json wrapper type must be on the compile classpath. It is still
+			  only the reactive Postgres driver. See docs/DATA-MODEL.md §9.
+			-->
 			<groupId>org.postgresql</groupId>
 			<artifactId>r2dbc-postgresql</artifactId>
-			<scope>runtime</scope>
 		</dependency>
 
 		<!-- ============ Flyway migrations: JDBC-ONLY, startup-only ============ -->
