@@ -30,7 +30,7 @@
 		  protobuf-maven-plugin, spring-grpc) IS managed by Spring Boot 4.1.0, so it
 		  carries no version here on purpose.
 		-->
-		<spotless-maven-plugin.version>2.44.5</spotless-maven-plugin.version>
+		<spotless-maven-plugin.version>3.8.0</spotless-maven-plugin.version>
 		<maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
 		<checkstyle.version>10.26.1</checkstyle.version>
 		<openapi-generator.version>7.14.0</openapi-generator.version>
