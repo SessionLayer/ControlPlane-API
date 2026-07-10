@@ -27,6 +27,13 @@ public final class SshReader {
 		return buf.length - pos;
 	}
 
+	/**
+	 * The current read offset (e.g. to slice the to-be-signed prefix of a cert).
+	 */
+	public int position() {
+		return pos;
+	}
+
 	public long readUint32() {
 		require(4);
 		long v = ((buf[pos] & 0xFFL) << 24) | ((buf[pos + 1] & 0xFFL) << 16) | ((buf[pos + 2] & 0xFFL) << 8)

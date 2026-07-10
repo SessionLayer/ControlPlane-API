@@ -323,4 +323,71 @@ on the reference columns rejects a PEM private key that a later session might mi
 correctly-named reference column (the structural test only checks column *names*). The hash/reference contract
 itself — that the value really is a hash/reference — is enforced by the writing session's application code.
 An issued service-account `client_secret` (if that auth method is used) is a **runtime** credential (a hash in
-a future `service_account_credential` table, see RESULT.md §10), never stored in the config definition.
+the `service_account_credential` table, added in S3 §13), never stored in the config definition.
+
+---
+
+## 13. Session Three additions (`V6`–`V12`) — CA signing + carry-forward remediation
+
+S3 adds migrations `V6`–`V12` (forward-only; V2–V5 unchanged). New top-level tables: **12 config + 18 runtime =
+30** (was 22), plus the `audit_event` range partitions.
+
+### 13.1 Audit range partitioning + retention (`V7`, closes `F-audit-retention-1`)
+`runtime.audit_event` is recreated as **`PARTITION BY RANGE (occurred_at)`** with **composite PK
+`(id, occurred_at)`** (Postgres requires the partition key in every unique constraint). The V4 append-only
+trigger, the `seq` identity, and the V5 indexes/GINs are re-established on the parent (row triggers + indexes
+propagate to partitions). `uq_audit_seq` is `UNIQUE (seq, occurred_at)` — the single shared IDENTITY sequence
+still makes `seq` globally unique (gap/fork detection for S9). A **DEFAULT** partition guarantees an append-only
+insert never fails for a missing range. Management/prune functions (SECURITY DEFINER so the restricted runtime
+role can call them without DDL rights): `audit_ensure_partition(date)` / `audit_ensure_partitions(date,int)`
+(create-ahead, and lock each partition to INSERT/SELECT for `cp_runtime`), `audit_prune_before(timestamptz)`
+(DETACH+DROP whole partitions older than the retention cutoff — no per-row DELETE, so retention never fights the
+append-only trigger). Retention window = `operator_settings.audit_retention_days` (default 365, FR-AUD-6).
+
+**R2DBC composite-PK mapping:** the entity keeps a single logical **`@Id id`** (globally unique by UUIDv7
+construction) because `audit_event` is insert-only — `save()` inserts all columns including `occurred_at`, and
+`findById(uuid)` resolves by `id` alone. No composite-key entity machinery is needed; the composite PK is purely
+a partitioning/DB concern. Proven by `AuditPartitioningIT`.
+
+### 13.2 Non-owner runtime DB role (`V11`, closes `F-append-only-1` residual)
+`V11` creates a **non-owner, non-superuser `cp_runtime` role** (LOGIN password from the Flyway placeholder
+`${cpRuntimePassword}`; dev default, override in prod). Grants: CRUD on `config.*` and `runtime.*` **except**
+`runtime.audit_event` (INSERT/SELECT only — parent + every partition), EXECUTE on the helper functions, SELECT on
+`flyway_schema_history`; **no** CREATE/ownership/ALTER/DROP/DISABLE TRIGGER. `ALTER DEFAULT PRIVILEGES` auto-grants
+CRUD on future owner-created tables (audit partitions are re-locked to INSERT/SELECT by `audit_ensure_partition`).
+**The R2DBC runtime connects as `cp_runtime`** (`spring.r2dbc.username`); **Flyway migrates as the owner**
+(`spring.flyway.user`) — the S2 r2dbc-runtime / jdbc-flyway split. This makes the append-only + schema-boundary
+guarantees hold against a compromised app credential, not just the honest/ORM path (which the V4 trigger covers).
+Proven by `WriterRoleIT` (negative capabilities) and `AppendOnlyAuditIT` (trigger proven via an owner connection,
+since `cp_runtime` is refused by privilege first). Credentials via env; nothing secret committed.
+
+### 13.3 Model-gap schema (`V6`,`V8`,`V9`,`V10`,`V12`, closes `F-model-deferrals-1`)
+- `config.operator_settings` (`V6`) — **singleton** (`singleton boolean UNIQUE CHECK`): KEK ref, default CA
+  backend, retention/WORM/OTP/session-limit defaults, FR-BOOT-2 bootstrap self-disable flag. Cold start reads/writes
+  it. The `bootstrap_*` fields are runtime-managed (the reconciler must not revert them, like `access_lock` is
+  API-only).
+- `recording_ref` (`V8`) — `retention_until`, `legal_hold`, `status`, `format`, `content_digest`; `content_digest`
+  is write-once (V4 trigger extended); `recording_prunable(cutoff)` returns only governance + past-retention +
+  non-legal-hold recordings (compliance/legal-held are never prunable).
+- `runtime.service_account_credential` (`V9`, FR-AUTH-12) — issued machine creds (hash/reference only; snapshot ref
+  to `config.service_account`).
+- `runtime.device_flow` (`V9`, FR-AUTH-3) — RFC 8628 state; hashes of the device/user codes; `connection_binding`
+  is the 1:1 anti-phishing binding (§15).
+- `runtime.node_host_key` (`V9`, FR-CONN-5) — enrollment-anchored host identity (host-CA cert primary, pinned key
+  fallback) so inner-leg verification is never TOFU; public material only.
+- `runtime.session_lease` (`V9`, FR-SESS-3) — durable per-identity concurrency primitive (count of unreleased
+  leases = live sessions; the semaphore is S7).
+- `config.policy_epoch` (`V10`, F-DM-5) — singleton monotonic epoch (a decrease is trigger-rejected).
+- `config.session_limit_policy` (`V10`, FR-SESS-3) — per-identity limit overrides.
+- Status-transition **reason/actor** columns (`V10`) on `node`, `agent_identity`, `gateway_identity`, and
+  `jit_request` (`decided_by`/`decision_reason`) so a quarantine/lock/decision is self-describing.
+- `runtime.ca_key_material` (`V12`, FR-CA-8) — KEK-wrapped local CA private key (**ciphertext only**) + public
+  material; the KEK is env-sourced, never in the DB, so a datastore-only compromise yields ciphertext it cannot
+  unwrap. RUNTIME (generated secret, never reconciled); snapshot ref to `config.ca_config.key_reference =
+  local:<id>`.
+
+### 13.4 JIT `approvals` shape — a decision, not a defer (F-DM-16)
+The `jit_request.approvals` chain stays **jsonb** (intentionally flexible; S11 fills the approval logic). Documented
+element shape: `{approver, level, decision, reason, at}`. The self-approval invariant (approver ≠ requester,
+FR-ACC-4) and the approver-queue index remain S11 concerns; keeping the shape as jsonb now is the deliberate choice
+(a child table would over-commit before the logic exists).

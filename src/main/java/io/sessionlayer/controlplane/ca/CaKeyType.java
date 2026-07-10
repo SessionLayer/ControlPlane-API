@@ -84,4 +84,14 @@ public enum CaKeyType {
 		throw new IllegalArgumentException("unsupported/unassemblable CA algorithm: " + algorithmId
 				+ " (SessionLayer assembles ECDSA P-256/P-384/P-521; default ecdsa-p256)");
 	}
+
+	/** Resolve by OpenSSH key-type name (e.g. {@code ecdsa-sha2-nistp256}). */
+	public static CaKeyType fromKeyTypeName(String keyTypeName) {
+		for (CaKeyType t : values()) {
+			if (t.keyTypeName.equals(keyTypeName)) {
+				return t;
+			}
+		}
+		throw new IllegalArgumentException("unsupported SSH key type: " + keyTypeName);
+	}
 }
