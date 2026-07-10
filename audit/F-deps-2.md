@@ -1,12 +1,13 @@
-# F-deps-2: CVE-2026-0994 on protobuf-java is a false positive (Python-only CVE, version-scheme CPE mismatch)
+# F-deps-2: CVE-2026-0994 on the protobuf-java family is a false positive (Python-only CVE, version-scheme CPE mismatch)
 - Severity: high
 - Status: Accepted-Risk
 - Area: deps
 
 ## Summary
-OWASP dependency-check flags `com.google.protobuf:protobuf-java:4.34.2` (a runtime dependency of the
-gRPC Handshake server) for CVE-2026-0994 (CVSS 8.2) and, with `failBuildOnCVSS=7`, fails the build.
-This is a **false positive**.
+OWASP dependency-check flags the `com.google.protobuf` Java family at 4.34.2 — **both**
+`protobuf-java` and `protobuf-java-util` (runtime dependencies of the gRPC Handshake server) — for
+CVE-2026-0994 (CVSS 8.2) and, with `failBuildOnCVSS=7`, fails the build. This is a **false positive**
+for the entire family (identical rationale across all `com.google.protobuf` artifacts).
 
 ## Impact
 None. CVE-2026-0994 is a **Python-only** DoS — a recursion-depth bypass in
@@ -21,11 +22,12 @@ protobuf use is the Handshake plane over **binary** protobuf on a loopback dev-o
 is unreachable regardless.
 
 ## Remediation
-Upgrading is futile (every protobuf-java `4.x` mis-compares as `< 33.4`). Added a **narrowly scoped
-suppression** for exactly CVE-2026-0994 on `com.google.protobuf:protobuf-java` in
+Upgrading is futile (every `4.x` mis-compares as `< 33.4`). Added a **scoped suppression** for exactly
+CVE-2026-0994 across the `com.google.protobuf` Java family (`^pkg:maven/com\.google\.protobuf/.*@.*$`
+— protobuf-java, protobuf-java-util, and any other group artifact) in
 `config/owasp/dependency-check-suppressions.xml`, with the full justification and a review date
-(2026-10-09). Any future, genuinely Java-affecting protobuf CVE has a different id and remains
-un-suppressed. Re-evaluate if the NVD CPE is corrected to Java numbering or a real Java advisory
+(2026-10-09). The suppression is scoped to this ONE CVE id; any future, genuinely Java-affecting
+protobuf CVE has a different id and remains un-suppressed. Re-evaluate if the NVD CPE is corrected to Java numbering or a real Java advisory
 appears.
 
 ## Evidence

@@ -30,11 +30,14 @@
 		   messages contain no `Any` fields and no JsonFormat/JSON parsing is used, so the
 		   vulnerable json_format path is unreachable regardless.
 
-		Scope: narrowly limited to this one CVE on this one artifact. Any future, genuinely
+		Scope: limited to this ONE CVE, across the com.google.protobuf Java family — the same
+		version-scheme false positive hits every artifact in the group (protobuf-java,
+		protobuf-java-util, and any other com.google.protobuf jar pulled by the grpc/protobuf
+		codegen), all versioned 4.x and mis-compared against 33.4. Any future, genuinely
 		Java-affecting protobuf CVE has a different id and is NOT suppressed.
-		Review by 2026-10-09 (or when protobuf-java's NVD CPE is corrected to Java numbering).
+		Review by 2026-10-09 (or when protobuf's NVD CPE is corrected to Java numbering).
 		]]></notes>
-		<packageUrl regex="true">^pkg:maven/com\.google\.protobuf/protobuf-java@.*$</packageUrl>
+		<packageUrl regex="true">^pkg:maven/com\.google\.protobuf/.*@.*$</packageUrl>
 		<cve>CVE-2026-0994</cve>
 	</suppress>
 </suppressions>
