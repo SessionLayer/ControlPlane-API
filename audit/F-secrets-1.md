@@ -1,21 +1,26 @@
-# F-secrets-1: Dev-only localhost DB credentials present in application.properties
-- Severity: info
-- Status: Accepted-Risk
+# F-secrets-1: reference-only columns had no content guard against key-material-at-rest
+- Severity: medium
+- Status: Verified-Fixed
 - Area: secrets
 
 ## Summary
-`application.properties` carries `spring.r2dbc.*` / `spring.flyway.*` defaults with
-`username`/`password` = `sessionlayer` pointing at `localhost:5432`.
+The §2.5 "no secrets at rest" guardrail rested only on column *names* and a name-only structural test.
+`ca_config.key_reference`, `service_account.key_reference`, `recording_ref.encryption_key_ref`,
+`agent_identity`/`gateway_identity.mtls_identity_ref`, `node_policy.host_pin_ref`/`host_ca_ref` were
+unconstrained `text` — nothing stopped a later session (e.g. the local-CA backend, FR-CA-8) from writing an
+actual PEM private key *into* a correctly-named reference column (security-review M1).
 
 ## Impact
-Not a secret: identical values are published in the sibling `docker-compose.yml` dev stack, they only
-work against localhost, and every real deployment overrides them via `SPRING_R2DBC_*` /
-`SPRING_FLYWAY_*` environment variables (as the cross-repo e2e and Testcontainers IT both do).
+The crown-jewel CA private key or an agent private key could silently land at rest in Postgres / replicas /
+backups with no test failing.
 
 ## Remediation
-Accepted for the dev scaffold. No real secret is committed. Production supplies credentials via env
-(or a secret manager) — never via the packaged properties.
+Belt-and-suspenders **content-guard CHECKs** on the reference columns: the crown-jewel columns
+(`ca_config.key_reference`, `recording_ref.encryption_key_ref`) reject `%PRIVATE KEY%` and `%BEGIN %`; the
+others reject `%PRIVATE KEY%`. The structural name-based test remains. Documented in DATA-MODEL §12 that the
+hash/reference *contract* itself is still enforced by the writing session's application code.
 
 ## Evidence
-- `src/main/resources/application.properties` DB blocks (documented as dev-only, env-overridden).
-- `../docker-compose.yml` Postgres service uses the same dev placeholders.
+- `V2__config_schema.sql`, `V3__runtime_schema.sql` (content-guard CHECKs).
+- `ConstraintsIT.privateKeyMaterialInReferenceRejected`; `AppendOnlyAuditIT.secretBearingTablesStoreHashesOrReferencesOnly`.
+</content>
