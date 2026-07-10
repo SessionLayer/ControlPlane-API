@@ -18,14 +18,19 @@ over-privileged runtime DB credential — undermining the FR-AUD-9 / §15 "a com
 recording" guarantee.
 
 ## Remediation
-Doc corrected to **scope the guarantee precisely**: the trigger stops the honest/ORM path; the full guarantee
-requires the runtime to connect as a **non-owner, non-superuser role granted only INSERT/SELECT** on
-`runtime.audit_event`, plus reconciler-scoped schema grants for the config/runtime boundary — the S15/S16
-deployment-hardening layer, now documented as an explicit follow-up (DATA-MODEL §7, RESULT §10). The
-structural boundary + the trigger are delivered this session; the role split is scheduled for when the API
-surface + reconciler land. `V4` triggers are `CREATE OR REPLACE` and cover UPDATE/DELETE/TRUNCATE.
+S2 delivered the structural boundary + the trigger and documented the role split as a follow-up. The standing
+"no deferrals" directive brings the **role split forward — delivered this session (S3)**: migration
+`V11__writer_role.sql` creates a **non-owner, non-superuser `cp_runtime` role** with CRUD on `config.*`/`runtime.*`
+**except** `runtime.audit_event` (INSERT/SELECT only — parent + every partition), no CREATE/ownership/ALTER/DROP/
+DISABLE TRIGGER, and reconciler-scoped grants. The **R2DBC runtime now connects as `cp_runtime`**
+(`spring.r2dbc.username`) while **Flyway migrates as the owner** (`spring.flyway.user`). The append-only + schema
+boundary now hold against a compromised app credential, not just the honest/ORM path. `V4` triggers remain the
+role-independent DB guarantee (they stop even the table owner on a plain DML path).
 
 ## Evidence
-- `docs/DATA-MODEL.md` §7 rewritten with the scope caveat + "do not run the runtime as owner/superuser".
-- `AppendOnlyAuditIT` proves the ORM-path rejections (update/delete/truncate).
+- `WriterRoleIT`: as `cp_runtime`, DROP/ALTER, `ALTER TABLE ... DISABLE TRIGGER`, and UPDATE/DELETE of
+  `audit_event` (parent + partition) are all refused; INSERT audit + normal CRUD elsewhere succeed.
+- `AppendOnlyAuditIT`: the append-only trigger is proven via an **owner connection** (the restricted role is
+  refused by privilege first), so both layers of the two-layer defense are demonstrated.
+- `docs/DATA-MODEL.md` §13.2 documents the role, the grants, and the r2dbc-runtime / jdbc-flyway split.
 </content>

@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded run on the same ref and stop the push+pull_request
+# double-run waste. Keeps the single required job id `gate`.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gate:
     runs-on: ubuntu-latest

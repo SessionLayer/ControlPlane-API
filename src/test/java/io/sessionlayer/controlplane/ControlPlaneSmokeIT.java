@@ -42,15 +42,20 @@ class ControlPlaneSmokeIT {
 
 	@DynamicPropertySource
 	static void dataSources(DynamicPropertyRegistry registry) {
-		// Runtime = R2DBC (fully non-blocking).
+		// Runtime = R2DBC (fully non-blocking) as the RESTRICTED cp_runtime role — the
+		// production posture (writer-role hardening, F-append-only-1). The full app
+		// must
+		// boot and serve under least privilege.
 		registry.add("spring.r2dbc.url", () -> String.format("r2dbc:postgresql://%s:%d/%s", POSTGRES.getHost(),
 				POSTGRES.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT), POSTGRES.getDatabaseName()));
-		registry.add("spring.r2dbc.username", POSTGRES::getUsername);
-		registry.add("spring.r2dbc.password", POSTGRES::getPassword);
-		// Migrations = Flyway (JDBC-only), same container.
+		registry.add("spring.r2dbc.username", () -> "cp_runtime");
+		registry.add("spring.r2dbc.password", () -> "cp_runtime");
+		// Migrations = Flyway (JDBC-only) as the OWNER, same container.
 		registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
 		registry.add("spring.flyway.user", POSTGRES::getUsername);
 		registry.add("spring.flyway.password", POSTGRES::getPassword);
+		registry.add("spring.flyway.placeholders.cpRuntimePassword", () -> "cp_runtime");
+		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
 	}
 
 	private WebTestClient webTestClient;

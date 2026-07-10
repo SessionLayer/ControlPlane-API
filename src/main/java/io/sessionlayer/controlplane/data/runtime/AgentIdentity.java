@@ -18,12 +18,14 @@ import org.springframework.data.relational.core.mapping.Table;
  */
 @Table(schema = "runtime", name = "agent_identity")
 public record AgentIdentity(@Id UUID id, UUID nodeId, String mtlsIdentityRef, String fingerprint, long generation,
-		String joinMethod, String status, Instant issuedAt, Instant notAfter, @Version Long version,
-		@CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
+		String joinMethod, String status, Instant issuedAt, Instant notAfter, String statusReason,
+		String statusChangedBy, Instant statusChangedAt, @Version Long version, @CreatedDate Instant createdAt,
+		@LastModifiedDate Instant updatedAt) {
 
 	public static AgentIdentity create(UUID nodeId, String mtlsIdentityRef, String fingerprint, long generation,
 			String joinMethod, String status, Instant issuedAt, Instant notAfter) {
+		// status-transition reason/actor (F-DM-15) default null; set on lock/revoke.
 		return new AgentIdentity(Uuids.v7(), nodeId, mtlsIdentityRef, fingerprint, generation, joinMethod, status,
-				issuedAt, notAfter, null, null, null);
+				issuedAt, notAfter, null, null, null, null, null, null);
 	}
 }
