@@ -21,6 +21,10 @@ CREATE INDEX idx_audit_correlation  ON runtime.audit_event (correlation_id);
 CREATE INDEX idx_audit_session      ON runtime.audit_event (session_id);
 -- capability set membership search -> GIN on the array.
 CREATE INDEX idx_audit_capabilities ON runtime.audit_event USING gin (capabilities);
+-- "search by node label" over immortal history (FR-AUD-8) -> GIN on the label snapshot.
+CREATE INDEX idx_audit_node_labels  ON runtime.audit_event USING gin (node_labels);
+-- seq is the S9 hash-chain total order; UNIQUE makes gaps/forks detectable.
+CREATE UNIQUE INDEX uq_audit_seq    ON runtime.audit_event (seq);
 
 -- === Session lookup / audit-by-session (Design §12A) =======================
 CREATE INDEX idx_session_identity     ON runtime.ssh_session (identity);
@@ -29,16 +33,28 @@ CREATE INDEX idx_session_started_at   ON runtime.ssh_session (started_at);
 CREATE INDEX idx_session_access_model ON runtime.ssh_session (access_model);
 CREATE INDEX idx_session_gateway      ON runtime.ssh_session (gateway_id);
 CREATE INDEX idx_session_jit_request  ON runtime.ssh_session (jit_request_id);
+CREATE INDEX idx_session_breakglass   ON runtime.ssh_session (breakglass_activation_id);
+-- "act on still-open sessions" — quarantine kill / graceful drain / concurrency counting
+-- (FR-NODE-3, FR-HA-7, FR-SESS-3) — must not seq-scan session history.
+CREATE INDEX idx_session_live         ON runtime.ssh_session (node_id) WHERE ended_at IS NULL;
 
 -- === Lock-set fetch (Design §6.3/§8.4 — pushed deny-list) ==================
 -- Locks are fetched wholesale to push to Gateways; expiry filtering benefits from:
 CREATE INDEX idx_lock_expires_at ON runtime.access_lock (expires_at);
 
 -- === Foreign-key columns (Postgres does not auto-index these) ==============
+-- NB: config.role_binding needs no separate role_id index — the composite
+-- UNIQUE (role_id, subject_kind, subject) is role_id-leading and already serves both
+-- findByRoleId and the ON DELETE CASCADE lookup.
 CREATE INDEX idx_agent_identity_node   ON runtime.agent_identity (node_id);
 CREATE INDEX idx_join_token_node       ON runtime.join_token (node_id);
 CREATE INDEX idx_jit_request_target    ON runtime.jit_request (target_node_id);
-CREATE INDEX idx_role_binding_role     ON config.role_binding (role_id);
+
+-- === One ACTIVE CA config per kind (FR-CA-7 rotation overlap) ==============
+-- A CA kind may have several rows during a rotation overlap (incoming/active/outgoing),
+-- but at most one is 'active' at any time.
+CREATE UNIQUE INDEX uq_ca_config_active_per_kind
+    ON config.ca_config (ca_kind) WHERE rotation_state = 'active';
 
 -- === One ACTIVE credential per node (FR-JOIN-6) ============================
 -- History rows (locked/revoked) may accumulate, but at most one active identity

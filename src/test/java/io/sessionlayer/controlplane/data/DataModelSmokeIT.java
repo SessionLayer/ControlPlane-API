@@ -78,11 +78,13 @@ class DataModelSmokeIT extends AbstractDataIT {
 	@Test
 	void pinRoundTripsCidrTextAndInstant() {
 		var expires = Instant.now().plus(1, ChronoUnit.HOURS).truncatedTo(ChronoUnit.MICROS);
-		var pin = Pin.create("SHA256:abc", "alice@example.com", "192.168.1.0/24", List.of("deploy"), expires);
+		// host bits set (192.168.1.5/24): accepted by the lenient ::inet validator and
+		// stored verbatim (a strict ::cidr check would have rejected it).
+		var pin = Pin.create("SHA256:abc", "alice@example.com", "192.168.1.5/24", List.of("deploy"), expires);
 
 		var reread = pins.save(pin).flatMap(s -> pins.findById(s.id())).block();
 		assertThat(reread).isNotNull();
-		assertThat(reread.sourceCidr()).isEqualTo("192.168.1.0/24"); // cidr round-trips exactly as text
+		assertThat(reread.sourceCidr()).isEqualTo("192.168.1.5/24"); // round-trips exactly as text
 		assertThat(reread.expiresAt()).isEqualTo(expires); // timestamptz <-> Instant, microsecond precision
 		assertThat(reread.principals()).containsExactly("deploy");
 	}

@@ -20,13 +20,19 @@ import tools.jackson.databind.JsonNode;
  */
 @Table(schema = "runtime", name = "audit_event")
 public record AuditEvent(@Id UUID id, Instant occurredAt, String actor, String subject, String action, String outcome,
-		UUID correlationId, UUID sessionId, UUID nodeId, String sourceIp, String accessModel, List<String> capabilities,
-		JsonNode detail, String prevHash, String recordHash, @Version Long version, @CreatedDate Instant createdAt) {
+		UUID correlationId, UUID sessionId, UUID nodeId, JsonNode nodeLabels, String sourceIp, String accessModel,
+		List<String> capabilities, JsonNode detail, String prevHash, String recordHash, @Version Long version,
+		@CreatedDate Instant createdAt) {
+
+	// The DB-assigned `seq` chain-order column (V3) is intentionally NOT mapped: it
+	// is
+	// GENERATED ALWAYS AS IDENTITY, so the ORM omits it from INSERT and Postgres
+	// assigns it.
 
 	public static AuditEvent create(Instant occurredAt, String actor, String subject, String action, String outcome,
-			UUID correlationId, UUID sessionId, UUID nodeId, String sourceIp, String accessModel,
+			UUID correlationId, UUID sessionId, UUID nodeId, JsonNode nodeLabels, String sourceIp, String accessModel,
 			List<String> capabilities, JsonNode detail) {
 		return new AuditEvent(Uuids.v7(), occurredAt, actor, subject, action, outcome, correlationId, sessionId, nodeId,
-				sourceIp, accessModel, capabilities, detail, null, null, null, null);
+				nodeLabels, sourceIp, accessModel, capabilities, detail, null, null, null, null);
 	}
 }

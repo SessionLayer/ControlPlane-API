@@ -19,6 +19,8 @@ import io.sessionlayer.controlplane.data.config.ServiceAccountRepository;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
+import reactor.test.StepVerifier;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -74,18 +76,36 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 
 	@Test
 	void caConfigCrudAndUpdate() {
-		var ca = caConfigs.save(CaConfig.create("session", "local", "kek://ref", "ecdsa-p256", "default")).block();
+		var ca = caConfigs
+				.save(CaConfig.create("session-ca", "session", "local", "kek://ref", "ecdsa-p256", "active", "default"))
+				.block();
 		assertThat(ca).isNotNull();
 		assertThat(ca.algorithm()).isEqualTo("ecdsa-p256");
 
-		var updated = caConfigs.save(new CaConfig(ca.id(), ca.caKind(), "aws_kms", "arn://key", "ecdsa-p384",
-				ca.origin(), ca.version(), ca.createdAt(), ca.updatedAt())).block();
+		var updated = caConfigs.save(new CaConfig(ca.id(), ca.name(), ca.caKind(), "aws_kms", "arn://key", "ecdsa-p384",
+				ca.rotationState(), ca.origin(), ca.version(), ca.createdAt(), ca.updatedAt())).block();
 		assertThat(updated).isNotNull();
 		assertThat(updated.version()).isGreaterThan(ca.version()); // @Version bumped on update
-		assertThat(caConfigs.findByCaKind("session").block().backend()).isEqualTo("aws_kms");
+		assertThat(caConfigs.findByCaKindAndRotationState("session", "active").block().backend()).isEqualTo("aws_kms");
 
 		caConfigs.deleteById(ca.id()).block();
 		assertThat(caConfigs.findById(ca.id()).block()).isNull();
+	}
+
+	@Test
+	void caConfigRotationOverlapOneActivePerKind() {
+		caConfigs.save(CaConfig.create("host-active", "host", "local", "ref-a", "ecdsa-p256", "active", "git")).block();
+		// an incoming key for the same kind is allowed (rotation overlap, FR-CA-7)
+		var incoming = caConfigs
+				.save(CaConfig.create("host-incoming", "host", "vault", "ref-b", "ecdsa-p256", "incoming", "git"))
+				.block();
+		assertThat(incoming).isNotNull();
+		assertThat(caConfigs.findByCaKind("host").collectList().block()).hasSize(2);
+		// but a second ACTIVE for the kind violates the partial unique index
+		StepVerifier
+				.create(caConfigs.save(
+						CaConfig.create("host-active-2", "host", "local", "ref-c", "ecdsa-p256", "active", "git")))
+				.verifyError(DataIntegrityViolationException.class);
 	}
 
 	@Test

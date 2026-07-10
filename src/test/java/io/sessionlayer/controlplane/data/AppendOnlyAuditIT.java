@@ -34,7 +34,8 @@ class AppendOnlyAuditIT extends AbstractDataIT {
 
 	private AuditEvent sampleEvent(UUID correlationId) {
 		return AuditEvent.create(Instant.now(), "admin@corp", "alice@corp", "jit.approve", "success", correlationId,
-				null, null, "203.0.113.7", "jit", List.of("shell", "exec"), objectMapper.readTree("{\"rule\":\"r1\"}"));
+				null, null, objectMapper.readTree("{\"env\":\"prod\"}"), "203.0.113.7", "jit", List.of("shell", "exec"),
+				objectMapper.readTree("{\"rule\":\"r1\"}"));
 	}
 
 	@Test
@@ -50,10 +51,17 @@ class AppendOnlyAuditIT extends AbstractDataIT {
 		// Non-null version -> Spring issues an UPDATE; the BEFORE UPDATE trigger
 		// raises.
 		var tampered = new AuditEvent(saved.id(), saved.occurredAt(), saved.actor(), saved.subject(), "TAMPERED",
-				saved.outcome(), saved.correlationId(), saved.sessionId(), saved.nodeId(), saved.sourceIp(),
-				saved.accessModel(), saved.capabilities(), saved.detail(), saved.prevHash(), saved.recordHash(),
-				saved.version(), saved.createdAt());
+				saved.outcome(), saved.correlationId(), saved.sessionId(), saved.nodeId(), saved.nodeLabels(),
+				saved.sourceIp(), saved.accessModel(), saved.capabilities(), saved.detail(), saved.prevHash(),
+				saved.recordHash(), saved.version(), saved.createdAt());
 		StepVerifier.create(auditEvents.save(tampered)).verifyError(DataIntegrityViolationException.class);
+	}
+
+	@Test
+	void malformedSourceIpRejected() {
+		var bad = AuditEvent.create(Instant.now(), "admin@corp", null, "login", "success", null, null, null, null,
+				"not-an-ip", null, null, null);
+		StepVerifier.create(auditEvents.save(bad)).verifyError(DataIntegrityViolationException.class);
 	}
 
 	@Test
@@ -74,8 +82,10 @@ class AppendOnlyAuditIT extends AbstractDataIT {
 		// A web/admin event (approval) and an SSH event share a correlation id
 		// (FR-AUD-9).
 		auditEvents.save(sampleEvent(correlation)).block();
-		auditEvents.save(AuditEvent.create(Instant.now(), "alice@corp", "node-1", "ssh.connect", "success", correlation,
-				UUID.randomUUID(), UUID.randomUUID(), "203.0.113.7", "jit", List.of("shell"), null)).block();
+		auditEvents
+				.save(AuditEvent.create(Instant.now(), "alice@corp", "node-1", "ssh.connect", "success", correlation,
+						UUID.randomUUID(), UUID.randomUUID(), null, "203.0.113.7", "jit", List.of("shell"), null))
+				.block();
 		assertThat(auditEvents.findByCorrelationId(correlation).collectList().block()).hasSize(2);
 	}
 

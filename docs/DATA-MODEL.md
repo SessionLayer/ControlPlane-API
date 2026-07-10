@@ -98,6 +98,7 @@ migration. The authoritative value sets (later sessions MUST stay aligned):
 | CA kind | `ca_config.ca_kind` | `user`, `session`, `host` | — |
 | CA backend | `ca_config.backend` | `local`, `aws_kms`, `azure_keyvault`, `vault` | — |
 | CA algorithm | `ca_config.algorithm` | `ecdsa-p256`, `ecdsa-p384`, `ed25519`, `rsa-2048`, `rsa-4096` | `ecdsa-p256` (FR-CA-4) |
+| CA rotation state | `ca_config.rotation_state` | `incoming`, `active`, `outgoing`, `expired` | `active` (FR-CA-7) |
 | capability | element of every capability set | `shell`, `exec`, `sftp`, `scp`, `port_forward_local`, `port_forward_remote`, `agent_forward`, `x11` | `shell`,`exec` |
 | audit outcome | `audit_event.outcome` | `success`, `failure`, `denied`, `error` | — |
 | node status | `node.status` | `pending`, `active`, `quarantined`, `removed` | `pending` |
@@ -146,34 +147,63 @@ migration. The authoritative value sets (later sessions MUST stay aligned):
 - **Across runtime→config: never a hard FK — store a *snapshot*.** A `ssh_session`/`jit_request` references
   *what was decided* (a matched `dp_rule`, a `jit_policy`, a resolved principal, a capability set, a policy
   epoch) by copying the decision inputs/outputs onto the runtime row: `matched_rule_id uuid` (a **plain uuid,
-  no FK**) + resolved `principal`, `capabilities`, `access_model`, `policy_epoch`. Config rows are mutable and
-  Git-reconcilable (edited/removed); audit and session history must stay complete and truthful **after** the
-  producing config is gone.
+  no FK**) + resolved `principal`, `capabilities`, `access_model`, `policy_epoch`, `grant_expiry`. Config rows
+  are mutable and Git-reconcilable (edited/removed); audit and session history must stay complete and truthful
+  **after** the producing config is gone.
+- **Snapshot the config *name*, not just the id.** A dangling opaque UUID is not legible history. So every
+  snapshot ref stores the human-readable name alongside the id: `ssh_session.matched_rule_name`,
+  `jit_request.jit_policy_name`, `breakglass_activation.breakglass_policy_name` (mirroring the existing
+  `node_name`/`gateway_name` snapshots). After a rule/policy is GC'd, an auditor can still see *which named
+  rule/policy* authorized the access.
 - **`audit_event` has *zero* FKs — it is immortal.** All its references (`correlation_id`, `session_id`,
-  `subject`, `node_id`) are plain values, so no GC of any other table can orphan, block, or alter an audit
-  row. Correlation across the SSH trail and the web/admin trail is **by id value** (FR-AUD-9). This is what
-  "audit survives config GC" (operating doctrine §6) means concretely.
+  `subject`, `node_id`, `node_labels`) are plain values/snapshots, so no GC of any other table can orphan,
+  block, or alter an audit row. Correlation across the SSH trail and the web/admin trail is **by id value**
+  (FR-AUD-9); `node_labels` is a jsonb label snapshot so FR-AUD-8 "search by node/label" works over history
+  even after a node is relabeled or removed. This is what "audit survives config GC" (doctrine §6) means.
 
 Runtime→runtime FKs that could otherwise block history retention use `ON DELETE SET NULL` (e.g.
-`ssh_session.node_id`, `ssh_session.gateway_id`, `ssh_session.jit_request_id`) alongside a denormalized name
-snapshot (`node_name`, `gateway_name`), so a hard delete of a node never destroys session history.
+`ssh_session.node_id`, `ssh_session.gateway_id`, `ssh_session.jit_request_id`, `ssh_session.breakglass_activation_id`
+— the last symmetric with `jit_request_id`, letting a break-glass review enumerate the sessions it authorized,
+FR-ACC-6) alongside the name snapshots, so a hard delete of a node never destroys session history. The one
+exception is **`recording_ref.session_id`, which is `ON DELETE RESTRICT`** (not CASCADE): a session prune must
+not cascade-erase a recording's object key / encryption-key reference / hash-chain head (the crown jewels,
+§15). A retention pruner must therefore be recording-aware.
 
 ---
 
-## 7. Append-only audit & the generation counter (in-DB, not by convention)
+## 7. Append-only audit, monotonic counters, write-once recording (in-DB, not by convention)
 
 - **`audit_event` is append-only, enforced in the database** (Design §4.6): a `BEFORE UPDATE OR DELETE`
-  trigger (`runtime.audit_event_immutable()`) `RAISE EXCEPTION`s. Immutability therefore does not depend on
-  application discipline or a writer role (a dedicated INSERT/SELECT-only writer role is the S15/S16
-  deployment hardening layer on top; documented, not required for the guarantee here).
-- **Hash-chain columns are reserved now** (S9): `audit_event.prev_hash` / `record_hash` (the row hash chain),
-  and `recording_ref.hash_chain_head` (the recording hash-chain head). S9 fills them; the columns exist so no
-  later migration has to rewrite the hottest table.
+  (row) trigger and a `BEFORE TRUNCATE` (statement) trigger (`runtime.audit_event_immutable()`) `RAISE
+  EXCEPTION`. **Scope of the guarantee (important):** the trigger stops the *honest / ORM / normal-DML* path —
+  a stray `save()`-on-existing, a `deleteById`, a `TRUNCATE`. It does **not** stop a malicious or compromised
+  holder of the app's DB role if that role *owns* the table (an owner can `ALTER TABLE … DISABLE TRIGGER` /
+  `DROP`) or is a superuser (`SET session_replication_role = replica` silences origin triggers). Closing that
+  requires the runtime to connect as a **non-owner, non-superuser role granted only `INSERT, SELECT`** on
+  `runtime.audit_event`, plus reconciler-scoped schema grants for the config/runtime boundary — the S15/S16
+  deployment-hardening layer. This session provides the structural boundary + the trigger; the role split is
+  the documented follow-up. (Do **not** run the runtime as the table owner or as a superuser in production.)
+- **Hash chain (S9): columns + a deterministic order.** `audit_event.prev_hash` / `record_hash` (row chain)
+  and `recording_ref.hash_chain_head` (recording chain) are reserved. Because UUIDv7 is time-*ordered* but not
+  a gapless total order (intra-ms ties; concurrent HA writers), `audit_event` also carries **`seq bigint
+  GENERATED ALWAYS AS IDENTITY` (UNIQUE)** — a DB-assigned monotonic ordinal giving S9's chain a single
+  well-defined predecessor and gap/fork detection. `seq` is DB-only (not mapped by the ORM, which omits it so
+  Postgres assigns it). Adding this to the empty table now avoids a rewrite of the hottest table in S9.
 - **Generation counter** (`agent_identity.generation`, `gateway_identity.generation`, Design §8.2) is an
-  explicit `bigint` domain column. Two guards: (1) the `@Version` optimistic lock (app layer) makes a stale
-  renewal fail instead of racing; (2) a `BEFORE UPDATE` trigger
-  (`runtime.enforce_generation_monotonic()`) rejects any update that *decreases* `generation` (DB layer).
-  A cloned credential that forks the counter is thus detectable and the stale writer cannot regress it.
+  explicit `bigint` domain column with two guards: (1) the `@Version` optimistic lock (app) makes a stale
+  renewal fail instead of racing; (2) a `BEFORE UPDATE` trigger (`runtime.enforce_generation_monotonic()`)
+  rejects any *decrease* (DB). The guard is per-row: a fresh active identity for a re-provisioned node legally
+  starts a new lineage at 0 (operator re-provision, FR-JOIN-5).
+- **Presence ownership nonce is monotonic too.** `presence.nonce` (the anti-stale-ownership fencing token,
+  §10.3/FR-HA-2) gets the identical `BEFORE UPDATE` guard (`runtime.enforce_presence_nonce_monotonic()`) so a
+  stale/duplicated Gateway cannot re-claim a node by writing a lower nonce — a split-brain routing hazard the
+  `@Version` lock alone would not catch.
+- **Recording provenance is write-once.** A `BEFORE UPDATE` trigger on `recording_ref`
+  (`runtime.enforce_recording_ref_write_once()`) rejects any change to `session_id` / `object_key` /
+  `encryption_key_ref` (and to `hash_chain_head` once set), so recording metadata cannot be silently rewritten
+  (evidence tampering, §15). Operational fields (`worm_mode`, `size_bytes`) stay mutable.
+- **All triggers/functions are `CREATE OR REPLACE`** so a manual re-apply during a repair is idempotent (Flyway
+  still runs each versioned migration exactly once).
 
 ---
 
@@ -202,17 +232,20 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
   support). No converter. `List` (not `String[]`) so record `equals` is value-based.
 - **`timestamptz` ↔ `Instant`:** native `InstantCodec`. No converter. Always UTC.
 - **`uuid` ↔ `java.util.UUID`:** native `UuidCodec`.
-- **IP / CIDR columns are `text` with a `CHECK (runtime.is_cidr(col))` format guard** (`pin.source_cidr`,
-  `otp.source_cidr`). **Driver limitation (documented deviation):** r2dbc-postgresql 1.1.1 ships only
-  `InetAddressCodec` (`inet` ↔ `java.net.InetAddress`, which *drops the prefix/mask*) and has **no `cidr`
-  codec**. To store a CIDR network *with its prefix* and round-trip it exactly over R2DBC we use `text` +
-  a format-validating CHECK, and cast to `inet`/`cidr` at query time when S5/S6 need containment.
-  `runtime.is_cidr(text)` is a tiny `IMMUTABLE` plpgsql validator that wraps the `::cidr` parse in an
-  exception block and returns `false` on malformed input — so a bad CIDR raises a clean **CHECK (constraint)
-  violation** (SQLSTATE 23, `DataIntegrityViolationException`) rather than a raw cast/data exception (SQLSTATE
-  22, `BadSqlGrammarException`); application code then sees one uniform integrity-error type for all bad-data
-  rejections. A native `cidr` column would require a custom `CodecRegistrar` — deferred, tracked for S5/S6.
-  `dp_rule.source_ip_condition` is `jsonb` (a structured condition), not a cidr column, so it is unaffected.
+- **IP / CIDR columns are `text` with a `CHECK (runtime.is_ip_or_cidr(col))` format guard** (`pin.source_cidr`,
+  `otp.source_cidr`, `audit_event.source_ip`). **Driver limitation (documented deviation):** r2dbc-postgresql
+  1.1.1 ships only `InetAddressCodec` (`inet` ↔ `java.net.InetAddress`, which *drops the prefix/mask*) and has
+  **no `cidr` codec**. To store an IP/network *with its prefix* and round-trip it exactly over R2DBC we use
+  `text` + a format-validating CHECK, and cast to `inet`/`cidr` at query time when S5/S6 need containment.
+  `runtime.is_ip_or_cidr(text)` is a tiny `IMMUTABLE` plpgsql validator that wraps a **`::inet`** parse in an
+  exception block and returns `false` on malformed input. Two design points: (1) it parses with `::inet`
+  (lenient), not `::cidr` (strict), so operator-friendly forms with host bits set (e.g. `192.168.1.5/24`) are
+  accepted rather than rejected — pushing callers to drop the restriction; (2) the exception wrapper turns bad
+  input into a clean **CHECK (constraint) violation** (SQLSTATE 23, `DataIntegrityViolationException`) instead
+  of a raw data/cast exception (SQLSTATE 22, `BadSqlGrammarException`), so callers see one uniform
+  integrity-error type. A native `cidr`/`inet` column would require a custom `CodecRegistrar` — deferred to
+  S5/S6, which own IP-containment logic. `dp_rule.source_ip_condition` is `jsonb` (a structured condition), not
+  a cidr column, so it is unaffected.
 - **Schema-qualified tables:** entities map with `@Table(schema = "config"|"runtime", name = "...")`; R2DBC
   emits schema-qualified SQL, so no `search_path` dependency.
 
@@ -223,13 +256,22 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 - Migrations are **additive and forward-only**. **Never edit a merged migration** (including the S1 no-op
   `V1__baseline.sql`); a change is always a *new* versioned file. One concern per file.
 - Files (this session):
-  - `V2__config_schema.sql` — `CREATE SCHEMA config` + the 9 config tables (enums, `origin`, config↔config FKs).
-  - `V3__runtime_schema.sql` — `CREATE SCHEMA runtime` + the 13 runtime tables (runtime↔runtime FKs, the 1:1
-    `recording_ref`, `presence`, generation counters, no runtime→config FKs).
-  - `V4__triggers.sql` — the `audit_event` append-only trigger + the generation-monotonic trigger.
-  - `V5__indexes.sql` — query-pattern indexes (presence routing, audit search dims incl. a GIN on
-    `capabilities`, session lookup, FK columns, the partial-unique "one active credential per node").
-- No `CREATE EXTENSION` is needed (UUIDs are app-side; `<@`, `jsonb`, GIN are built-in).
+  - `V2__config_schema.sql` — `CREATE SCHEMA config` + the 9 config tables (enums, `origin`, config↔config FKs,
+    reference-column content guards, CA rotation columns).
+  - `V3__runtime_schema.sql` — `CREATE SCHEMA runtime` + the `is_ip_or_cidr` validator + the 13 runtime tables
+    (runtime↔runtime FKs, the 1:1 `recording_ref` (RESTRICT), `presence`, generation counters, decision-snapshot
+    columns incl. names, `audit_event.seq`, no runtime→config FKs).
+  - `V4__triggers.sql` — `audit_event` append-only + generation-monotonic + presence-nonce-monotonic +
+    recording-write-once triggers (all `CREATE OR REPLACE`).
+  - `V5__indexes.sql` — query-pattern indexes (presence routing, audit search dims incl. GINs on `capabilities`
+    and `node_labels`, live-session partial index, session lookup, FK columns, `audit_event.seq` UNIQUE, and the
+    partial-unique "one active credential per node" / "one active CA config per kind").
+- No `CREATE EXTENSION` is needed (UUIDs are app-side; `<@`, `jsonb`, GIN, IDENTITY are built-in).
+- **Index migrations on populated tables (later sessions) must use `CREATE INDEX CONCURRENTLY`** (with Flyway
+  transactional execution disabled for that file) to stay rolling-upgrade-safe (§14). V2–V5 are all-new tables,
+  so plain `CREATE INDEX` here is fine.
+- **Editing V2–V5 during this session was in-development** (they were never merged); once merged they are
+  frozen and any change is a new `V6+`.
 
 ---
 
@@ -243,7 +285,7 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 | `config.dp_rule` | Data-plane grant: identity/node-label/source-IP selectors, principals, ttl, capability set, allow\|deny (FR-AUTHZ-1). |
 | `config.platform_role` | Platform RBAC role = named set of granular permissions (FR-PADM-1). |
 | `config.role_binding` | Binds a subject (user/group) to a `platform_role`, optionally scoped (FR-PADM-2). |
-| `config.ca_config` | Per-CA (user/session/host) backend + **key reference** (never private material) + algorithm (FR-CA-1/4). |
+| `config.ca_config` | Per-CA (user/session/host) backend + **key reference** (never private material) + algorithm (FR-CA-1/4). A kind may have several rows during a rotation overlap (`rotation_state`); one is `active` (FR-CA-7). |
 | `config.capability_def` | The requestable-capability catalogue. |
 | `config.jit_policy` | What is JIT-requestable + the 0–3-level approval chain (FR-ACC-3). |
 | `config.breakglass_policy` | Break-glass config: recording-strict, alert target, review requirement, auth path (FR-ACC-6). |
@@ -273,8 +315,12 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 
 No raw secret is ever stored. `join_token.token_hash` and `otp.otp_hash` store **hashes**; `pin.fingerprint`
 stores a **fingerprint**; `ca_config.key_reference`, `recording_ref.encryption_key_ref`,
-`agent_identity.mtls_identity_ref`, `gateway_identity.mtls_identity_ref` store **references**, never key
-material. Tests assert structurally (via `information_schema`) that no `token`/`otp`/`secret`/`private_key`
-column exists on those tables.
-</content>
-</invoke>
+`agent_identity.mtls_identity_ref`, `gateway_identity.mtls_identity_ref`, `service_account.key_reference`,
+`node_policy.host_pin_ref`/`host_ca_ref` store **references**, never key material. Two layers of enforcement:
+(1) tests assert structurally (via `information_schema`) that no `token`/`otp`/`secret`/`private_key` column
+exists on those tables; (2) a belt-and-suspenders **content guard** `CHECK (col NOT LIKE '%PRIVATE KEY%' …)`
+on the reference columns rejects a PEM private key that a later session might mistakenly try to write *into* a
+correctly-named reference column (the structural test only checks column *names*). The hash/reference contract
+itself — that the value really is a hash/reference — is enforced by the writing session's application code.
+An issued service-account `client_secret` (if that auth method is used) is a **runtime** credential (a hash in
+a future `service_account_credential` table, see RESULT.md §10), never stored in the config definition.

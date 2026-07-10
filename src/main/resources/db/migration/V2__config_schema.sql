@@ -29,8 +29,8 @@ CREATE TABLE config.node_policy (
     desired_labels  jsonb       NOT NULL DEFAULT '{}'
                                 CHECK (jsonb_typeof(desired_labels) = 'object'),
     connector_kind  text        NOT NULL CHECK (connector_kind IN ('agent', 'agentless')),
-    host_pin_ref    text,                                        -- declared host-key pin fingerprint (reference)
-    host_ca_ref     text,                                        -- declared host-CA trust material (reference)
+    host_pin_ref    text        CHECK (host_pin_ref IS NULL OR host_pin_ref NOT LIKE '%PRIVATE KEY%'),
+    host_ca_ref     text        CHECK (host_ca_ref IS NULL OR host_ca_ref NOT LIKE '%PRIVATE KEY%'),
     origin          text        NOT NULL DEFAULT 'default'
                                 CHECK (origin IN ('git', 'api', 'ui', 'default')),
     version         bigint      NOT NULL DEFAULT 0,
@@ -109,18 +109,26 @@ COMMENT ON TABLE config.role_binding IS 'FR-PADM-2: binds a subject to a platfor
 -- ---------------------------------------------------------------------------
 CREATE TABLE config.ca_config (
     id            uuid   PRIMARY KEY,
-    ca_kind       text   NOT NULL UNIQUE CHECK (ca_kind IN ('user', 'session', 'host')),
+    name          text   NOT NULL UNIQUE,                        -- stable config name (a kind may have >1 row during rotation)
+    ca_kind       text   NOT NULL CHECK (ca_kind IN ('user', 'session', 'host')),
     backend       text   NOT NULL CHECK (backend IN ('local', 'aws_kms', 'azure_keyvault', 'vault')),
-    key_reference text   NOT NULL,                               -- reference/handle only — NEVER private key material
+    key_reference text   NOT NULL                                -- reference/handle only — NEVER private key material
+                         CHECK (key_reference NOT LIKE '%PRIVATE KEY%' AND key_reference NOT LIKE '%BEGIN %'),
     algorithm     text   NOT NULL DEFAULT 'ecdsa-p256'
                          CHECK (algorithm IN ('ecdsa-p256', 'ecdsa-p384', 'ed25519', 'rsa-2048', 'rsa-4096')),
+    -- CA rotation (FR-CA-7) requires the outgoing + incoming CA keys to be trusted
+    -- simultaneously during the overlap window, so a CA kind may have multiple rows;
+    -- exactly one is 'active' at a time (partial unique index in V5). S3 owns the
+    -- rotation state machine (standby -> incoming -> active -> outgoing -> expired).
+    rotation_state text NOT NULL DEFAULT 'active'
+                         CHECK (rotation_state IN ('incoming', 'active', 'outgoing', 'expired')),
     origin        text   NOT NULL DEFAULT 'default'
                          CHECK (origin IN ('git', 'api', 'ui', 'default')),
     version       bigint NOT NULL DEFAULT 0,
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE config.ca_config IS 'FR-CA-1/4: per-CA (user|session|host) backend + key reference. Default ECDSA P-256. Never stores private key material.';
+COMMENT ON TABLE config.ca_config IS 'FR-CA-1/4/7: per-CA (user|session|host) backend + key reference; multiple rows per kind support rotation overlap (one active). Default ECDSA P-256. Never stores private key material.';
 
 -- ---------------------------------------------------------------------------
 -- capability_def — the requestable-capability catalogue.
@@ -191,7 +199,10 @@ CREATE TABLE config.service_account (
     description       text,
     auth_method       text    NOT NULL DEFAULT 'private_key_jwt'
                               CHECK (auth_method IN ('private_key_jwt', 'mtls', 'client_secret')),
-    key_reference     text,                                      -- public key / JWKS reference (never a secret)
+    -- public key / JWKS reference, never a secret. An issued client_secret (if that method
+    -- is used) is a RUNTIME credential (a hash in a future service_account_credential table,
+    -- see RESULT.md), never stored here. Content guard blocks a private key at rest.
+    key_reference     text    CHECK (key_reference IS NULL OR key_reference NOT LIKE '%PRIVATE KEY%'),
     token_ttl_seconds integer CHECK (token_ttl_seconds IS NULL OR token_ttl_seconds > 0),
     origin            text    NOT NULL DEFAULT 'default'
                               CHECK (origin IN ('git', 'api', 'ui', 'default')),

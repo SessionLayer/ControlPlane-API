@@ -133,10 +133,13 @@ class RuntimeRepositoryCrudIT extends AbstractDataIT {
 		// snapshots.
 		UUID phantomRuleId = Uuids.v7();
 		var session = sessions.save(SshSession.create("alice@corp", node.id(), node.name(), "deploy", gw.id(),
-				gw.name(), "jit", List.of("shell", "exec"), phantomRuleId, null, 7L, Instant.now())).block();
+				gw.name(), "jit", List.of("shell", "exec"), phantomRuleId, "rule-alpha", null, null, 7L,
+				Instant.now().plus(1, ChronoUnit.HOURS), Instant.now())).block();
 		assertThat(session).isNotNull();
 		assertThat(session.matchedRuleId()).isEqualTo(phantomRuleId);
+		assertThat(session.matchedRuleName()).isEqualTo("rule-alpha"); // NAME snapshot legible after config GC
 		assertThat(session.policyEpoch()).isEqualTo(7L);
+		assertThat(session.grantExpiry()).isNotNull();
 		assertThat(sessions.findByIdentity("alice@corp").collectList().block()).hasSize(1);
 
 		var rec = recordings.save(RecordingRef.create(session.id(), "s3://bucket/rec1", "kms://cust-key", "chainhead0",
@@ -156,11 +159,18 @@ class RuntimeRepositoryCrudIT extends AbstractDataIT {
 
 	@Test
 	void breakglassActivationCrud() {
-		var bg = breakglass.save(
-				BreakglassActivation.create("root@corp", "prod outage", "alert://1", null, "pending", Instant.now()))
-				.block();
+		var bg = breakglass.save(BreakglassActivation.create("root@corp", "prod outage", "alert://1", null,
+				"bg-default", "pending", Instant.now())).block();
 		assertThat(bg).isNotNull();
+		assertThat(bg.breakglassPolicyName()).isEqualTo("bg-default"); // NAME snapshot
 		assertThat(breakglass.findByReviewStatus("pending").collectList().block()).isNotEmpty();
+
+		// a break-glass session links back to its activation (symmetric with
+		// jit_request_id, FR-ACC-6)
+		var node = newNode("node-bg");
+		var session = sessions.save(SshSession.create("root@corp", node.id(), node.name(), "root", null, null,
+				"breakglass", List.of("shell"), null, null, null, bg.id(), null, null, Instant.now())).block();
+		assertThat(session.breakglassActivationId()).isEqualTo(bg.id());
 	}
 
 	@Test

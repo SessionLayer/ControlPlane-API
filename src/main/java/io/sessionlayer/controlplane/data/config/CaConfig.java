@@ -10,15 +10,21 @@ import org.springframework.data.annotation.Version;
 import org.springframework.data.relational.core.mapping.Table;
 
 /**
- * CONFIG · {@code config.ca_config} (FR-CA-1/4). Per-CA (user|session|host)
+ * CONFIG · {@code config.ca_config} (FR-CA-1/4/7). Per-CA (user|session|host)
  * backend + key <b>reference</b> (never private key material) + algorithm
- * (default ECDSA P-256). {@code caKind} is UNIQUE (one config per CA kind).
+ * (default ECDSA P-256). A CA kind may have several rows during a rotation
+ * overlap ({@code rotationState} incoming/active/outgoing/expired); exactly one
+ * is {@code active} (partial unique index). {@code name} is the stable unique
+ * key. S3 owns the rotation state machine.
  */
 @Table(schema = "config", name = "ca_config")
-public record CaConfig(@Id UUID id, String caKind, String backend, String keyReference, String algorithm, String origin,
-		@Version Long version, @CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
+public record CaConfig(@Id UUID id, String name, String caKind, String backend, String keyReference, String algorithm,
+		String rotationState, String origin, @Version Long version, @CreatedDate Instant createdAt,
+		@LastModifiedDate Instant updatedAt) {
 
-	public static CaConfig create(String caKind, String backend, String keyReference, String algorithm, String origin) {
-		return new CaConfig(Uuids.v7(), caKind, backend, keyReference, algorithm, origin, null, null, null);
+	public static CaConfig create(String name, String caKind, String backend, String keyReference, String algorithm,
+			String rotationState, String origin) {
+		return new CaConfig(Uuids.v7(), name, caKind, backend, keyReference, algorithm, rotationState, origin, null,
+				null, null);
 	}
 }

@@ -20,14 +20,17 @@ import org.springframework.data.relational.core.mapping.Table;
  */
 @Table(schema = "runtime", name = "ssh_session")
 public record SshSession(@Id UUID id, String identity, UUID nodeId, String nodeName, String principal, UUID gatewayId,
-		String gatewayName, String accessModel, List<String> capabilities, UUID matchedRuleId, UUID jitRequestId,
-		Long policyEpoch, Instant startedAt, Instant endedAt, @Version Long version, @CreatedDate Instant createdAt,
+		String gatewayName, String accessModel, List<String> capabilities, UUID matchedRuleId, String matchedRuleName,
+		UUID jitRequestId, UUID breakglassActivationId, Long policyEpoch, Instant grantExpiry, Instant startedAt,
+		Instant endedAt, String endReason, @Version Long version, @CreatedDate Instant createdAt,
 		@LastModifiedDate Instant updatedAt) {
 
 	public static SshSession create(String identity, UUID nodeId, String nodeName, String principal, UUID gatewayId,
-			String gatewayName, String accessModel, List<String> capabilities, UUID matchedRuleId, UUID jitRequestId,
-			Long policyEpoch, Instant startedAt) {
+			String gatewayName, String accessModel, List<String> capabilities, UUID matchedRuleId,
+			String matchedRuleName, UUID jitRequestId, UUID breakglassActivationId, Long policyEpoch,
+			Instant grantExpiry, Instant startedAt) {
 		return new SshSession(Uuids.v7(), identity, nodeId, nodeName, principal, gatewayId, gatewayName, accessModel,
-				capabilities, matchedRuleId, jitRequestId, policyEpoch, startedAt, null, null, null, null);
+				capabilities, matchedRuleId, matchedRuleName, jitRequestId, breakglassActivationId, policyEpoch,
+				grantExpiry, startedAt, null, null, null, null, null);
 	}
 }

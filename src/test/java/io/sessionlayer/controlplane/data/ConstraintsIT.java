@@ -96,12 +96,27 @@ class ConstraintsIT extends AbstractDataIT {
 
 	@Test
 	void badCaAlgorithmRejected() {
-		expectRejected(caConfigs.save(CaConfig.create("host", "local", "ref", "rot13", "git")));
+		expectRejected(caConfigs.save(CaConfig.create("bad-algo", "host", "local", "ref", "rot13", "active", "git")));
 	}
 
 	@Test
 	void badCaBackendRejected() {
-		expectRejected(caConfigs.save(CaConfig.create("user", "sqlite", "ref", "ecdsa-p256", "git")));
+		expectRejected(
+				caConfigs.save(CaConfig.create("bad-backend", "user", "sqlite", "ref", "ecdsa-p256", "active", "git")));
+	}
+
+	@Test
+	void privateKeyMaterialInReferenceRejected() {
+		// §2.5 belt-and-suspenders: a PEM private key must not land in a reference
+		// column.
+		expectRejected(caConfigs.save(CaConfig.create("pem-ca", "session", "local",
+				"-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----", "ecdsa-p256", "incoming", "git")));
+	}
+
+	@Test
+	void agentlessNodeWithoutAddressRejected() {
+		expectRejected(nodes
+				.save(Node.create("agentless-noaddr", null, obj(), "agentless", "pending", "unknown", null, null)));
 	}
 
 	@Test
@@ -129,11 +144,37 @@ class ConstraintsIT extends AbstractDataIT {
 	void recordingRefIsOneToOne() {
 		var node = nodes.save(Node.create("node-1to1", null, obj(), "agent", "active", "healthy", null, null)).block();
 		var session = sessions.save(SshSession.create("u", node.id(), node.name(), "deploy", null, null, "standing",
-				List.of("shell"), null, null, 1L, Instant.now())).block();
+				List.of("shell"), null, null, null, null, 1L, null, Instant.now())).block();
 		recordings.save(RecordingRef.create(session.id(), "k1", "ref1", null, null, null)).block();
 		// a second recording_ref for the same session violates the UNIQUE(session_id)
 		// 1:1
 		expectRejected(recordings.save(RecordingRef.create(session.id(), "k2", "ref2", null, null, null)));
+	}
+
+	@Test
+	void recordingProvenanceIsWriteOnce() {
+		var node = nodes.save(Node.create("node-woproven", null, obj(), "agent", "active", "healthy", null, null))
+				.block();
+		var session = sessions.save(SshSession.create("u", node.id(), node.name(), "deploy", null, null, "standing",
+				List.of("shell"), null, null, null, null, 1L, null, Instant.now())).block();
+		var rec = recordings.save(RecordingRef.create(session.id(), "k1", "kms://ref1", null, null, null)).block();
+		// rewriting the object_key (recording provenance) is evidence tampering ->
+		// rejected
+		var tampered = new RecordingRef(rec.id(), rec.sessionId(), "k2-tampered", rec.encryptionKeyRef(),
+				rec.hashChainHead(), rec.wormMode(), rec.sizeBytes(), rec.version(), rec.createdAt(), rec.updatedAt());
+		expectRejected(recordings.save(tampered));
+	}
+
+	@Test
+	void sessionDeleteBlockedWhileRecordingExists() {
+		var node = nodes.save(Node.create("node-restrict", null, obj(), "agent", "active", "healthy", null, null))
+				.block();
+		var session = sessions.save(SshSession.create("u", node.id(), node.name(), "deploy", null, null, "standing",
+				List.of("shell"), null, null, null, null, 1L, null, Instant.now())).block();
+		recordings.save(RecordingRef.create(session.id(), "k1", "kms://ref1", null, null, null)).block();
+		// FK is ON DELETE RESTRICT: a session prune cannot cascade-erase recording
+		// provenance
+		expectRejected(sessions.deleteById(session.id()));
 	}
 
 	@Test

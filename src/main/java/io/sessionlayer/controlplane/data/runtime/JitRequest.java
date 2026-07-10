@@ -22,16 +22,16 @@ import tools.jackson.databind.JsonNode;
 @Table(schema = "runtime", name = "jit_request")
 public record JitRequest(@Id UUID id, String requester, UUID targetNodeId, String targetNodeName,
 		JsonNode targetSelector, String principal, List<String> capabilities, String reason, String state,
-		UUID jitPolicyId, JsonNode approvalChain, JsonNode approvals, Instant approvalDeadline, Instant grantExpiresAt,
-		Instant requestedAt, Instant decidedAt, @Version Long version, @CreatedDate Instant createdAt,
-		@LastModifiedDate Instant updatedAt) {
+		UUID jitPolicyId, String jitPolicyName, JsonNode approvalChain, JsonNode approvals, Instant approvalDeadline,
+		Instant grantExpiresAt, Instant requestedAt, Instant decidedAt, @Version Long version,
+		@CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
 
 	public static JitRequest create(String requester, UUID targetNodeId, String targetNodeName, JsonNode targetSelector,
 			String principal, List<String> capabilities, String reason, String state, UUID jitPolicyId,
-			JsonNode approvalChain, JsonNode approvals, Instant approvalDeadline, Instant grantExpiresAt,
-			Instant requestedAt) {
+			String jitPolicyName, JsonNode approvalChain, JsonNode approvals, Instant approvalDeadline,
+			Instant grantExpiresAt, Instant requestedAt) {
 		return new JitRequest(Uuids.v7(), requester, targetNodeId, targetNodeName, targetSelector, principal,
-				capabilities, reason, state, jitPolicyId, approvalChain, approvals, approvalDeadline, grantExpiresAt,
-				requestedAt, null, null, null, null);
+				capabilities, reason, state, jitPolicyId, jitPolicyName, approvalChain, approvals, approvalDeadline,
+				grantExpiresAt, requestedAt, null, null, null, null);
 	}
 }

@@ -8,6 +8,10 @@ import io.sessionlayer.controlplane.data.runtime.GatewayIdentity;
 import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
+import io.sessionlayer.controlplane.data.runtime.Presence;
+import io.sessionlayer.controlplane.data.runtime.PresenceRepository;
+import java.time.Instant;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -16,14 +20,15 @@ import reactor.test.StepVerifier;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Generation-counter semantics (Design §8.2). Two guards are proven:
+ * Monotonic-counter semantics (Design §8.2, §10.3). Three guards are proven:
  * <ol>
  * <li>the {@code @Version} optimistic lock makes a stale concurrent renewal
  * fail ({@link OptimisticLockingFailureException}) instead of silently
  * racing;</li>
  * <li>a DB {@code BEFORE UPDATE} trigger rejects any update that
  * <b>decreases</b> the generation counter
- * ({@link DataIntegrityViolationException}).</li>
+ * ({@link DataIntegrityViolationException});</li>
+ * <li>the same DB defense protects the presence ownership nonce (FR-HA-2).</li>
  * </ol>
  */
 class GenerationCounterIT extends AbstractDataIT {
@@ -36,6 +41,9 @@ class GenerationCounterIT extends AbstractDataIT {
 
 	@Autowired
 	private GatewayIdentityRepository gatewayIdentities;
+
+	@Autowired
+	private PresenceRepository presences;
 
 	@Autowired
 	private ObjectMapper objectMapper;
@@ -96,5 +104,27 @@ class GenerationCounterIT extends AbstractDataIT {
 				saved.joinMethod(), saved.status(), saved.issuedAt(), saved.notAfter(), saved.version(),
 				saved.createdAt(), saved.updatedAt());
 		StepVerifier.create(gatewayIdentities.save(decreased)).verifyError(DataIntegrityViolationException.class);
+	}
+
+	@Test
+	void presenceNonceIsMonotonic() {
+		// The ownership nonce is the anti-stale-ownership fencing token (§10.3,
+		// FR-HA-2);
+		// a write that lowers it (a stale Gateway re-claiming a node) is a split-brain
+		// hazard and is rejected by the DB, mirroring the generation-counter guard.
+		var node = nodes.save(
+				Node.create("node-nonce", null, objectMapper.readTree("{}"), "agent", "active", "healthy", null, null))
+				.block();
+		var p = presences
+				.save(Presence.create(node.id(), "gw-1", "10.0.0.1:7000", 5L, UUID.randomUUID(), Instant.now()))
+				.block();
+
+		var advanced = presences.save(new Presence(p.nodeId(), "gw-2", "10.0.0.2:7000", 6L, UUID.randomUUID(),
+				Instant.now(), p.version(), p.updatedAt())).block();
+		assertThat(advanced.nonce()).isEqualTo(6L);
+
+		var regressed = new Presence(advanced.nodeId(), "gw-1", "10.0.0.1:7000", 4L, UUID.randomUUID(), Instant.now(),
+				advanced.version(), advanced.updatedAt());
+		StepVerifier.create(presences.save(regressed)).verifyError(DataIntegrityViolationException.class);
 	}
 }
