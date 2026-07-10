@@ -1,0 +1,16 @@
+# Redocly CLI configuration for linting the OpenAPI 3.1 contract.
+# Redocly is the chosen OpenAPI linter (native 3.1 support). Run from the
+# `contracts/` directory: `redocly lint openapi/openapi.yaml`.
+extends:
+  - recommended
+rules:
+  # The meta probes are public; a `security: []` override plus the global
+  # `security` block satisfy security-defined. Keep it on.
+  security-defined: error
+  # Require operationId, summaries, and a 4xx/default error response everywhere.
+  operation-operationId: error
+  operation-summary: error
+  operation-4xx-response: error
+  # Discourage undocumented server URLs and unused components.
+  no-server-example.com: off # example.* placeholders are intentional in the scaffold
+  no-unused-components: warn

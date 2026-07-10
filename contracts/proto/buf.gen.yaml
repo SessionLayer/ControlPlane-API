@@ -1,0 +1,26 @@
+# Canonical codegen configuration for the CP<->Gateway gRPC contract.
+#
+# This file DOCUMENTS the canonical plugin set. It is reference/optional: each
+# consumer repo generates its own bindings from the SAME .proto sources using
+# its native build tooling, so no generated code is checked in here and CI does
+# NOT depend on buf.build remote plugins.
+#
+#   * ControlPlane-API (Java): protobuf-maven-plugin + protoc-gen-grpc-java
+#     (reactive server stub) — generation happens in the Maven build.
+#   * Gateway / Agent (Rust): tonic-build / prost-build in build.rs — generation
+#     happens in `cargo build`.
+#
+# To regenerate the reference bindings manually: `buf generate` (needs network
+# access to buf.build for the remote plugins below).
+version: v2
+plugins:
+  # --- Rust (prost + tonic), consumed conceptually by Gateway and Agent ---
+  - remote: buf.build/community/neoeinstein-prost:v0.4.0
+    out: gen/rust
+  - remote: buf.build/community/neoeinstein-tonic:v0.4.1
+    out: gen/rust
+  # --- Java (protobuf + grpc), consumed conceptually by the Control Plane ---
+  - remote: buf.build/protocolbuffers/java:v27.2
+    out: gen/java
+  - remote: buf.build/grpc/java:v1.68.1
+    out: gen/java
