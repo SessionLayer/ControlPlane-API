@@ -47,18 +47,5 @@ jobs:
       # protoc (4.34.2) + protoc-gen-grpc-java (1.80.0) from Maven Central during the
       # build — more reproducible than a system protoc, and buf lint has its own parser.
 
-      - name: Cache OWASP dependency-check NVD data
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .dependency-check-data
-          # Immutable per-run key + prefix restore keeps the NVD cache fresh across runs.
-          key: owasp-dc-${{ github.run_id }}
-          restore-keys: |
-            owasp-dc-
-
       - name: Run gate
-        env:
-          # Present as a repo secret => authenticated, faster, more reliable NVD
-          # updates. Absent => gate.sh falls back to unauthenticated (rate-limited) NVD.
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: ./scripts/gate.sh

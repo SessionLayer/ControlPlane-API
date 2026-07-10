@@ -1,9 +1,6 @@
 # Maven build output
 target/
 
-# OWASP dependency-check local NVD data cache (regenerated / CI-cached)
-.dependency-check-data/
-
 # Compiled class file
 *.class
 
