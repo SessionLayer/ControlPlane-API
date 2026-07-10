@@ -17,12 +17,15 @@ import org.springframework.data.relational.core.mapping.Table;
  */
 @Table(schema = "runtime", name = "recording_ref")
 public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String encryptionKeyRef, String hashChainHead,
-		String wormMode, Long sizeBytes, @Version Long version, @CreatedDate Instant createdAt,
+		String wormMode, Long sizeBytes, Instant retentionUntil, boolean legalHold, String status, String format,
+		String contentDigest, @Version Long version, @CreatedDate Instant createdAt,
 		@LastModifiedDate Instant updatedAt) {
 
 	public static RecordingRef create(UUID sessionId, String objectKey, String encryptionKeyRef, String hashChainHead,
 			String wormMode, Long sizeBytes) {
+		// Retention (FR-AUD-6) + lifecycle (NFR-6) fields default sensibly; a later
+		// session sets retentionUntil/legalHold/contentDigest and finalizes status.
 		return new RecordingRef(Uuids.v7(), sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
-				null, null, null);
+				null, false, "recording", "asciicast-v2", null, null, null, null);
 	}
 }

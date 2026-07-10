@@ -161,7 +161,8 @@ class ConstraintsIT extends AbstractDataIT {
 		// rewriting the object_key (recording provenance) is evidence tampering ->
 		// rejected
 		var tampered = new RecordingRef(rec.id(), rec.sessionId(), "k2-tampered", rec.encryptionKeyRef(),
-				rec.hashChainHead(), rec.wormMode(), rec.sizeBytes(), rec.version(), rec.createdAt(), rec.updatedAt());
+				rec.hashChainHead(), rec.wormMode(), rec.sizeBytes(), rec.retentionUntil(), rec.legalHold(),
+				rec.status(), rec.format(), rec.contentDigest(), rec.version(), rec.createdAt(), rec.updatedAt());
 		expectRejected(recordings.save(tampered));
 	}
 

@@ -18,12 +18,15 @@ import tools.jackson.databind.JsonNode;
  */
 @Table(schema = "runtime", name = "node")
 public record Node(@Id UUID id, String name, String nodePolicyName, JsonNode resolvedLabels, String connectorKind,
-		String status, String health, String owningGateway, String address, @Version Long version,
-		@CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
+		String status, String health, String owningGateway, String address, String statusReason, String statusChangedBy,
+		Instant statusChangedAt, @Version Long version, @CreatedDate Instant createdAt,
+		@LastModifiedDate Instant updatedAt) {
 
 	public static Node create(String name, String nodePolicyName, JsonNode resolvedLabels, String connectorKind,
 			String status, String health, String owningGateway, String address) {
+		// status-transition reason/actor (F-DM-15) default null; set on
+		// quarantine/remove.
 		return new Node(Uuids.v7(), name, nodePolicyName, resolvedLabels, connectorKind, status, health, owningGateway,
-				address, null, null, null);
+				address, null, null, null, null, null, null);
 	}
 }
