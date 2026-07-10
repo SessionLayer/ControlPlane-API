@@ -60,6 +60,15 @@ public record CertificateParameters(long serial, CertType type, String keyId, Li
 		if (validBefore.isBefore(validAfter)) {
 			throw new IllegalArgumentException("validBefore must not precede validAfter");
 		}
+		principals = (principals == null) ? List.of() : List.copyOf(principals);
+		// A zero-length "valid principals" field makes a USER cert valid for ANY login
+		// (PROTOCOL.certkeys). Refuse it at the chokepoint every backend funnels
+		// through
+		// (F-caprofile-1; matches Vault's allow_empty_principals=false default).
+		if (type == CertType.USER && principals.stream().allMatch(p -> p == null || p.isBlank())) {
+			throw new IllegalArgumentException("a USER certificate must have at least one non-blank principal "
+					+ "(an empty principals list is valid for every login)");
+		}
 		criticalOptions = sortedMap(criticalOptions);
 		extensions = sortedSet(extensions);
 	}

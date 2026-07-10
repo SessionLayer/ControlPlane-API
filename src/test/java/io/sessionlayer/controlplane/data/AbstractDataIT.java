@@ -1,6 +1,9 @@
 package io.sessionlayer.controlplane.data;
 
+import io.r2dbc.spi.ConnectionFactories;
+import io.r2dbc.spi.ConnectionFactoryOptions;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -23,6 +26,22 @@ abstract class AbstractDataIT {
 
 	static {
 		POSTGRES.start();
+	}
+
+	/**
+	 * A DatabaseClient connecting as the OWNER/superuser — for maintenance
+	 * operations that the restricted runtime role is (correctly) not allowed to
+	 * perform: the append-only trigger proof, partition prune (audit erase is
+	 * owner-only), and crown-jewel cleanup.
+	 */
+	static DatabaseClient ownerClient() {
+		return DatabaseClient.create(ConnectionFactories.get(ConnectionFactoryOptions.builder()
+				.option(ConnectionFactoryOptions.DRIVER, "postgresql")
+				.option(ConnectionFactoryOptions.HOST, POSTGRES.getHost())
+				.option(ConnectionFactoryOptions.PORT, POSTGRES.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT))
+				.option(ConnectionFactoryOptions.DATABASE, POSTGRES.getDatabaseName())
+				.option(ConnectionFactoryOptions.USER, POSTGRES.getUsername())
+				.option(ConnectionFactoryOptions.PASSWORD, POSTGRES.getPassword()).build()));
 	}
 
 	/**
@@ -52,5 +71,10 @@ abstract class AbstractDataIT {
 		// without
 		// colliding with the seeded active-per-kind CAs.
 		registry.add("sessionlayer.coldstart.enabled", () -> "false");
+		// The dev-default KEK is fine for tests (fail-closed opt-in); partition
+		// create-ahead
+		// is proven in AuditPartitioningIT, so keep this fast suite lean.
+		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
+		registry.add("sessionlayer.audit.partition-maintenance.enabled", () -> "false");
 	}
 }

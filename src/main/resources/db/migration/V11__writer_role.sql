@@ -66,12 +66,23 @@ $lock$;
 -- 5. Sequences (belt-and-suspenders; identity columns need no explicit grant).
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA config, runtime TO cp_runtime;
 
--- 6. Functions the app invokes (validators, partition management, prune helpers).
-GRANT EXECUTE ON FUNCTION runtime.is_ip_or_cidr(text) TO cp_runtime;
+-- 6. Function EXECUTE. Postgres grants EXECUTE to PUBLIC by default, which would make
+--    the restricted role able to call EVERY function — including the SECURITY DEFINER
+--    audit_prune_before, which DROPs audit partitions (a DDL erase the append-only
+--    trigger cannot stop). So REVOKE from PUBLIC first, then grant ONLY the safe
+--    functions the runtime role needs (F-audit-prune-role-1 / F-func-public-exec-1).
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA runtime FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA config FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION runtime.is_ip_or_cidr(text) TO cp_runtime;          -- CHECK-constraint validator
+GRANT EXECUTE ON FUNCTION runtime.recording_prunable(timestamptz) TO cp_runtime; -- read-only helper
+-- Create-ahead is INSERT-adjacent (bounded, low-risk) so the app may pre-create partitions:
 GRANT EXECUTE ON FUNCTION runtime.audit_ensure_partition(date) TO cp_runtime;
 GRANT EXECUTE ON FUNCTION runtime.audit_ensure_partitions(date, integer) TO cp_runtime;
-GRANT EXECUTE ON FUNCTION runtime.audit_prune_before(timestamptz) TO cp_runtime;
-GRANT EXECUTE ON FUNCTION runtime.recording_prunable(timestamptz) TO cp_runtime;
+-- audit_prune_before is DELIBERATELY NOT granted to cp_runtime: retention (partition
+-- DROP) is an owner/maintenance operation, so a compromised app credential cannot erase
+-- audit months. Future functions default to no PUBLIC execute:
+ALTER DEFAULT PRIVILEGES IN SCHEMA runtime REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA config REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 -- 7. Future owner-created tables auto-grant CRUD to cp_runtime (so later sessions need
 --    no re-grant). New audit partitions are corrected to INSERT/SELECT by

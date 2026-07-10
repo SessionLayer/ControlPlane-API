@@ -48,6 +48,7 @@ class CaLifecycleIT {
 		registry.add("spring.flyway.user", POSTGRES::getUsername);
 		registry.add("spring.flyway.password", POSTGRES::getPassword);
 		registry.add("spring.flyway.placeholders.cpRuntimePassword", () -> "cp_runtime");
+		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
 	}
 
 	@Autowired
@@ -71,7 +72,10 @@ class CaLifecycleIT {
 	void activeSignerFailsClosedWithNoCa() {
 		// Clean slate (this class's own container): no active session CA -> fail
 		// closed.
-		caKeyMaterials.deleteAll().then(caConfigs.deleteAll()).block(Duration.ofSeconds(10));
+		// ca_key_material is INSERT/SELECT-only for the runtime role, so clean up as
+		// owner.
+		OwnerDb.of(POSTGRES).sql("DELETE FROM runtime.ca_key_material").then()
+				.then(OwnerDb.of(POSTGRES).sql("DELETE FROM config.ca_config").then()).block(Duration.ofSeconds(10));
 		StepVerifier.create(signerService.activeSigner("session")).verifyError(CaSignerService.NoSignerAvailable.class);
 	}
 

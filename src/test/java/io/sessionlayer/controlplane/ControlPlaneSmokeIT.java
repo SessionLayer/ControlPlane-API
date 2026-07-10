@@ -55,6 +55,7 @@ class ControlPlaneSmokeIT {
 		registry.add("spring.flyway.user", POSTGRES::getUsername);
 		registry.add("spring.flyway.password", POSTGRES::getPassword);
 		registry.add("spring.flyway.placeholders.cpRuntimePassword", () -> "cp_runtime");
+		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
 	}
 
 	private WebTestClient webTestClient;

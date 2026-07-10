@@ -26,14 +26,17 @@ public class CaConfiguration {
 	private static final Logger LOG = LoggerFactory.getLogger(CaConfiguration.class);
 
 	/**
-	 * The local-CA KEK (FR-CA-8). Sourced from configuration/env; a dev default is
-	 * used (with a loud warning) when unset. Production MUST override
-	 * {@code sessionlayer.ca.local.kek-base64}.
+	 * The local-CA KEK (FR-CA-8). Sourced from configuration/env. Production MUST
+	 * set {@code sessionlayer.ca.local.kek-base64}; if it is unset the built-in DEV
+	 * default is used, which {@link KekProvider} refuses to start with unless
+	 * {@code sessionlayer.ca.local.allow-dev-kek=true} (dev/test only — fail
+	 * closed).
 	 */
 	@Bean
 	public KekProvider kekProvider(@Value("${sessionlayer.ca.local.kek-base64:}") String kekBase64,
-			@Value("${sessionlayer.ca.local.kek-reference:env:SESSIONLAYER_CP_KEK}") String kekReference) {
-		return new KekProvider(kekBase64, kekReference);
+			@Value("${sessionlayer.ca.local.kek-reference:}") String kekReference,
+			@Value("${sessionlayer.ca.local.allow-dev-kek:false}") boolean allowDevKek) {
+		return new KekProvider(kekBase64, kekReference, allowDevKek);
 	}
 
 	@Bean
@@ -58,12 +61,24 @@ public class CaConfiguration {
 	 * the CAs exist, and this runs on the startup thread, never the reactive event
 	 * loop.
 	 */
+	// Ordering note (R-WR-3): this ApplicationRunner is the first code to open an
+	// R2DBC
+	// connection (as cp_runtime), and it runs after Flyway has migrated (creating
+	// the
+	// cp_runtime role in V11) — Flyway completes during context refresh, before any
+	// runner and before the server accepts traffic, and the R2DBC pool opens no
+	// eager
+	// connections. Any future eager @PostConstruct R2DBC work must respect this
+	// invariant.
 	@Bean
 	@ConditionalOnProperty(value = "sessionlayer.coldstart.enabled", havingValue = "true", matchIfMissing = true)
-	public ApplicationRunner caColdStartRunner(CaProvisioningService provisioningService) {
+	public ApplicationRunner caColdStartRunner(CaProvisioningService provisioningService,
+			@Value("${sessionlayer.coldstart.timeout-seconds:60}") long timeoutSeconds) {
 		return args -> {
 			LOG.info("cold start: ensuring operator settings + the three CAs (FR-BOOT-1)");
-			provisioningService.provisionAll().block();
+			// Bounded block (R-COLD-1): a stuck provisioner CRASHES the boot (which the
+			// orchestrator heals) rather than hanging the pod NotReady forever.
+			provisioningService.provisionAll().block(java.time.Duration.ofSeconds(timeoutSeconds));
 			LOG.info("cold start: CA provisioning complete");
 		};
 	}

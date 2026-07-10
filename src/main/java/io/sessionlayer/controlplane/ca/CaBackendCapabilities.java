@@ -32,8 +32,15 @@ public final class CaBackendCapabilities {
 	/** The algorithms a backend can produce. */
 	public static SignerCapabilities forBackend(String backend) {
 		return switch (backend) {
-			case "local", "aws_kms", "azure_keyvault", "vault" ->
+			// Local derives the digest from the curve, so it supports all three ECDSA
+			// curves. The cloud backends (KMS/KeyVault/Vault) currently hash with SHA-256
+			// only, so they advertise P-256 alone (D6) — the capability must not promise an
+			// algorithm the backend cannot actually sign (F-cacloud-1). Widen these when
+			// the
+			// cloud backends derive the digest/algorithm from the curve.
+			case "local" ->
 				SignerCapabilities.of(CaKeyType.ECDSA_NISTP256, CaKeyType.ECDSA_NISTP384, CaKeyType.ECDSA_NISTP521);
+			case "aws_kms", "azure_keyvault", "vault" -> SignerCapabilities.of(CaKeyType.ECDSA_NISTP256);
 			default -> throw new IllegalArgumentException("unknown CA backend: " + backend);
 		};
 	}

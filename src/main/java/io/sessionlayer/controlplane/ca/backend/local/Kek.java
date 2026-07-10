@@ -44,14 +44,21 @@ public final class Kek {
 	public record Wrapped(byte[] iv, byte[] ciphertext) {
 	}
 
-	/** Envelope-encrypt {@code plaintext} under this KEK (fresh random IV). */
-	public Wrapped wrap(byte[] plaintext) {
+	/**
+	 * Envelope-encrypt {@code plaintext} under this KEK (fresh random IV).
+	 * {@code aad} (the associated data — e.g. the CA config id + key type + KEK
+	 * reference) is authenticated but not encrypted, binding the ciphertext to its
+	 * row so a DB-write attacker cannot lift a valid blob into a different CA's row
+	 * (cross-CA substitution). {@code unwrap} MUST pass the identical {@code aad}.
+	 */
+	public Wrapped wrap(byte[] plaintext, byte[] aad) {
 		try {
 			byte[] iv = new byte[IV_BYTES];
 			RANDOM.nextBytes(iv);
 			Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
 			cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(keyBytes, "AES"),
 					new GCMParameterSpec(GCM_TAG_BITS, iv));
+			cipher.updateAAD(aad);
 			return new Wrapped(iv, cipher.doFinal(plaintext));
 		} catch (Exception e) {
 			throw new IllegalStateException("KEK wrap failed", e);
@@ -59,17 +66,20 @@ public final class Kek {
 	}
 
 	/**
-	 * Decrypt a wrapped blob. The caller MUST zeroize the returned plaintext after
-	 * use.
+	 * Decrypt a wrapped blob, authenticating {@code aad}. Fails closed (throws) on
+	 * any KEK / ciphertext / <b>context</b> mismatch. The caller MUST zeroize the
+	 * returned plaintext after use.
 	 */
-	public byte[] unwrap(byte[] iv, byte[] ciphertext) {
+	public byte[] unwrap(byte[] iv, byte[] ciphertext, byte[] aad) {
 		try {
 			Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
 			cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(keyBytes, "AES"),
 					new GCMParameterSpec(GCM_TAG_BITS, iv));
+			cipher.updateAAD(aad);
 			return cipher.doFinal(ciphertext);
 		} catch (Exception e) {
-			throw new IllegalStateException("KEK unwrap failed (wrong KEK or tampered ciphertext)", e);
+			throw new IllegalStateException("KEK unwrap failed (wrong KEK, tampered ciphertext, or wrong CA context)",
+					e);
 		}
 	}
 

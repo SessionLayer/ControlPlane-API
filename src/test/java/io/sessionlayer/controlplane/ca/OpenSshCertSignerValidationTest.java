@@ -51,13 +51,14 @@ class OpenSshCertSignerValidationTest {
 	}
 
 	private Signer newLocalSigner() {
-		KekProvider kekProvider = new KekProvider(KekProvider.DEV_DEFAULT_KEK_BASE64, "test");
+		KekProvider kekProvider = new KekProvider(KekProvider.DEV_DEFAULT_KEK_BASE64, "test", true);
+		byte[] aad = "test-ca|ecdsa-sha2-nistp256|test".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 		Kek kek = kekProvider.newKek();
 		try {
 			LocalCaKeyStore store = new LocalCaKeyStore();
-			var generated = store.generate(CaKeyType.ECDSA_NISTP256, kek);
+			var generated = store.generate(CaKeyType.ECDSA_NISTP256, kek, aad);
 			LocalCaBackend backend = store.load(CaKeyType.ECDSA_NISTP256, kek, generated.wrapped(),
-					generated.publicKeyX509());
+					generated.publicKeyX509(), aad);
 			return new Signer(new RawSignerCertSigner(backend, assembler), backend);
 		} finally {
 			kek.destroy();

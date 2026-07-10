@@ -114,7 +114,7 @@ public final class EcdsaSignatures {
 			expectTag(0x30);
 			int len = readLength();
 			int start = pos;
-			if (start + len > end) {
+			if (len > end - start) { // overflow-safe: end-start is a non-negative int
 				throw new IllegalArgumentException("DER sequence length overruns buffer");
 			}
 			pos += len;
@@ -124,7 +124,7 @@ public final class EcdsaSignatures {
 		BigInteger readInteger() {
 			expectTag(0x02);
 			int len = readLength();
-			if (len <= 0 || pos + len > end) {
+			if (len <= 0 || len > end - pos) { // overflow-safe
 				throw new IllegalArgumentException("DER integer length invalid");
 			}
 			byte[] content = new byte[len];

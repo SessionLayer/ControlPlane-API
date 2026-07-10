@@ -44,6 +44,7 @@ class ColdStartIT {
 		registry.add("spring.flyway.user", POSTGRES::getUsername);
 		registry.add("spring.flyway.password", POSTGRES::getPassword);
 		registry.add("spring.flyway.placeholders.cpRuntimePassword", () -> "cp_runtime");
+		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
 		// cold start left at its default (enabled) — this IT proves it.
 	}
 
@@ -89,7 +90,10 @@ class ColdStartIT {
 	void concurrentProvisioningIsRaceSafe() {
 		// Clean slate, then two concurrent provisions must still yield exactly one CA
 		// set.
-		caKeyMaterials.deleteAll().then(caConfigs.deleteAll()).block();
+		// ca_key_material is INSERT/SELECT-only for the runtime role, so clean up as
+		// owner.
+		OwnerDb.of(POSTGRES).sql("DELETE FROM runtime.ca_key_material").then()
+				.then(OwnerDb.of(POSTGRES).sql("DELETE FROM config.ca_config").then()).block();
 		assertThat(activeCount()).isZero();
 
 		Flux.merge(provisioning.provisionAll(), provisioning.provisionAll()).blockLast(Duration.ofSeconds(30));

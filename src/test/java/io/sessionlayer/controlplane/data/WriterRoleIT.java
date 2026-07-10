@@ -80,6 +80,26 @@ class WriterRoleIT extends AbstractDataIT {
 	}
 
 	@Test
+	void cannotDropAuditPartitionsViaThePruneFunction() {
+		// The SECURITY DEFINER prune fn would DROP audit partitions (a DDL erase the
+		// append-only trigger can't stop); the runtime role must not be able to call it
+		// (F-audit-prune-role-1 / F-func-public-exec-1).
+		StepVerifier.create(db.sql("SELECT runtime.audit_prune_before(now())").then()).verifyError();
+		// create-ahead (non-destructive) IS allowed.
+		Long ok = db.sql("SELECT 1 WHERE runtime.audit_ensure_partition(date_trunc('month', now())::date) IS NOT NULL")
+				.map(row -> row.get(0, Long.class)).one().block();
+		assertThat(ok).isEqualTo(1L);
+	}
+
+	@Test
+	void cannotDeleteOrUpdateCaKeyMaterial() {
+		// Crown-jewel CA key material is INSERT/SELECT only for the runtime role
+		// (F-ca-key-material-1).
+		StepVerifier.create(db.sql("DELETE FROM runtime.ca_key_material").then()).verifyError();
+		StepVerifier.create(db.sql("UPDATE runtime.ca_key_material SET updated_at = now()").then()).verifyError();
+	}
+
+	@Test
 	void canInsertAuditAndDoNormalCrud() {
 		var e = audits.save(AuditEvent.create(Instant.now(), "writer-role-ok", null, "login", "success", null, null,
 				null, null, null, null, null, null)).block();

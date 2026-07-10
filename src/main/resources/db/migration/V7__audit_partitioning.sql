@@ -116,6 +116,11 @@ CREATE OR REPLACE FUNCTION runtime.audit_ensure_partitions(from_month date, num_
 DECLARE
     i integer;
 BEGIN
+    -- Bound the loop so a caller cannot spam-create millions of partition tables
+    -- (catalog-bloat DoS). 60 months is ample create-ahead headroom.
+    IF num_months < 0 OR num_months > 60 THEN
+        RAISE EXCEPTION 'audit_ensure_partitions: num_months must be between 0 and 60, got %', num_months;
+    END IF;
     FOR i IN 0 .. GREATEST(num_months - 1, 0) LOOP
         PERFORM runtime.audit_ensure_partition((date_trunc('month', from_month) + (i || ' months')::interval)::date);
     END LOOP;

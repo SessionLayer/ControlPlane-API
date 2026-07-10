@@ -42,22 +42,32 @@ public class LocalCaFactory {
 	 * Generate a new local ECDSA P-256 CA of the given kind/name/rotation state.
 	 */
 	public Provisioned create(String kind, String name, String rotationState) {
-		warnOnce(kind);
+		warn(kind);
 		CaKeyType keyType = CaKeyType.ECDSA_NISTP256;
+		UUID configId = Uuids.v7();
+		byte[] aad = aad(configId, keyType.keyTypeName(), kekProvider.reference());
 		Kek kek = kekProvider.newKek();
 		LocalCaKeyStore.GeneratedKey generated;
 		try {
-			generated = keyStore.generate(keyType, kek);
+			generated = keyStore.generate(keyType, kek, aad);
 		} finally {
 			kek.destroy();
 		}
-		UUID configId = Uuids.v7();
 		CaConfig config = new CaConfig(configId, name, kind, "local", "local:" + configId, keyType.algorithmId(),
 				rotationState, "default", null, null, null);
 		CaKeyMaterial material = CaKeyMaterial.create(configId, name, kekProvider.reference(),
 				generated.wrapped().ciphertext(), generated.wrapped().iv(), generated.publicKeyX509(),
 				keyType.keyTypeName());
 		return new Provisioned(config, material);
+	}
+
+	/**
+	 * The AAD binding a wrapped CA key to its row: {@code caConfigId | keyType |
+	 * kekReference}. Identical on wrap (generate) and unwrap (load), so a wrapped
+	 * blob cannot be lifted into a different CA's row (cross-CA substitution).
+	 */
+	private static byte[] aad(UUID caConfigId, String keyTypeName, String kekReference) {
+		return (caConfigId + "|" + keyTypeName + "|" + kekReference).getBytes(java.nio.charset.StandardCharsets.UTF_8);
 	}
 
 	/**
@@ -79,21 +89,26 @@ public class LocalCaFactory {
 
 	/** Load a persisted local CA into a signer (unwraps the key transiently). */
 	public SshCertSigner load(CaConfig config, CaKeyMaterial material) {
+		warn(config.caKind());
 		CaKeyType keyType = CaKeyType.fromAlgorithmId(config.algorithm());
+		byte[] aad = aad(material.caConfigId(), material.keyType(), material.kekReference());
 		Kek kek = kekProvider.newKek();
 		try {
 			LocalCaBackend backend = keyStore.load(keyType, kek, new Kek.Wrapped(material.iv(), material.wrappedKey()),
-					material.publicKey());
+					material.publicKey(), aad);
 			return new RawSignerCertSigner(backend, assembler);
 		} finally {
 			kek.destroy();
 		}
 	}
 
-	private void warnOnce(String kind) {
+	// Warn on both generation and load (a restart only ever loads, so a
+	// generation-only
+	// warning would go silent after first boot).
+	private void warn(String kind) {
 		if (kekProvider.isDevDefault()) {
-			LOG.warn("SECURITY: the local CA KEK is the built-in DEV default — set a real KEK "
-					+ "(sessionlayer.ca.local.kek-base64 / env) before production.");
+			LOG.warn("SECURITY: the local CA KEK is the built-in DEV default (public constant) — set a real KEK "
+					+ "(sessionlayer.ca.local.kek-base64 / env). This is dev/test ONLY.");
 		}
 		LOG.warn("local CA backend in use for the {} CA; production SHOULD use KMS/KeyVault/Vault so the CA "
 				+ "private key is never in-process (FR-CA-8, Design §14).", kind);

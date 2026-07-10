@@ -44,6 +44,9 @@ public final class SshWriter {
 	}
 
 	public SshWriter writeUint32(long value) {
+		if (value < 0 || value > 0xFFFFFFFFL) {
+			throw new IllegalArgumentException("uint32 out of range: " + value);
+		}
 		out.write((int) ((value >>> 24) & 0xFF));
 		out.write((int) ((value >>> 16) & 0xFF));
 		out.write((int) ((value >>> 8) & 0xFF));

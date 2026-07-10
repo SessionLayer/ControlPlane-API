@@ -57,13 +57,35 @@ public class CaProvisioningService {
 
 	/** Provision (or no-op) the operator settings + the three CAs, race-safely. */
 	public Mono<Void> provisionAll() {
+		// Double-checked (R-COLD-2): a cheap lock-free probe first, so steady-state
+		// restarts never contend on the advisory lock. Only take the lock + re-check
+		// when provisioning is actually needed.
+		return alreadyProvisioned().flatMap(done -> done ? Mono.<Void>empty() : provisionUnderLock());
+	}
+
+	private Mono<Boolean> alreadyProvisioned() {
+		return operatorSettings.findSingleton().hasElement()
+				.flatMap(
+						hasSettings -> hasSettings
+								? Flux.fromIterable(CA_KINDS)
+										.concatMap(kind -> caConfigs.findByCaKindAndRotationState(kind, "active")
+												.hasElement())
+										.all(present -> present)
+								: Mono.just(false));
+	}
+
+	private Mono<Void> provisionUnderLock() {
 		Mono<Void> body = acquireLock().then(ensureSettings()).flatMap(settings -> Flux.fromIterable(CA_KINDS)
 				.concatMap(kind -> ensureCa(kind, settings.defaultCaBackend())).then());
 		return tx.transactional(body).then();
 	}
 
 	private Mono<Long> acquireLock() {
-		return db.sql("SELECT pg_advisory_xact_lock(:k)").bind("k", COLD_START_LOCK).fetch().rowsUpdated();
+		// lock_timeout (R-COLD-1): a wedged peer makes the advisory-lock wait FAIL
+		// rather
+		// than block the boot forever (LOCAL = this transaction only).
+		return db.sql("SET LOCAL lock_timeout = '15s'").fetch().rowsUpdated()
+				.then(db.sql("SELECT pg_advisory_xact_lock(:k)").bind("k", COLD_START_LOCK).fetch().rowsUpdated());
 	}
 
 	private Mono<OperatorSettings> ensureSettings() {

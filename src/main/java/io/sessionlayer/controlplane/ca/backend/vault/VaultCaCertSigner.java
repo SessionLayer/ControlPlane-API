@@ -64,7 +64,26 @@ public final class VaultCaCertSigner implements SshCertSigner {
 				java.util.List.copyOf(params.extensions()));
 		String certLine = engine.sign(role, subjectLine, signRequest).certificateLine();
 		byte[] blob = Base64.getDecoder().decode(certLine.trim().split("\\s+")[1]);
-		return new OpenSshCertificate(keyType, blob, certLine, params.serial(), params.keyId());
+		// Vault assigns its OWN serial (it ignores the requested one), so surface the
+		// serial actually in the returned blob for correct audit correlation, not the
+		// requested value (F-cavault-1). Best-effort: fall back to the requested serial
+		// if
+		// the blob cannot be parsed.
+		long serial = serialOf(blob).orElse(params.serial());
+		return new OpenSshCertificate(keyType, blob, certLine, serial, params.keyId());
+	}
+
+	private static java.util.OptionalLong serialOf(byte[] blob) {
+		try {
+			var r = new io.sessionlayer.controlplane.ca.wire.SshReader(blob);
+			r.readString(); // cert-type
+			r.readString(); // nonce
+			r.readString(); // curve
+			r.readString(); // Q
+			return java.util.OptionalLong.of(r.readUint64()); // serial
+		} catch (RuntimeException e) {
+			return java.util.OptionalLong.empty();
+		}
 	}
 
 	@Override

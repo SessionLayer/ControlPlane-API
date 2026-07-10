@@ -27,8 +27,10 @@ import reactor.test.StepVerifier;
  * is never returned as prunable (the "legal_hold row is not pruned" assertion).
  *
  * <p>
- * Runs as the restricted {@code cp_runtime} role (AbstractDataIT), so it also
- * proves the role can EXECUTE the SECURITY DEFINER partition/prune functions.
+ * Runs as the restricted {@code cp_runtime} role (AbstractDataIT): it may
+ * EXECUTE the create-ahead {@code audit_ensure_partition}, but retention (the
+ * partition DROP in {@code audit_prune_before}) is owner-only, so prune here
+ * runs via an owner connection (F-audit-role-bypass-1).
  */
 class AuditPartitioningIT extends AbstractDataIT {
 
@@ -109,8 +111,12 @@ class AuditPartitioningIT extends AbstractDataIT {
 
 		// Prune everything whose whole range precedes the start of (now - 4 months):
 		// the -5-month partition (upper bound = month-4 start) qualifies; -0 does not.
+		// Prune runs as the OWNER — the restricted runtime role is (correctly) NOT
+		// allowed
+		// to drop audit partitions (F-audit-prune-role-1). Retention is a maintenance
+		// op.
 		Instant cutoff = YearMonth.now(ZoneOffset.UTC).minusMonths(4).atDay(1).atStartOfDay(ZoneOffset.UTC).toInstant();
-		db.sql("SELECT runtime.audit_prune_before(:c)").bind("c", cutoff).fetch().one().block();
+		ownerClient().sql("SELECT runtime.audit_prune_before(:c)").bind("c", cutoff).fetch().one().block();
 
 		assertThat(partitionCount(partitionOf(-5))).isZero(); // partition dropped
 		assertThat(audits.findById(oldRow.id()).block()).isNull(); // its row is gone

@@ -73,7 +73,13 @@ public final class SshEcdsaPublicKeys {
 		try {
 			SshReader reader = new SshReader(blob);
 			CaKeyType keyType = CaKeyType.fromKeyTypeName(reader.readStringUtf8());
-			reader.readString(); // curve identifier (implied by key type)
+			// RFC 5656 §3.1: the [identifier] curve string MUST match the key type's curve
+			// (F-SSHPUB-CURVE-1) — a mismatched label must be rejected, not ignored.
+			String curve = reader.readStringUtf8();
+			if (!keyType.curveName().equals(curve)) {
+				throw new IllegalArgumentException(
+						"curve '" + curve + "' does not match key type " + keyType.keyTypeName());
+			}
 			byte[] q = reader.readString();
 			int coordLen = keyType.coordinateBytes();
 			if (q.length != 1 + 2 * coordLen || q[0] != 0x04) {
@@ -84,10 +90,35 @@ public final class SshEcdsaPublicKeys {
 			AlgorithmParameters params = AlgorithmParameters.getInstance("EC");
 			params.init(new java.security.spec.ECGenParameterSpec(keyType.jcaCurve()));
 			ECParameterSpec spec = params.getParameterSpec(ECParameterSpec.class);
-			return (ECPublicKey) KeyFactory.getInstance("EC")
-					.generatePublic(new ECPublicKeySpec(new ECPoint(x, y), spec));
+			ECPoint point = new ECPoint(x, y);
+			// Validate the point is actually ON the named curve (JCA does not check this on
+			// import): reject point-at-infinity, out-of-range coords, and y^2 != x^3+ax+b.
+			requireOnCurve(point, spec);
+			return (ECPublicKey) KeyFactory.getInstance("EC").generatePublic(new ECPublicKeySpec(point, spec));
 		} catch (Exception e) {
 			throw new IllegalArgumentException("failed to parse SSH ECDSA public key", e);
+		}
+	}
+
+	/**
+	 * Reject a point not on the curve (defense at the presented-key trust
+	 * boundary).
+	 */
+	static void requireOnCurve(ECPoint point, ECParameterSpec spec) {
+		if (point.equals(ECPoint.POINT_INFINITY)) {
+			throw new IllegalArgumentException("EC point is the point at infinity");
+		}
+		java.security.spec.EllipticCurve curve = spec.getCurve();
+		BigInteger p = ((java.security.spec.ECFieldFp) curve.getField()).getP();
+		BigInteger x = point.getAffineX();
+		BigInteger y = point.getAffineY();
+		if (x.signum() < 0 || x.compareTo(p) >= 0 || y.signum() < 0 || y.compareTo(p) >= 0) {
+			throw new IllegalArgumentException("EC coordinate out of field range");
+		}
+		BigInteger lhs = y.modPow(BigInteger.TWO, p);
+		BigInteger rhs = x.modPow(BigInteger.valueOf(3), p).add(curve.getA().multiply(x)).add(curve.getB()).mod(p);
+		if (!lhs.equals(rhs)) {
+			throw new IllegalArgumentException("EC point is not on the curve");
 		}
 	}
 
