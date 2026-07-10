@@ -8,17 +8,14 @@
 #
 #   1. ./mvnw verify   — codegen (proto + OpenAPI) + compile + spotless:check
 #                        + checkstyle:check + unit tests + Testcontainers IT
-#                        + OWASP dependency-check (fails on CVSS >= 7)
+#                        (dependency CVE management is handled by Dependabot)
 #   2. contracts/lint.sh — buf lint + buf breaking + redocly OpenAPI lint
 #   3. audit findings    — zero OPEN medium+ (critical|high|medium) findings
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "==> [1/3] ./mvnw -B -ntp verify"
-# Forward an NVD API key to OWASP dependency-check when the environment provides
-# one (CI passes NVD_API_KEY from the repo secret). Empty is fine — the plugin
-# then uses unauthenticated (rate-limited) NVD access.
-./mvnw -B -ntp verify -DnvdApiKey="${NVD_API_KEY:-}"
+./mvnw -B -ntp verify
 
 echo "==> [2/3] contracts/lint.sh"
 ./contracts/lint.sh

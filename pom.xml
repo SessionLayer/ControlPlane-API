@@ -34,7 +34,6 @@
 		<maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
 		<checkstyle.version>10.26.1</checkstyle.version>
 		<openapi-generator.version>7.14.0</openapi-generator.version>
-		<dependency-check-maven.version>12.1.3</dependency-check-maven.version>
 
 		<!--
 		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
@@ -44,12 +43,6 @@
 		-->
 		<postgresql.version>42.7.13</postgresql.version>
 
-		<!--
-		  OWASP dependency-check NVD API key. Empty by default; CI passes the real
-		  key via -DnvdApiKey=${NVD_API_KEY} when the secret is present (an empty
-		  value simply falls back to unauthenticated, rate-limited NVD access).
-		-->
-		<nvdApiKey/>
 	</properties>
 
 	<dependencies>
@@ -320,44 +313,6 @@
 				<executions>
 					<execution>
 						<id>checkstyle-check</id>
-						<phase>verify</phase>
-						<goals>
-							<goal>check</goal>
-						</goals>
-					</execution>
-				</executions>
-			</plugin>
-
-			<!-- ============ Dependency CVE gate (OWASP dependency-check) ============ -->
-			<!--
-			  Fails the build on any dependency with CVSS >= 7 (high+). NVD data is
-			  cached under .dependency-check-data (git-ignored, cached in CI). CI
-			  passes an NVD API key when available for faster, more reliable updates.
-			-->
-			<plugin>
-				<groupId>org.owasp</groupId>
-				<artifactId>dependency-check-maven</artifactId>
-				<version>${dependency-check-maven.version}</version>
-				<configuration>
-					<failBuildOnCVSS>7</failBuildOnCVSS>
-					<nvdApiKey>${nvdApiKey}</nvdApiKey>
-					<nvdApiDelay>6000</nvdApiDelay>
-					<nvdMaxRetryCount>15</nvdMaxRetryCount>
-					<nvdValidForHours>168</nvdValidForHours>
-					<dataDirectory>${project.basedir}/.dependency-check-data</dataDirectory>
-					<suppressionFiles>
-						<suppressionFile>${project.basedir}/config/owasp/dependency-check-suppressions.xml</suppressionFile>
-					</suppressionFiles>
-					<!-- Trim analyzers irrelevant to a JVM service (reduces remote calls / flakiness). -->
-					<assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
-					<ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
-					<nodeAnalyzerEnabled>false</nodeAnalyzerEnabled>
-					<nodeAuditAnalyzerEnabled>false</nodeAuditAnalyzerEnabled>
-					<retireJsAnalyzerEnabled>false</retireJsAnalyzerEnabled>
-				</configuration>
-				<executions>
-					<execution>
-						<id>owasp-dependency-check</id>
 						<phase>verify</phase>
 						<goals>
 							<goal>check</goal>
