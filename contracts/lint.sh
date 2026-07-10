@@ -24,21 +24,30 @@ echo "==> [1/3] buf lint"
 grn "    buf lint: OK"
 
 echo "==> [2/3] buf breaking (against main baseline)"
-# On the first introduction of the module (main has no contracts/proto yet)
-# there is no baseline to compare against; treat that as a pass. Any other
-# failure is a real breaking change and fails the gate.
-breaking_err="$(mktemp)"
-trap 'rm -f "$breaking_err"' EXIT
-if ( cd proto && buf breaking --against "${here}/../.git#branch=main,subdir=contracts/proto" ) 2>"$breaking_err"; then
-  grn "    buf breaking: OK"
-else
-  if grep -qiE 'does not (exist|contain)|no( such)? .*\.proto|could not (find|resolve)|unknown revision|invalid ref' "$breaking_err"; then
-    grn "    buf breaking: no baseline module on main yet (first introduction) — skipped"
-  else
-    red "    buf breaking: FAILED"
-    cat "$breaking_err" >&2
-    exit 1
+# Compare the contracts/proto module against its state on `main`. Decide whether
+# a baseline exists by asking git DIRECTLY (robust) rather than parsing buf's
+# error text: there is nothing to diff when either
+#   (a) no `main` ref is available locally — e.g. a shallow CI checkout that did
+#       not fetch main (actions/checkout without fetch-depth: 0), or
+#   (b) `main` has no contracts/proto module yet — the first introduction.
+# In both cases skip cleanly. Once `main` HAS the module (Session Two onward) and
+# CI fetches it (fetch-depth: 0), the real breaking-change gate runs.
+repo_root="$(git -C "$here" rev-parse --show-toplevel)"
+base_ref=""
+for r in origin/main main; do
+  if git -C "$here" rev-parse --verify --quiet "${r}^{commit}" >/dev/null 2>&1; then
+    base_ref="$r"
+    break
   fi
+done
+if [ -z "$base_ref" ]; then
+  grn "    buf breaking: no 'main' ref available locally (shallow checkout) — skipped"
+elif ! git -C "$here" cat-file -e "${base_ref}:contracts/proto/buf.yaml" 2>/dev/null; then
+  grn "    buf breaking: 'main' has no contracts/proto baseline yet (first introduction) — skipped"
+else
+  base_sha="$(git -C "$here" rev-parse "${base_ref}")"
+  ( cd proto && buf breaking --against "${repo_root}/.git#ref=${base_sha},subdir=contracts/proto" )
+  grn "    buf breaking: OK (baseline ${base_ref} @ ${base_sha:0:12})"
 fi
 
 echo "==> [3/3] redocly lint (OpenAPI 3.1)"
