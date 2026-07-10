@@ -33,7 +33,7 @@
 		<spotless-maven-plugin.version>2.44.5</spotless-maven-plugin.version>
 		<maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
 		<checkstyle.version>10.26.1</checkstyle.version>
-		<openapi-generator.version>7.14.0</openapi-generator.version>
+		<openapi-generator.version>7.23.0</openapi-generator.version>
 
 		<!--
 		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
