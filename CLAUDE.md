@@ -81,6 +81,15 @@ This is deliberate, not a mistake:
 - Unit tests (`*Test`) run in Surefire (no Docker); the integration smoke (`*IT`)
   runs in Failsafe during `verify` (needs Docker for Testcontainers Postgres).
 
+## Comment discipline (Session Five onward)
+
+Comment **sparingly — WHY, not WHAT.** No section-divider banners, no comments that
+restate the code or a name, no obvious param docs. Prefer self-documenting names and
+small functions. Keep terse doc-comments only on genuinely public API/contract
+surfaces; a brief comment is fine for a security/spec-tied invariant (e.g. "fail
+closed", "deny wins", a WHY tied to an FR/Design §). This is a **leaner baseline than
+S1–S4** — match it; do not restore the denser earlier style.
+
 ## Formatting & static analysis
 
 - **Spotless** owns formatting; **Checkstyle** owns hygiene only (imports, braces,
