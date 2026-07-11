@@ -1,19 +1,23 @@
 package io.sessionlayer.controlplane.authz;
 
 import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.ca.CaRotationService;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.config.PolicyEpochRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
 import io.sessionlayer.controlplane.data.runtime.Node;
+import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +44,8 @@ public class ConnectAuthorizationService {
 	private static final String DECISION_ACTION = "authz.decision";
 
 	private final NodeRepository nodes;
+	private final NodeHostKeyRepository hostKeys;
+	private final CaRotationService caRotation;
 	private final DpRuleRepository dpRules;
 	private final AccessLockRepository accessLocks;
 	private final PolicyEpochRepository policyEpochs;
@@ -52,12 +58,15 @@ public class ConnectAuthorizationService {
 	private final AuthzProperties properties;
 	private final TransactionalOperator tx;
 
-	public ConnectAuthorizationService(NodeRepository nodes, DpRuleRepository dpRules, AccessLockRepository accessLocks,
+	public ConnectAuthorizationService(NodeRepository nodes, NodeHostKeyRepository hostKeys,
+			CaRotationService caRotation, DpRuleRepository dpRules, AccessLockRepository accessLocks,
 			PolicyEpochRepository policyEpochs, GatewayIdentityRepository gatewayIdentities,
 			SshSessionRepository sshSessions, PolicyEngine engine, DecisionContextSigner signer,
 			SessionSigningTokenService tokens, AuditWriter audit, AuthzProperties properties,
 			TransactionalOperator tx) {
 		this.nodes = nodes;
+		this.hostKeys = hostKeys;
+		this.caRotation = caRotation;
 		this.dpRules = dpRules;
 		this.accessLocks = accessLocks;
 		this.policyEpochs = policyEpochs;
@@ -128,7 +137,9 @@ public class ConnectAuthorizationService {
 		DecisionContext context = new DecisionContext(node.id(), node.name(), logins, capabilities, requestedPrincipal,
 				grantExpiry, epoch, properties.getDecisionTtl(), callerGatewayId, sessionId, sourceIp, now);
 
-		return signer.sign(context).flatMap(signed -> {
+		return Mono.zip(signer.sign(context), resolveNodeConnection(node)).flatMap(signedAndConn -> {
+			SignedDecisionContext signed = signedAndConn.getT1();
+			NodeConnectionInfo nodeConnection = signedAndConn.getT2();
 			SshSession session = new SshSession(sessionId, identity, node.id(), node.name(), requestedPrincipal,
 					callerGatewayId, gatewayName, "standing", capabilities, decision.matchedRuleId(),
 					decision.matchedRuleName(), null, null, epoch, grantExpiry, now, null, null, null, null, null);
@@ -143,8 +154,96 @@ public class ConnectAuthorizationService {
 							node.id(), detail))
 					.then(tokens.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, capabilities,
 							sourceIp));
-			return tx.transactional(mint).map(token -> ConnectDecision.allow(signed, token));
+			return tx.transactional(mint).map(token -> ConnectDecision.allow(signed, token, nodeConnection));
 		});
+	}
+
+	// The node's connectivity + host-identity answer from inventory (Design §9;
+	// FR-CONN-1/2/5). Reuses the already-loaded node and adds only the
+	// node_host_key read (plus the trusted host-CA set when a row anchors to it) —
+	// public material only, never a private key (§9.3).
+	private Mono<NodeConnectionInfo> resolveNodeConnection(Node node) {
+		NodeConnectionInfo.ConnectorModel model = NodeConnectionInfo.ConnectorModel.fromInventory(node.connectorKind());
+		String dial = dialAddress(node);
+		return hostKeys.findByNodeId(node.id()).collectList().flatMap(rows -> {
+			List<byte[]> pinned = rows.stream().filter(row -> "pinned_key".equals(row.source()))
+					.map(row -> wireBlob(row.publicKey())).filter(Objects::nonNull).toList();
+			boolean anchoredToHostCa = rows.stream().anyMatch(row -> "host_ca".equals(row.source()));
+			if (!anchoredToHostCa) {
+				return Mono.just(nodeConnection(node, model, dial, List.of(), List.of(), pinned));
+			}
+			return caRotation.trustedCaKeys("host").map(caLines -> {
+				List<byte[]> caKeys = caLines.stream().map(ConnectAuthorizationService::wireBlob)
+						.filter(Objects::nonNull).toList();
+				// A host cert's expected principals are meaningful only alongside a trusted
+				// host CA; without an active host CA there is nothing to verify a cert against.
+				List<String> principals = caKeys.isEmpty() ? List.of() : List.of(node.name());
+				return nodeConnection(node, model, dial, caKeys, principals, pinned);
+			});
+		});
+	}
+
+	private NodeConnectionInfo nodeConnection(Node node, NodeConnectionInfo.ConnectorModel model, String dial,
+			List<byte[]> caKeys, List<String> principals, List<byte[]> pinned) {
+		NodeConnectionInfo info = new NodeConnectionInfo(model, dial, caKeys, principals, pinned);
+		// FR-CONN-5/7 (§9.3): an agentless node with no host-CA anchor and no pinned
+		// key has no enrollment-anchored trust — the Gateway aborts (no TOFU). The
+		// decision still ALLOWs; warn so the operator repairs the enrollment.
+		if (model == NodeConnectionInfo.ConnectorModel.AGENTLESS && !info.hasHostVerification()) {
+			LOG.warn("agentless node {} ({}) has no host-verification material (no host_ca keys, no pinned host "
+					+ "keys); the Gateway will abort the session (no TOFU) — enroll a host cert or pin a host key",
+					node.id(), node.name());
+		}
+		return info;
+	}
+
+	// §9.2: the agentless dial address is "host:port". Inventory stores a reachable
+	// address; if it carries no explicit port, default to SSH 22 (a bare IPv6
+	// literal is bracketed first so the result is a valid host:port).
+	private static String dialAddress(Node node) {
+		String address = node.address();
+		if (address == null || address.isBlank()) {
+			return ""; // an agent node dials out and needs none (empty per the wire contract)
+		}
+		String trimmed = address.trim();
+		if (hasExplicitPort(trimmed)) {
+			return trimmed;
+		}
+		boolean bareIpv6 = !trimmed.startsWith("[") && trimmed.indexOf(':') != trimmed.lastIndexOf(':');
+		return (bareIpv6 ? "[" + trimmed + "]" : trimmed) + ":22";
+	}
+
+	private static boolean hasExplicitPort(String address) {
+		if (address.startsWith("[")) {
+			return address.indexOf("]:") >= 0; // bracketed IPv6 with an explicit :port
+		}
+		int firstColon = address.indexOf(':');
+		if (firstColon < 0 || firstColon != address.lastIndexOf(':')) {
+			return false; // no colon (host/IPv4) or many colons (unbracketed IPv6) → no port
+		}
+		String port = address.substring(firstColon + 1);
+		return !port.isEmpty() && port.chars().allMatch(Character::isDigit);
+	}
+
+	// An OpenSSH host public-key / TrustedUserCAKeys line is `<type> <base64>
+	// [comment]`;
+	// the base64 middle token IS the SSH wire encoding. A malformed line returns
+	// null
+	// and is dropped — fail-closed (dropped trust → the Gateway aborts, never
+	// TOFU).
+	private static byte[] wireBlob(String openSshLine) {
+		if (openSshLine == null) {
+			return null;
+		}
+		String[] fields = openSshLine.trim().split("\\s+");
+		if (fields.length < 2) {
+			return null;
+		}
+		try {
+			return Base64.getDecoder().decode(fields[1]);
+		} catch (IllegalArgumentException notBase64) {
+			return null;
+		}
 	}
 
 	private int effectiveGrantTtl(int grantTtlSeconds) {
