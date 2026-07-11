@@ -4,6 +4,7 @@ import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -25,6 +26,7 @@ public class BootstrapConfiguration {
 
 	@Bean
 	@Order(Ordered.LOWEST_PRECEDENCE)
+	@ConditionalOnProperty(value = "sessionlayer.bootstrap.enabled", havingValue = "true", matchIfMissing = true)
 	ApplicationRunner firstAdminBootstrapRunner(BootstrapService bootstrapService) {
 		return args -> {
 			LOG.info("first-admin bootstrap: evaluating (FR-BOOT-2)");
