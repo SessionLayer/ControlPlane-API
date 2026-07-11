@@ -16,11 +16,13 @@ import io.sessionlayer.controlplane.api.model.TokenResponse;
 import io.sessionlayer.controlplane.device.DeviceFlowService;
 import io.sessionlayer.controlplane.machine.MachineIdentityService;
 import io.sessionlayer.controlplane.machine.MachineIdentityService.IssuedCredential;
+import io.sessionlayer.controlplane.oidc.OidcProperties;
 import io.sessionlayer.controlplane.otp.OtpService;
 import io.sessionlayer.controlplane.pin.PinService;
 import io.sessionlayer.controlplane.platform.PlatformAuthorization;
 import io.sessionlayer.controlplane.platform.PlatformPermissions;
 import io.sessionlayer.controlplane.platform.PlatformSubject;
+import io.sessionlayer.controlplane.security.AuthMethod;
 import io.sessionlayer.controlplane.security.CurrentAuthentication;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
@@ -51,16 +53,18 @@ public class AuthController implements AuthApi {
 	private final DeviceFlowService deviceFlowService;
 	private final PlatformAuthorization platformAuthorization;
 	private final CurrentAuthentication currentAuthentication;
+	private final OidcProperties oidcProperties;
 
 	public AuthController(OtpService otpService, PinService pinService, MachineIdentityService machineIdentity,
 			DeviceFlowService deviceFlowService, PlatformAuthorization platformAuthorization,
-			CurrentAuthentication currentAuthentication) {
+			CurrentAuthentication currentAuthentication, OidcProperties oidcProperties) {
 		this.otpService = otpService;
 		this.pinService = pinService;
 		this.machineIdentity = machineIdentity;
 		this.deviceFlowService = deviceFlowService;
 		this.platformAuthorization = platformAuthorization;
 		this.currentAuthentication = currentAuthentication;
+		this.oidcProperties = oidcProperties;
 	}
 
 	@Override
@@ -136,14 +140,18 @@ public class AuthController implements AuthApi {
 	@Override
 	public Mono<ResponseEntity<DeviceFlowResource>> beginDeviceFlow(Mono<BeginDeviceFlowRequest> request,
 			ServerWebExchange exchange) {
-		String verificationUri = baseUrl(exchange) + "/v1/auth/verify";
-		return request.flatMap(req -> deviceFlowService.begin(req.getSourceIp(), req.getConnectionBinding()))
-				.map(begun -> {
+		String verificationUri = verificationBase() + "/v1/auth/verify";
+		// The contract gates begin on mTLS (the Gateway tied to a real SSH connection);
+		// the chain authenticates the caller, and we additionally require the mTLS
+		// scheme
+		// so a bearer principal cannot forge the SSH source context.
+		return currentAuthentication.principal().filter(p -> p.method() == AuthMethod.MTLS).flatMap(p -> request
+				.flatMap(req -> deviceFlowService.begin(req.getSourceIp(), req.getConnectionBinding())).map(begun -> {
 					DeviceFlowResource resource = new DeviceFlowResource(begun.deviceFlowId(), begun.userCode(),
 							verificationUri, begun.deviceCode(), begun.intervalSeconds(), begun.expiresInSeconds());
 					resource.setVerificationUriComplete(verificationUri + "?user_code=" + begun.userCode());
 					return ResponseEntity.status(HttpStatus.CREATED).body(resource);
-				});
+				})).switchIfEmpty(Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).build()));
 	}
 
 	@Override
@@ -215,10 +223,22 @@ public class AuthController implements AuthApi {
 		return remote == null || remote.getAddress() == null ? null : remote.getAddress().getHostAddress();
 	}
 
-	private static String baseUrl(ServerWebExchange exchange) {
-		var uri = exchange.getRequest().getURI();
-		String base = uri.getScheme() + "://" + uri.getAuthority();
-		return base;
+	/**
+	 * The CP public origin for the verification URL — derived from the configured
+	 * OIDC {@code redirect-uri} (not the request Host header, which a proxy may
+	 * forward verbatim, aiding phishing). Falls back to the redirect-uri as-is.
+	 */
+	private String verificationBase() {
+		String redirect = oidcProperties.getRedirectUri();
+		if (redirect == null || redirect.isBlank()) {
+			return "";
+		}
+		try {
+			java.net.URI uri = java.net.URI.create(redirect);
+			return uri.getScheme() + "://" + uri.getAuthority();
+		} catch (RuntimeException malformed) {
+			return "";
+		}
 	}
 
 	private static OffsetDateTime toOffset(Instant instant) {

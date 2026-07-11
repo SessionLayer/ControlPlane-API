@@ -12,11 +12,13 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 
 /**
- * Wires the first-admin bootstrap (FR-BOOT-2). The startup runner runs after
- * the CA cold-start runner ({@code LOWEST_PRECEDENCE}) so the operator-settings
- * singleton already exists; it is idempotent and race-safe regardless. A stuck
- * bootstrap crashes the boot (bounded block) rather than hanging the pod, like
- * cold start.
+ * Wires the first-admin bootstrap (FR-BOOT-2). The startup runner is
+ * {@code LOWEST_PRECEDENCE}; the CA cold-start runner is unordered, so their
+ * relative order is not guaranteed — correctness does <b>not</b> depend on it:
+ * {@code BootstrapService.ensureSettings()} self-creates the operator-settings
+ * singleton race-safely and the completion flip is a single-winner conditional
+ * UPDATE. A stuck bootstrap crashes the boot (bounded block) rather than
+ * hanging the pod, like cold start.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(BootstrapProperties.class)

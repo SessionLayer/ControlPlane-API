@@ -46,7 +46,10 @@ public class IdpJwtDecoder implements ReactiveJwtDecoder {
 
 	@Override
 	public Mono<Jwt> decode(String token) {
-		return resolve().flatMap(d -> d.decode(token));
+		// Bound the discovery/JWKS fetch + verification so a hung IdP cannot leave the
+		// request pending indefinitely; a timeout fails closed as an invalid token.
+		return resolve().flatMap(d -> d.decode(token)).timeout(java.time.Duration.ofSeconds(15), Mono
+				.error(new org.springframework.security.oauth2.jwt.BadJwtException("ID-token validation timed out")));
 	}
 
 	private Mono<ReactiveJwtDecoder> resolve() {
@@ -63,15 +66,37 @@ public class IdpJwtDecoder implements ReactiveJwtDecoder {
 				.build();
 		decoder.setJwtValidator(
 				new DelegatingOAuth2TokenValidator<>(new JwtTimestampValidator(properties.getClockSkew()),
-						new JwtIssuerValidator(properties.getIssuer()), audienceContainsClientId()));
+						requireExpiry(), new JwtIssuerValidator(properties.getIssuer()), audience()));
 		return decoder;
 	}
 
-	private OAuth2TokenValidator<Jwt> audienceContainsClientId() {
-		String clientId = properties.getClientId();
-		return jwt -> jwt.getAudience() != null && jwt.getAudience().contains(clientId)
+	// OIDC Core §2: `exp` is REQUIRED (JwtTimestampValidator only checks it when
+	// present).
+	private OAuth2TokenValidator<Jwt> requireExpiry() {
+		return jwt -> jwt.getExpiresAt() != null
 				? OAuth2TokenValidatorResult.success()
-				: OAuth2TokenValidatorResult.failure(
-						new OAuth2Error("invalid_token", "the ID token audience must equal the client id", null));
+				: OAuth2TokenValidatorResult
+						.failure(new OAuth2Error("invalid_token", "the ID token must carry exp", null));
+	}
+
+	// OIDC Core §3.1.3.7 items 3–5: aud must contain client_id; if there are extra
+	// audiences the token must carry azp == client_id (our Design §5.3 wants
+	// aud==client_id).
+	private OAuth2TokenValidator<Jwt> audience() {
+		String clientId = properties.getClientId();
+		return jwt -> {
+			var aud = jwt.getAudience();
+			if (aud == null || !aud.contains(clientId)) {
+				return fail("the ID token audience must contain the client id");
+			}
+			if (aud.size() > 1 && !clientId.equals(jwt.getClaimAsString("azp"))) {
+				return fail("multi-audience ID token must have azp == client id");
+			}
+			return OAuth2TokenValidatorResult.success();
+		};
+	}
+
+	private static OAuth2TokenValidatorResult fail(String message) {
+		return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", message, null));
 	}
 }

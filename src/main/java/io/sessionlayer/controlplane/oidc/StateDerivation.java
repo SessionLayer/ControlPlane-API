@@ -21,11 +21,20 @@ import org.springframework.stereotype.Component;
 @Component
 public class StateDerivation {
 
+	private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(StateDerivation.class);
+
 	private final byte[] key;
 
-	public StateDerivation() {
-		this.key = new byte[32];
-		new SecureRandom().nextBytes(this.key);
+	public StateDerivation(OidcProperties properties) {
+		String configured = properties.getStateHmacKey();
+		if (configured != null && !configured.isBlank()) {
+			this.key = java.util.Base64.getDecoder().decode(configured.trim());
+		} else {
+			this.key = new byte[32];
+			new SecureRandom().nextBytes(this.key);
+			LOG.info("OIDC state-derivation key is per-boot (single instance). Set sessionlayer.oidc.state-hmac-key "
+					+ "to a shared value for HA (else a login begun on one instance cannot complete on another).");
+		}
 	}
 
 	/** The PKCE code_verifier for a login state (43 base64url chars = 256 bits). */

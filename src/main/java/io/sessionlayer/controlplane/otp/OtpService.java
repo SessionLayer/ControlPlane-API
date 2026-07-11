@@ -32,11 +32,14 @@ public class OtpService {
 
 	// Atomic mark-used: a row is returned (and consumed) only if it is unused,
 	// unexpired, and the source is inside the bound CIDR (deny-only). A replay,
-	// an expired code, or a wrong source matches nothing → fail closed.
+	// an expired code, or a wrong source matches nothing → fail closed. Both sides
+	// cast to `inet` (not the strict `cidr`), so an operator-friendly host-bits
+	// CIDR (e.g. 192.168.1.5/24, which the schema stores via lenient ::inet) does
+	// not throw at query time; `<<=` uses the stored masklen's network.
 	private static final String CONSUME = """
 			UPDATE runtime.otp SET used = true, used_at = now()
 			WHERE otp_hash = :hash AND used = false AND expires_at > now()
-			  AND (source_cidr IS NULL OR (:sourceIp <> '' AND :sourceIp::inet <<= source_cidr::cidr))
+			  AND (source_cidr IS NULL OR (:sourceIp <> '' AND :sourceIp::inet <<= source_cidr::inet))
 			RETURNING identity, allowed_principals""";
 
 	private final OtpRepository otps;
@@ -107,7 +110,10 @@ public class OtpService {
 							.record(resolved.identity(), null, "otp.verify", "success", null, null, Map.of())
 							.thenReturn(resolved))
 					.switchIfEmpty(audit.record("system", null, "otp.verify", "denied", null, null,
-							Map.of("reason", "invalid_or_expired", "source_ip", ip)).then(Mono.empty()));
+							Map.of("reason", "invalid_or_expired", "source_ip", ip)).then(Mono.empty()))
+					// A malformed source IP (bad ::inet cast) or any DB error → fail closed (deny).
+					.onErrorResume(err -> audit.record("system", null, "otp.verify", "error", null, null,
+							Map.of("reason", "evaluation_error", "source_ip", ip)).then(Mono.empty()));
 		});
 	}
 

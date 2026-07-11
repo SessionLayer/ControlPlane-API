@@ -83,7 +83,10 @@ public class DeviceFlowService {
 	public Mono<DeviceFlow> approve(UUID deviceFlowId, String identity, String approverSourceIp) {
 		return deviceFlows.findById(deviceFlowId).filter(f -> "pending".equals(f.status())).flatMap(flow -> {
 			Boolean match = correlate(approverSourceIp, flow.sourceIp());
-			boolean deny = oidcProperties.getDevice().isEnforceSourceMatch() && Boolean.FALSE.equals(match);
+			// Fail closed under enforcement: an indeterminate (null) correlation denies
+			// too,
+			// so an attacker cannot bypass the binding by blanking a source (NFR-2).
+			boolean deny = oidcProperties.getDevice().isEnforceSourceMatch() && !Boolean.TRUE.equals(match);
 			ObjectNode context = objectMapper.createObjectNode();
 			context.put("approver_source_ip", approverSourceIp == null ? "" : approverSourceIp);
 			context.put("ssh_source_ip", flow.sourceIp() == null ? "" : flow.sourceIp());
@@ -128,7 +131,17 @@ public class DeviceFlowService {
 		if (approverIp.equals(sshIp)) {
 			return true;
 		}
-		// A soft correlation when the exact IP differs (e.g. NAT within one /24).
-		return Cidrs.contains(sshIp + "/24", approverIp);
+		// A soft correlation when the exact IPv4 differs (e.g. NAT within one /24).
+		// Only
+		// for IPv4 (a /24 is meaningless for IPv6); a malformed literal →
+		// indeterminate.
+		if (approverIp.indexOf(':') >= 0 || sshIp.indexOf(':') >= 0) {
+			return false;
+		}
+		try {
+			return Cidrs.contains(sshIp + "/24", approverIp);
+		} catch (RuntimeException malformed) {
+			return null;
+		}
 	}
 }

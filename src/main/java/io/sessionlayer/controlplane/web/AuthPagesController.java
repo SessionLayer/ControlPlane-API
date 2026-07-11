@@ -1,9 +1,13 @@
 package io.sessionlayer.controlplane.web;
 
+import io.sessionlayer.controlplane.auth.AuthProperties;
+import io.sessionlayer.controlplane.auth.RateLimiter;
 import io.sessionlayer.controlplane.device.DeviceFlowService;
 import io.sessionlayer.controlplane.oidc.IdTokenValidator;
+import io.sessionlayer.controlplane.oidc.OidcProperties;
 import io.sessionlayer.controlplane.oidc.OidcRpService;
 import java.net.URI;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,37 +23,59 @@ import reactor.core.publisher.Mono;
  * browser to the IdP. {@code /v1/auth/callback} is the redirect URI: it
  * consumes the state, validates the ID token, and — for a device flow —
  * approves the linked device flow with the approving-browser source correlation
- * (§5.2). These are server-rendered HTML / redirects (not part of the JSON API
- * contract); they are public (they establish identity) and non-leaking.
+ * (§5.2). Server-rendered HTML / redirects (not part of the JSON API contract);
+ * public (they establish identity), non-leaking, and the verify entry is
+ * rate-limited (RFC 8628 §5.2/§6.1 — the user-code endpoint MUST NOT be a cheap
+ * enumeration oracle).
  */
 @RestController
 public class AuthPagesController {
 
 	private final OidcRpService oidcRpService;
 	private final DeviceFlowService deviceFlowService;
+	private final OidcProperties oidcProperties;
+	private final RateLimiter rateLimiter;
+	private final AuthProperties authProperties;
 
-	public AuthPagesController(OidcRpService oidcRpService, DeviceFlowService deviceFlowService) {
+	public AuthPagesController(OidcRpService oidcRpService, DeviceFlowService deviceFlowService,
+			OidcProperties oidcProperties, RateLimiter rateLimiter, AuthProperties authProperties) {
 		this.oidcRpService = oidcRpService;
 		this.deviceFlowService = deviceFlowService;
+		this.oidcProperties = oidcProperties;
+		this.rateLimiter = rateLimiter;
+		this.authProperties = authProperties;
 	}
 
 	@GetMapping("/v1/auth/verify")
 	public Mono<ResponseEntity<String>> verify(@RequestParam(name = "user_code", required = false) String userCode,
 			ServerWebExchange exchange) {
-		String browserIp = sourceIp(exchange);
-		if (userCode == null || userCode.isBlank()) {
-			return oidcRpService.beginLogin("web_login", null, browserIp).map(AuthPagesController::redirect);
+		if (!oidcProperties.isEnabled()) {
+			return Mono
+					.just(html(HttpStatus.NOT_FOUND.value(), page("Unavailable", "OIDC sign-in is not configured.")));
 		}
-		return deviceFlowService.pendingByUserCode(userCode).flatMap(
-				flow -> oidcRpService.beginLogin("device", flow.id(), browserIp).map(AuthPagesController::redirect))
-				.switchIfEmpty(Mono.just(html(400, page("Device approval",
-						"That code is invalid or has expired. Please reconnect to get a new code."))));
+		String browserIp = sourceIp(exchange);
+		return rateLimiter.tryAcquire("verify:" + browserIp, authProperties.getDevicePoll()).flatMap(allowed -> {
+			if (!allowed) {
+				return Mono.just(html(429, page("Slow down", "Too many attempts. Please wait and try again.")));
+			}
+			if (userCode == null || userCode.isBlank()) {
+				return oidcRpService.beginLogin("web_login", null, browserIp).map(AuthPagesController::redirect);
+			}
+			return deviceFlowService.pendingByUserCode(userCode).flatMap(
+					flow -> oidcRpService.beginLogin("device", flow.id(), browserIp).map(AuthPagesController::redirect))
+					.switchIfEmpty(Mono.just(html(400, page("Device approval",
+							"That code is invalid or has expired. Please reconnect to get a new code."))));
+		});
 	}
 
 	@GetMapping("/v1/auth/callback")
 	public Mono<ResponseEntity<String>> callback(@RequestParam(name = "code", required = false) String code,
 			@RequestParam(name = "state", required = false) String state,
 			@RequestParam(name = "error", required = false) String error, ServerWebExchange exchange) {
+		if (!oidcProperties.isEnabled()) {
+			return Mono
+					.just(html(HttpStatus.NOT_FOUND.value(), page("Unavailable", "OIDC sign-in is not configured.")));
+		}
 		if (error != null) {
 			return Mono.just(html(400, page("Sign-in failed", "The identity provider returned an error.")));
 		}
@@ -83,11 +109,12 @@ public class AuthPagesController {
 		if (s == null) {
 			return "";
 		}
-		return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+		return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'",
+				"&#39;");
 	}
 
 	private static String sourceIp(ServerWebExchange exchange) {
 		var remote = exchange.getRequest().getRemoteAddress();
-		return remote == null || remote.getAddress() == null ? null : remote.getAddress().getHostAddress();
+		return remote == null || remote.getAddress() == null ? "" : remote.getAddress().getHostAddress();
 	}
 }

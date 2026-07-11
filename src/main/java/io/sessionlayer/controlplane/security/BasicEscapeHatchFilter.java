@@ -49,16 +49,20 @@ final class BasicEscapeHatchFilter implements WebFilter {
 		}
 		String user = creds[0];
 		String password = creds[1];
-		return Mono.fromCallable(
-				() -> user.equals(config.getUsername()) && passwordEncoder.matches(password, config.getPasswordHash()))
-				.subscribeOn(Schedulers.boundedElastic()).flatMap(ok -> {
-					if (!ok) {
-						return chain.filter(exchange);
-					}
-					RestAuthenticationToken token = new RestAuthenticationToken(
-							new AuthenticatedPrincipal(user, List.of(), AuthMethod.BASIC));
-					return chain.filter(exchange).contextWrite(ReactiveSecurityContextHolder.withAuthentication(token));
-				});
+		return Mono.fromCallable(() -> {
+			// Evaluate both factors (no short-circuit) and compare the username in
+			// constant time — avoid a username-existence timing oracle.
+			boolean userOk = io.sessionlayer.controlplane.auth.Secrets.constantTimeEquals(user, config.getUsername());
+			boolean passwordOk = passwordEncoder.matches(password, config.getPasswordHash());
+			return userOk && passwordOk;
+		}).subscribeOn(Schedulers.boundedElastic()).flatMap(ok -> {
+			if (!ok) {
+				return chain.filter(exchange);
+			}
+			RestAuthenticationToken token = new RestAuthenticationToken(
+					new AuthenticatedPrincipal(user, List.of(), AuthMethod.BASIC));
+			return chain.filter(exchange).contextWrite(ReactiveSecurityContextHolder.withAuthentication(token));
+		});
 	}
 
 	private boolean sourceAllowed(ServerWebExchange exchange) {

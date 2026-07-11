@@ -67,6 +67,29 @@ class RestSecurityIT extends AbstractAuthIT {
 				.expectStatus().isCreated().expectBody().jsonPath("$.otp").isNotEmpty();
 	}
 
+	@Test
+	void beginDeviceFlowRequiresMtlsNotJustAnyCredential() {
+		// Unauthenticated → 401 (the base path is NOT part of the /device/** public
+		// glob).
+		client.post().uri("/v1/auth/device").contentType(MediaType.APPLICATION_JSON)
+				.bodyValue(Map.of("sourceIp", "203.0.113.40")).exchange().expectStatus().isUnauthorized();
+
+		// A valid bearer (non-mTLS) is still refused — the contract gates begin on
+		// mTLS.
+		String token = machineTokenFor("svc-dev-" + UUID.randomUUID());
+		client.post().uri("/v1/auth/device").header("Authorization", "Bearer " + token)
+				.contentType(MediaType.APPLICATION_JSON).bodyValue(Map.of("sourceIp", "203.0.113.40")).exchange()
+				.expectStatus().isForbidden();
+	}
+
+	@Test
+	void devicePollRemainsPublic() {
+		// The poll path stays public (the device code is its authenticator); unknown →
+		// 400.
+		client.post().uri("/v1/auth/device/poll").contentType(MediaType.APPLICATION_JSON)
+				.bodyValue(Map.of("deviceCode", "nope")).exchange().expectStatus().isBadRequest();
+	}
+
 	private String machineTokenFor(String saName) {
 		ServiceAccount sa = serviceAccounts
 				.save(ServiceAccount.create(saName, "test", "client_secret", null, null, "api")).block();

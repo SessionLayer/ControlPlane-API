@@ -163,13 +163,24 @@ public class MachineIdentityService {
 		if (request.grantType() == null || !request.grantType().equals("client_credentials")) {
 			return Mono.error(new TokenRequestDenied("unsupported_grant_type"));
 		}
-		String bucketKey = request.clientId() != null ? request.clientId() : (sourceIp == null ? "" : sourceIp);
+		// Bucket on the non-forgeable source IP, never the attacker-supplied client_id
+		// (which would give a fresh unthrottled bucket per request).
+		String bucketKey = sourceIp == null || sourceIp.isBlank() ? "no-source" : sourceIp;
 		return rateLimiter.tryAcquire("token:" + bucketKey, authProperties.getTokenEndpoint()).flatMap(allowed -> {
 			if (!allowed) {
-				return Mono.error(new TokenRequestDenied("rate_limited"));
+				return Mono.<IssuedToken>error(new TokenRequestDenied("rate_limited"));
 			}
 			return authenticate(request, clientCertificate).flatMap(this::mint);
-		});
+		}).onErrorResume(TokenRequestDenied.class,
+				denied -> auditDenied(request, sourceIp, denied.getMessage()).then(Mono.error(denied)));
+	}
+
+	private Mono<Void> auditDenied(TokenRequest request, String sourceIp, String reason) {
+		String actor = request.clientId() != null ? request.clientId() : "unknown";
+		return audit
+				.record(actor, null, "machine.token.issue", "denied", null, null,
+						Map.of("reason", reason, "source_ip", sourceIp == null ? "" : sourceIp))
+				.onErrorResume(e -> Mono.empty());
 	}
 
 	private Mono<ServiceAccount> authenticate(TokenRequest request, X509Certificate clientCertificate) {
@@ -192,7 +203,9 @@ public class MachineIdentityService {
 		ClientAssertions.Claims claims = ClientAssertions.parseUnverified(request.clientAssertion());
 		Instant now = Instant.now();
 		if (claims == null || claims.subject() == null || claims.jti() == null || claims.expiresAt() == null
-				|| !claims.audience().contains(properties.getIssuer()) || !claims.expiresAt().isAfter(now)
+		// RFC 7523 §3: iss MUST equal sub (both the client id); aud identifies this AS.
+				|| !claims.subject().equals(claims.issuer()) || !claims.audience().contains(properties.getIssuer())
+				|| !claims.expiresAt().isAfter(now)
 				|| claims.expiresAt().isAfter(now.plus(properties.getMaxAssertionAge()))) {
 			return Mono.error(new TokenRequestDenied("invalid_client"));
 		}

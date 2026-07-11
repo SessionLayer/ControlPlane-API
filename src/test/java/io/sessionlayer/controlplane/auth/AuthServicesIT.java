@@ -67,6 +67,25 @@ class AuthServicesIT extends AbstractAuthIT {
 	}
 
 	@Test
+	void otpSourceCidrWithHostBitsDoesNotThrow() {
+		// Operator-friendly host-bits CIDR (stored via lenient ::inet). The validate
+		// query must use ::inet (not strict ::cidr) so this matches instead of
+		// erroring.
+		OtpService.IssuedOtp issued = otpService.issue("frank", List.of("deploy"), "192.168.1.5/24", 120, "admin")
+				.block();
+		StepVerifier.create(otpService.validate(issued.otp(), "192.168.1.9"))
+				.assertNext(r -> assertThat(r.identity()).isEqualTo("frank")).verifyComplete();
+	}
+
+	@Test
+	void malformedSourceIpFailsClosed() {
+		OtpService.IssuedOtp issued = otpService.issue("grace", List.of("deploy"), "10.0.0.0/24", 120, "admin").block();
+		// A malformed source IP must deny (not 500) and must not consume the OTP.
+		StepVerifier.create(otpService.validate(issued.otp(), "not-an-ip")).verifyComplete();
+		assertThat(otps.findById(issued.id()).block().used()).isFalse();
+	}
+
+	@Test
 	void expiredOtpIsRejected() {
 		OtpService.IssuedOtp issued = otpService.issue("carol", List.of("deploy"), null, 120, "admin").block();
 		db.sql("UPDATE runtime.otp SET expires_at = now() - interval '1 minute' WHERE id=:id").bind("id", issued.id())

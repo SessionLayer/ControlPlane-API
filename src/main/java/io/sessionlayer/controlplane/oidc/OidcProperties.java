@@ -50,6 +50,14 @@ public class OidcProperties {
 	/** The claim used as the resolved identity (falls back to {@code sub}). */
 	private String identityClaim = "email";
 
+	/**
+	 * Base64 HMAC key for deriving the PKCE verifier + nonce from {@code state}
+	 * ({@link StateDerivation}). Leave unset for a per-boot random key (single
+	 * instance); set a shared value across HA instances so a login begun on one
+	 * instance can complete on another. Never the raw verifier/nonce — a key only.
+	 */
+	private String stateHmacKey;
+
 	private final Device device = new Device();
 
 	/** Device-flow (RFC 8628) knobs. */
@@ -179,6 +187,14 @@ public class OidcProperties {
 
 	public void setIdentityClaim(String identityClaim) {
 		this.identityClaim = identityClaim;
+	}
+
+	public String getStateHmacKey() {
+		return stateHmacKey;
+	}
+
+	public void setStateHmacKey(String stateHmacKey) {
+		this.stateHmacKey = stateHmacKey;
 	}
 
 	public Device getDevice() {

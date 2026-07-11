@@ -22,7 +22,6 @@ import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
-import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtIssuerReactiveAuthenticationManagerResolver;
 import org.springframework.security.oauth2.server.resource.authentication.JwtReactiveAuthenticationManager;
 import org.springframework.security.web.server.SecurityWebFilterChain;
@@ -56,8 +55,15 @@ public class SecurityConfiguration {
 
 	private static final Logger LOG = LoggerFactory.getLogger(SecurityConfiguration.class);
 
+	// NOTE: the device namespace is NOT wild-carded. `/v1/auth/device/poll` is
+	// public
+	// (the opaque device code is its authenticator) but `/v1/auth/device` (begin)
+	// is
+	// mTLS-gated (Gateway-only) per the contract — a `/v1/auth/device/**` glob
+	// would
+	// also match the base path and expose begin unauthenticated.
 	static final String[] PUBLIC_PATHS = {"/v1/healthz", "/v1/version", "/actuator/health", "/actuator/health/**",
-			"/actuator/info", "/v1/auth/verify", "/v1/auth/callback", "/v1/auth/device/**"};
+			"/actuator/info", "/v1/auth/verify", "/v1/auth/callback"};
 
 	@Bean
 	PasswordEncoder passwordEncoder() {
@@ -72,7 +78,7 @@ public class SecurityConfiguration {
 				.logout(ServerHttpSecurity.LogoutSpec::disable).httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
 				.authorizeExchange(ex -> ex.pathMatchers(PUBLIC_PATHS).permitAll()
 						.pathMatchers(HttpMethod.POST, "/v1/oauth2/token", "/v1/auth/backchannel-logout",
-								"/v1/bootstrap/claim")
+								"/v1/bootstrap/claim", "/v1/auth/device/poll")
 						.permitAll().anyExchange().authenticated())
 				.oauth2ResourceServer(oauth2 -> oauth2.authenticationManagerResolver(jwtManagerResolver))
 				.addFilterAt(mtlsAuthenticationFilter(mtlsConverter), SecurityWebFiltersOrder.AUTHENTICATION);
@@ -133,19 +139,26 @@ public class SecurityConfiguration {
 	private ReactiveAuthenticationManager cpMachineTokenManager(MachineTokenSigner signer,
 			MachineTokenProperties machine) {
 		NimbusReactiveJwtDecoder decoder = NimbusReactiveJwtDecoder.withPublicKey(signer.publicKey()).build();
+		// Defense-in-depth (RFC 9068): validate iss + aud + token_type, not just exp,
+		// so this key can only ever authenticate a CP machine token.
+		org.springframework.security.oauth2.core.OAuth2TokenValidator<org.springframework.security.oauth2.jwt.Jwt> audience = jwt -> jwt
+				.getAudience() != null && jwt.getAudience().contains(machine.getAudience())
+						? org.springframework.security.oauth2.core.OAuth2TokenValidatorResult.success()
+						: org.springframework.security.oauth2.core.OAuth2TokenValidatorResult
+								.failure(new org.springframework.security.oauth2.core.OAuth2Error("invalid_token"));
 		decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
 				new org.springframework.security.oauth2.jwt.JwtTimestampValidator(machine.getClockSkew()),
-				new org.springframework.security.oauth2.jwt.JwtIssuerValidator(machine.getIssuer())));
+				new org.springframework.security.oauth2.jwt.JwtIssuerValidator(machine.getIssuer()), audience));
 		JwtReactiveAuthenticationManager manager = new JwtReactiveAuthenticationManager(decoder);
 		manager.setJwtAuthenticationConverter(jwt -> {
+			if (!"machine".equals(jwt.getClaimAsString("token_type"))) {
+				return Mono.error(new org.springframework.security.oauth2.server.resource.InvalidBearerTokenException(
+						"not a machine token"));
+			}
 			List<String> groups = jwt.getClaimAsStringList("groups");
 			return Mono.just(new RestAuthenticationToken(new AuthenticatedPrincipal(jwt.getSubject(),
 					groups == null ? List.of() : groups, AuthMethod.CLIENT_CREDENTIALS)));
 		});
 		return manager;
-	}
-
-	ReactiveJwtDecoder machineTokenDecoder(MachineTokenSigner signer) {
-		return NimbusReactiveJwtDecoder.withPublicKey(signer.publicKey()).build();
 	}
 }

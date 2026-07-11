@@ -57,7 +57,9 @@ public class MachineTokenSigner {
 					.audience(properties.getAudience()).subject(identity).claim("groups", groups)
 					.claim("token_type", "machine").jwtID(UUID.randomUUID().toString()).issueTime(Date.from(now))
 					.notBeforeTime(Date.from(now)).expirationTime(Date.from(exp)).build();
-			SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+			JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+					.type(new com.nimbusds.jose.JOSEObjectType("at+jwt")).build();
+			SignedJWT jwt = new SignedJWT(header, claims);
 			jwt.sign(signer);
 			return jwt.serialize();
 		} catch (Exception e) {

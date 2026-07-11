@@ -23,14 +23,14 @@ final class ClientAssertions {
 	private ClientAssertions() {
 	}
 
-	record Claims(String subject, String jti, Instant expiresAt, List<String> audience) {
+	record Claims(String issuer, String subject, String jti, Instant expiresAt, List<String> audience) {
 	}
 
 	static Claims parseUnverified(String assertion) {
 		try {
 			var set = SignedJWT.parse(assertion).getJWTClaimsSet();
 			Instant exp = set.getExpirationTime() == null ? null : set.getExpirationTime().toInstant();
-			return new Claims(set.getSubject(), set.getJWTID(), exp,
+			return new Claims(set.getIssuer(), set.getSubject(), set.getJWTID(), exp,
 					set.getAudience() == null ? List.of() : set.getAudience());
 		} catch (Exception malformed) {
 			return null;
