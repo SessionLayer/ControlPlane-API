@@ -1,5 +1,6 @@
 package io.sessionlayer.controlplane.ca;
 
+import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.data.config.CaConfigRepository;
 import io.sessionlayer.controlplane.data.config.OperatorSettings;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
@@ -43,16 +44,18 @@ public class CaProvisioningService {
 	private final DatabaseClient db;
 	private final TransactionalOperator tx;
 	private final LocalCaFactory localCaFactory;
+	private final InternalMtlsCaService internalMtlsCa;
 
 	public CaProvisioningService(OperatorSettingsRepository operatorSettings, CaConfigRepository caConfigs,
 			CaKeyMaterialRepository caKeyMaterials, DatabaseClient db, TransactionalOperator tx,
-			LocalCaFactory localCaFactory) {
+			LocalCaFactory localCaFactory, InternalMtlsCaService internalMtlsCa) {
 		this.operatorSettings = operatorSettings;
 		this.caConfigs = caConfigs;
 		this.caKeyMaterials = caKeyMaterials;
 		this.db = db;
 		this.tx = tx;
 		this.localCaFactory = localCaFactory;
+		this.internalMtlsCa = internalMtlsCa;
 	}
 
 	/** Provision (or no-op) the operator settings + the three CAs, race-safely. */
@@ -64,19 +67,29 @@ public class CaProvisioningService {
 	}
 
 	private Mono<Boolean> alreadyProvisioned() {
-		return operatorSettings.findSingleton().hasElement()
-				.flatMap(
-						hasSettings -> hasSettings
-								? Flux.fromIterable(CA_KINDS)
-										.concatMap(kind -> caConfigs.findByCaKindAndRotationState(kind, "active")
-												.hasElement())
-										.all(present -> present)
-								: Mono.just(false));
+		return operatorSettings.findSingleton().hasElement().flatMap(hasSettings -> {
+			if (!hasSettings) {
+				return Mono.just(false);
+			}
+			// All three SSH CAs present AND the internal mTLS CA present (S4). An existing
+			// S3 database (3 SSH CAs, no mTLS CA) correctly reports not-provisioned so the
+			// upgrade path provisions the mTLS CA under the lock.
+			return Flux.fromIterable(CA_KINDS)
+					.concatMap(kind -> caConfigs.findByCaKindAndRotationState(kind, "active").hasElement())
+					.all(present -> present)
+					.flatMap(sshComplete -> sshComplete
+							? caConfigs.findByCaKindAndRotationState("mtls", "active").hasElement()
+							: Mono.just(false));
+		});
 	}
 
 	private Mono<Void> provisionUnderLock() {
-		Mono<Void> body = acquireLock().then(ensureSettings()).flatMap(settings -> Flux.fromIterable(CA_KINDS)
-				.concatMap(kind -> ensureCa(kind, settings.defaultCaBackend())).then());
+		Mono<Void> body = acquireLock().then(ensureSettings())
+				.flatMap(settings -> Flux.fromIterable(CA_KINDS)
+						.concatMap(kind -> ensureCa(kind, settings.defaultCaBackend())).then()
+						// The internal mTLS CA (X.509, S4) is provisioned in the same lock + tx so a
+						// cold boot brings up every CA atomically.
+						.then(internalMtlsCa.ensureProvisioned(settings.defaultCaBackend())));
 		return tx.transactional(body).then();
 	}
 

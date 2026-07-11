@@ -76,5 +76,9 @@ abstract class AbstractDataIT {
 		// is proven in AuditPartitioningIT, so keep this fast suite lean.
 		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
 		registry.add("sessionlayer.audit.partition-maintenance.enabled", () -> "false");
+		// The mTLS gRPC server is proven in its own ITs; these DB fixtures neither need
+		// it nor the internal mTLS CA it would provision, so keep this suite lean and
+		// avoid seeding an mtls ca_config into the shared context.
+		registry.add("sessionlayer.mtls.server.enabled", () -> "false");
 	}
 }

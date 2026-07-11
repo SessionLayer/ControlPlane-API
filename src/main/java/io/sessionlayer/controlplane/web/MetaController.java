@@ -40,14 +40,15 @@ public class MetaController implements MetaApi {
 
 	@Override
 	public Mono<ResponseEntity<VersionInfo>> getVersion(final ServerWebExchange exchange) {
-		// Session One baseline: both protocol planes are 1.0 (VERSIONING.md §6). The
-		// CP<->Gateway
-		// range comes from ProtocolVersions (shared with the gRPC Handshake server);
-		// the
-		// Agent<->Gateway wire baseline is the same 1.0 this session.
-		String current = ProtocolVersions.display(ProtocolVersions.CURRENT);
-		ProtocolVersionRange range = new ProtocolVersionRange(current, current);
-		ProtocolRanges protocols = new ProtocolRanges(range, range);
+		// The CP<->Gateway range comes from ProtocolVersions (shared with the gRPC
+		// Handshake server), which Session Four moved to [1.0, 1.1] (VERSIONING.md §6);
+		// the Agent<->Gateway wire baseline is still the single point 1.0 this session.
+		ProtocolVersionRange cpGatewayRange = new ProtocolVersionRange(
+				ProtocolVersions.display(ProtocolVersions.SUPPORTED_MIN),
+				ProtocolVersions.display(ProtocolVersions.SUPPORTED_MAX));
+		String wire = ProtocolVersions.display(ProtocolVersions.of(1, 0));
+		ProtocolVersionRange agentGatewayRange = new ProtocolVersionRange(wire, wire);
+		ProtocolRanges protocols = new ProtocolRanges(cpGatewayRange, agentGatewayRange);
 		VersionInfo info = new VersionInfo(descriptor.name(), descriptor.version(), protocols);
 		return Mono.just(ResponseEntity.ok(info));
 	}

@@ -85,13 +85,67 @@ not yet upgraded.
 4. **Remove** only at a MAJOR bump; the removed protobuf field number becomes
    `reserved`.
 
-## 6. Current versions (Session One baseline)
+## 6. Current versions
 
 | Contract | Version |
 |---|---|
-| CP ↔ Gateway gRPC `ProtocolVersion` | **1.0** (`protocol_min = protocol_max = 1.0`) |
+| CP ↔ Gateway gRPC `ProtocolVersion` | **1.1** (`protocol_min = 1.0`, `protocol_max = 1.1`) |
 | Agent ↔ Gateway wire `ProtocolVersion` | **1.0** |
 | OpenAPI URI major | **v1** (spec `info.version: 0.1.0`) |
 
-There is no prior release, so no N-1 peer exists yet; the window becomes
-load-bearing from the first MINOR bump onward.
+**Session Four bumped the CP ↔ Gateway gRPC protocol from 1.0 to 1.1.** Session
+Four added three additive services to the plane — `GatewayIdentity`
+(`EnrollGateway`, `RenewGatewayIdentity`) and `SessionSigning`
+(`SignSessionCertificate`) — carried over the new mTLS transport (§7). Adding an
+RPC/message is, per §2, a **MINOR** change, so the honest advertised range moves
+to `[1.0, 1.1]`. This is the **first MINOR bump**, so the N-1 window (§4) becomes
+load-bearing now: a 1.1 CP keeps `protocol_min = 1.0` and still negotiates `1.0`
+with a Gateway that has not upgraded (and vice-versa). The additions are
+`buf breaking`-clean (adding files/services/messages is not a wire break); the
+version number is the compatibility contract, not the wire-shape gate. The
+protocol stays within **major 1**.
+
+---
+
+## 7. CP ↔ Gateway mTLS trust model (Session Four)
+
+The CP ↔ Gateway gRPC plane runs over **TLS 1.3, mutually authenticated**,
+replacing the Session-One dev-plaintext localhost channel. This section is the
+authoritative statement of the trust model the two repos implement against.
+
+- **Trust anchor.** A CP-operated **internal mTLS CA** (X.509, ECDSA P-256,
+  distinct from the three SSH CAs) is the single trust anchor for the plane. The
+  CP presents a **server certificate** issued by it; the Gateway presents a
+  **client certificate** issued by it. Each peer verifies the other's chain
+  against the internal CA, checks validity, and checks the SAN. No other trust
+  anchor is accepted; plaintext and non-CA certs are refused (fail closed,
+  NFR-2). TLS 1.3 only.
+
+- **Bootstrap exception (the one asymmetry).** A Gateway that has not yet
+  enrolled holds no CP-issued client certificate. `GatewayIdentity.EnrollGateway`
+  is therefore reachable over the same TLS transport **without** a client
+  certificate and is authenticated by a **single-use enrollment token** instead;
+  `Handshake.Negotiate` (which carries no secrets) is likewise reachable pre-mTLS
+  so a peer can resolve a common version at connect. **Every other RPC** —
+  `RenewGatewayIdentity` and `SignSessionCertificate` — **requires** a valid
+  client certificate chained to the internal CA that resolves to an active,
+  unlocked `gateway_identity`. Enforcement is per-RPC (a server interceptor
+  independently re-validates the peer chain), so the requirement never depends on
+  a single TLS-layer toggle.
+
+- **Layered per-RPC authorization (Design §15).** mTLS authenticates the
+  *channel* (which Gateway). `SignSessionCertificate` additionally requires a
+  single-use, CP-minted **session token** bound to
+  `{gateway_id, session_id, node, principal, exp}`; the token authorizes the
+  specific request. A Gateway can never obtain a certificate for a session it
+  does not own.
+
+- **Key custody (D2).** Gateways generate their own keypairs (mTLS identity and
+  inner-leg) and send only a CSR / public key. The CP returns certificates only
+  and never receives or stores a Gateway private key.
+
+- **Versioning interaction.** Version negotiation (`Handshake.Negotiate`) now
+  runs over the secured channel. A version mismatch fails closed with gRPC
+  `FAILED_PRECONDITION` exactly as before (§3); it is independent of the mTLS
+  outcome (a peer that fails mTLS never reaches negotiation on the mTLS-required
+  RPCs).

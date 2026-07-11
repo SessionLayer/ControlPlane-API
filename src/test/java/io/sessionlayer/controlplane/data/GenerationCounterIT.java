@@ -100,10 +100,10 @@ class GenerationCounterIT extends AbstractDataIT {
 	void gatewayGenerationAlsoMonotonic() {
 		var saved = gatewayIdentities
 				.save(GatewayIdentity.create("gw-monotonic", "ref", null, 3, "mtls", "active", null, null)).block();
-		var decreased = new GatewayIdentity(saved.id(), saved.name(), saved.mtlsIdentityRef(), saved.fingerprint(), 2,
-				saved.joinMethod(), saved.status(), saved.issuedAt(), saved.notAfter(), saved.statusReason(),
-				saved.statusChangedBy(), saved.statusChangedAt(), saved.version(), saved.createdAt(),
-				saved.updatedAt());
+		var decreased = new GatewayIdentity(saved.id(), saved.name(), saved.mtlsIdentityRef(), saved.fingerprint(),
+				saved.prevFingerprint(), 2, saved.joinMethod(), saved.status(), saved.issuedAt(), saved.notAfter(),
+				saved.statusReason(), saved.statusChangedBy(), saved.statusChangedAt(), saved.version(),
+				saved.createdAt(), saved.updatedAt());
 		StepVerifier.create(gatewayIdentities.save(decreased)).verifyError(DataIntegrityViolationException.class);
 	}
 

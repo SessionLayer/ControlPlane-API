@@ -45,6 +45,10 @@ class ColdStartIT {
 		registry.add("spring.flyway.password", POSTGRES::getPassword);
 		registry.add("spring.flyway.placeholders.cpRuntimePassword", () -> "cp_runtime");
 		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
+		// Bind the mTLS gRPC server to an ephemeral port so this context does not clash
+		// with another cached test context on :9090 (cold start now also provisions the
+		// internal mTLS CA, which this IT's assertions tolerate via >= counts).
+		registry.add("sessionlayer.mtls.server.port", () -> "0");
 		// cold start left at its default (enabled) — this IT proves it.
 	}
 

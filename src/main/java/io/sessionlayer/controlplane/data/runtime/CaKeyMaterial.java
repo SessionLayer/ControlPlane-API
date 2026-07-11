@@ -16,15 +16,28 @@ import org.springframework.data.relational.core.mapping.Table;
  * datastore-only compromise yields ciphertext it cannot unwrap.
  * {@code caConfigId} is a snapshot reference to {@code config.ca_config} (no
  * FK).
+ *
+ * <p>
+ * {@code caCertificate} (Session Four, V14) holds the self-signed X.509 CA
+ * certificate (DER) for X.509 CA rows (the internal {@code mtls} CA); it is
+ * {@code null} for the SSH CAs, whose trust anchor is an OpenSSH public key
+ * rather than an X.509 certificate. Public material — write-once (V14 trigger).
  */
 @Table(schema = "runtime", name = "ca_key_material")
 public record CaKeyMaterial(@Id UUID id, UUID caConfigId, String caConfigName, String wrapAlgorithm,
-		String kekReference, byte[] wrappedKey, byte[] iv, byte[] publicKey, String keyType, @Version Long version,
-		@CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
+		String kekReference, byte[] wrappedKey, byte[] iv, byte[] publicKey, String keyType, byte[] caCertificate,
+		@Version Long version, @CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
 
+	/** SSH-CA material (no X.509 CA certificate). */
 	public static CaKeyMaterial create(UUID caConfigId, String caConfigName, String kekReference, byte[] wrappedKey,
 			byte[] iv, byte[] publicKey, String keyType) {
+		return create(caConfigId, caConfigName, kekReference, wrappedKey, iv, publicKey, keyType, null);
+	}
+
+	/** X.509-CA material carrying the self-signed CA certificate (DER). */
+	public static CaKeyMaterial create(UUID caConfigId, String caConfigName, String kekReference, byte[] wrappedKey,
+			byte[] iv, byte[] publicKey, String keyType, byte[] caCertificate) {
 		return new CaKeyMaterial(Uuids.v7(), caConfigId, caConfigName, "AES-256-GCM", kekReference, wrappedKey, iv,
-				publicKey, keyType, null, null, null);
+				publicKey, keyType, caCertificate, null, null, null);
 	}
 }
