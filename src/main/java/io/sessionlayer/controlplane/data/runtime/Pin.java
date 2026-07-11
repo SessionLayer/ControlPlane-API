@@ -25,4 +25,20 @@ public record Pin(@Id UUID id, String fingerprint, String identity, String sourc
 			Instant expiresAt) {
 		return new Pin(Uuids.v7(), fingerprint, identity, sourceCidr, principals, expiresAt, null, null, null, null);
 	}
+
+	/**
+	 * Re-pin (extend/rebind) an existing row, keeping its id + optimistic version.
+	 */
+	public Pin reissued(String sourceCidr, List<String> principals, Instant expiresAt) {
+		return new Pin(id, fingerprint, identity, sourceCidr, principals, expiresAt, null, version, createdAt,
+				updatedAt);
+	}
+
+	public Pin revoked(Instant at) {
+		return new Pin(id, fingerprint, identity, sourceCidr, principals, expiresAt, at, version, createdAt, updatedAt);
+	}
+
+	public boolean active(Instant now) {
+		return revokedAt == null && expiresAt.isAfter(now);
+	}
 }

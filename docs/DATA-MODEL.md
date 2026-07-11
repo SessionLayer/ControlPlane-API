@@ -491,3 +491,57 @@ The connect-time context is signed by a dedicated **decision-context signer**: a
 public half is certified as a `CONTEXT_SIGNER` leaf (EKU codeSigning, URI SAN `sessionlayer://decision-context-signer`)
 from the **internal mTLS CA** (`ca_kind='mtls'`). It is minted **in-memory, once per boot** (the Gateway pins the
 CA, not the leaf — like the gRPC server cert), so **nothing is persisted** and no schema/migration is needed.
+
+## 16. Session Six (authentication) additions — `V16`
+
+S6 adds one forward-only migration, `V16__auth_surface.sql` (V2–V15 unchanged). New
+top-level tables: **12 config + 23 runtime = 35** (was 32). Three new runtime tables
+plus three columns on `runtime.device_flow`. No config table is added — the OIDC
+provider (issuer/client/alg-allow-list/skew) is application config, and the first-admin
+bootstrap reuses the existing `config.operator_settings.bootstrap_*` fields (V6).
+
+### 16.1 New runtime tables (`V16`)
+- **`runtime.oidc_login`** (FR-AUTH-6) — transient auth-code + PKCE relying-party state,
+  one row per browser login, single-use (`consumed_at`). Stores the **SHA-256 of the
+  opaque `state`** (`state_hash`, UNIQUE) as the lookup + single-use key; **the PKCE
+  `code_verifier` and the OIDC `nonce` are NOT stored** — they are derived server-side
+  (HMAC-SHA256 over the raw `state` under a per-boot key, `StateDerivation`) and recomputed
+  at the callback. `purpose='device'` links the `device_flow` a login approves.
+- **`runtime.auth_rate_limit`** (FR-AUTH-9) — durable fixed-window counters keyed by an
+  opaque `bucket` (e.g. `otp:verify:<ip>`, `token:<clientId>`). One atomic upsert per
+  event (`ON CONFLICT (bucket) DO UPDATE`); a request whose window count exceeds the
+  limit is throttled. Durable across HA instances + restarts (unlike in-memory).
+- **`runtime.consumed_assertion`** (FR-AUTH-12 / RFC 7523 §3) — single-use guard for
+  `private_key_jwt` client-assertion `jti` (hash only, with the assertion's own
+  `not_after`). `INSERT ... ON CONFLICT (jti_hash) DO NOTHING`; the first use wins,
+  a replay loses. A periodic prune drops rows past `not_after`.
+
+### 16.2 `device_flow` anti-phishing correlation (`V16` ALTER)
+`runtime.device_flow` gains `approver_source_ip`, `approver_context jsonb`, and
+`source_context_match boolean` (§5.2): the approving browser's source context, captured
+at the CP verification page, correlated with the SSH source IP. Source IP is a **deny-only
+reducer** (FR-AUTH-15) — a mismatch is flagged + audited, and denies only when
+`sessionlayer.oidc.device.enforce-source-match` is set (default off).
+
+### 16.3 Secrets-at-rest (Design §2.5) — unchanged posture, extended coverage
+No raw secret is persisted anywhere this session: OTP → `otp_hash`; device/user codes →
+`device_code_hash`/`user_code_hash`; auth-code `state` → `state_hash` (verifier/nonce
+derived, never stored); machine `client_secret` → SHA-256; a `private_key_jwt` public key
+→ base64 DER (public material) in `service_account_credential.secret_hash`; an mTLS
+credential → the cert SHA-256 fingerprint; the printed-once bootstrap credential →
+`operator_settings.bootstrap_credential_hash`. Constant-time compares (`Secrets`) on the
+credential-verification paths. The machine-token and decision-context signing keys, and
+the `StateDerivation` HMAC key, are per-boot in-memory (never persisted), like the S5
+decision-context signer.
+
+### 16.4 Runtime writes the auth surface produces
+- `runtime.otp` — issued (hashed) by the admin OTP endpoint; consumed atomically by the
+  Gateway (S7) via a single-use mark-used UPDATE.
+- `runtime.pin` — created/revoked by the admin pin endpoints (TTL capped at
+  `sessionlayer.authz.max-grant-ttl`); revocation by admin/offboarding/lock/back-channel.
+- `runtime.service_account_credential` — issued/rotated/revoked by the admin machine-
+  credential endpoints; revocation denies new tokens immediately.
+- `runtime.device_flow` / `runtime.oidc_login` — begin/approve/poll of the device flow +
+  the auth-code+PKCE RP.
+- `runtime.audit_event` — every auth decision (login/otp/device/token/pin) and every admin
+  mutation is recorded (FR-AUD-7): generic outcome, specific reason in the log.

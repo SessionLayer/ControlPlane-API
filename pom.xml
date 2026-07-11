@@ -93,6 +93,39 @@
 			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
 
+		<!-- ============ REST API security (Session Six, FR-AUTH-17) ============ -->
+		<!--
+		  Re-added this session (S1 removed spring-boot-starter-security as unused
+		  scaffold surface). Session Six lands the first SECURED REST endpoints, so
+		  the WebFlux security filter chain, the three first-class schemes (OIDC
+		  bearer JWT, mTLS, OAuth client-credentials — Design §5.7), and the OIDC
+		  relying-party machinery all arrive here.
+		    - starter-security          : the reactive SecurityWebFilterChain.
+		    - oauth2-resource-server     : nimbus-jose-jwt ID/bearer-token validation
+		                                   (positive alg allow-list, iss/aud/nonce/exp).
+		    - oauth2-client              : the auth-code + PKCE relying party for the
+		                                   CP-hosted verification page (FR-AUTH-6).
+		    - starter-webclient          : the reactive HTTP client the CP uses to reach
+		                                   the IdP (discovery/JWKS/token/device endpoints).
+		  Public meta probes stay unauthenticated via an explicit permitAll rule.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-client</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webclient</artifactId>
+		</dependency>
+
 		<!-- ============ gRPC server (Spring gRPC) — Handshake plane ============ -->
 		<!--
 		  CP<->Gateway version-negotiation plane. Runs PLAINTEXT on :9090 this
@@ -209,6 +242,12 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webflux-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- WebFlux security test support (mutateWith(mockJwt/...), reactive filters). -->
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

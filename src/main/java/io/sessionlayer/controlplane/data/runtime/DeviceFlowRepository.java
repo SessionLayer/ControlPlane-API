@@ -8,4 +8,6 @@ import reactor.core.publisher.Mono;
 public interface DeviceFlowRepository extends ReactiveCrudRepository<DeviceFlow, UUID> {
 
 	Mono<DeviceFlow> findByDeviceCodeHash(String deviceCodeHash);
+
+	Mono<DeviceFlow> findByUserCodeHash(String userCodeHash);
 }

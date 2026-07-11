@@ -76,6 +76,12 @@ abstract class AbstractDataIT {
 		// is proven in AuditPartitioningIT, so keep this fast suite lean.
 		registry.add("sessionlayer.ca.local.allow-dev-kek", () -> "true");
 		registry.add("sessionlayer.audit.partition-maintenance.enabled", () -> "false");
+		// The first-admin bootstrap runner would seed operator_settings at startup;
+		// these
+		// data-model fixtures own that singleton themselves, so keep the runner off
+		// here.
+		registry.add("sessionlayer.bootstrap.enabled", () -> "false");
+		registry.add("sessionlayer.auth.maintenance.enabled", () -> "false");
 		// The mTLS gRPC server is proven in its own ITs; these DB fixtures neither need
 		// it nor the internal mTLS CA it would provision, so keep this suite lean and
 		// avoid seeding an mtls ca_config into the shared context.

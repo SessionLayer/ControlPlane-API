@@ -34,10 +34,25 @@ operations reference them without changing the contract shape:
 
 - `oidcBearer` — OIDC/JWT bearer (the ID token is the auth proof).
 - `clientCredentials` — OAuth 2.0 client-credentials for machine consumers.
-- `mtls` — mutual-TLS client certificate.
+- `mtls` — mutual-TLS client certificate (`type: mutualTLS`).
 
 HTTP Basic is intentionally **absent** — it is not a first-class scheme
 (FR-AUTH-17).
+
+### `mutualTLS` codegen note (Session Six)
+
+`openapi-generator` 7.23 (the latest release) cannot model OpenAPI 3.1's
+`type: mutualTLS` scheme: `DefaultCodegen.fromSecurity()` logs a non-fatal
+`[ERROR] Unknown type mutualTLS ...` and emits no security metadata for it.
+Because our generation uses `annotationLibrary=none` / `documentationProvider=none`,
+security schemes are **documentation-only** and never appear in generated code —
+so `mtls`-secured operations (e.g. `POST /v1/oauth2/token`, `POST /v1/auth/device`)
+already generate compiling interfaces; mTLS is enforced by the Spring Security
+client-cert filter, not by generated annotations. The contract keeps the correct
+`type: mutualTLS`, and `.mvn/jvm.config` silences the redundant `DefaultCodegen`
+logger so the build log stays clean. The FR-API-1 drift gate is **compile-based**,
+so silencing that logger cannot mask a real contract/model drift — that always
+surfaces as a compile failure. (See `Docs/sessions/six/RESULT.md` §2.)
 
 ## Linting
 

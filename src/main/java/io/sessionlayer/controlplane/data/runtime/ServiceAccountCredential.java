@@ -28,4 +28,13 @@ public record ServiceAccountCredential(@Id UUID id, UUID serviceAccountId, Strin
 		return new ServiceAccountCredential(Uuids.v7(), serviceAccountId, serviceAccountName, credentialType,
 				secretHash, fingerprint, "active", issuedAt, notAfter, null, null, null, null, null, null);
 	}
+
+	public ServiceAccountCredential revoked(String reason, String by, Instant at) {
+		return new ServiceAccountCredential(id, serviceAccountId, serviceAccountName, credentialType, secretHash,
+				fingerprint, "revoked", issuedAt, notAfter, at, reason, by, version, createdAt, updatedAt);
+	}
+
+	public boolean usable(Instant now) {
+		return "active".equals(status) && (notAfter == null || notAfter.isAfter(now));
+	}
 }
