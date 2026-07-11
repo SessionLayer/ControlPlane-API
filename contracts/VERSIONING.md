@@ -105,6 +105,20 @@ with a Gateway that has not upgraded (and vice-versa). The additions are
 version number is the compatibility contract, not the wire-shape gate. The
 protocol stays within **major 1**.
 
+**Session Five added one more additive service — `Authorization` (`Authorize`)**
+— the connect-time data-plane RBAC decision (FR-CHAN-1). Adding a service/messages
+is additive and `buf breaking`-clean, and it fits within the existing **1.1**
+minor (a new RPC within an already-bumped minor does not move the number again):
+the advertised range stays `[1.0, 1.1]`, `protocol_min` stays 1.0, still within
+major 1. `Authorize` returns a **signed** decision context: the signature is
+ECDSA-P256/SHA-256 over `{"sessionlayer:decision-context:v1\n" || signed_context}`
+where `signed_context` is the deterministic serialization of `DecisionContext`
+(no maps → stable field-order encoding across Java/prost). The signer's leaf
+certificate (returned in `signer_certificate`) chains to the internal mTLS CA the
+Gateway already pins and carries the URI SAN `sessionlayer://decision-context-signer`,
+so the Gateway verifies the context with no new trust distribution. Gateway-side
+verification + caching + per-channel checks are **S10**; S5 is the CP producer.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
@@ -138,7 +152,12 @@ authoritative statement of the trust model the two repos implement against.
   single-use, CP-minted **session token** bound to
   `{gateway_id, session_id, node, principal, exp}`; the token authorizes the
   specific request. A Gateway can never obtain a certificate for a session it
-  does not own.
+  does not own. **Session Five** makes `Authorization.Authorize` the producer of
+  that token: it is on the same identity/session-required tier (a valid client
+  cert resolving to an active, unlocked `gateway_identity`), and it mints the
+  token **only on ALLOW**, bound to the AUTHENTICATED caller's gateway id (never a
+  request field) plus `{session, node, principal, capabilities, source_address,
+  exp}`. A DENY or a matching Lock mints nothing (fail closed).
 
 - **Key custody (D2).** Gateways generate their own keypairs (mTLS identity and
   inner-leg) and send only a CSR / public key. The CP returns certificates only
