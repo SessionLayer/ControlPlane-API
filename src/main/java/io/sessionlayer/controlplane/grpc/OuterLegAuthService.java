@@ -94,8 +94,9 @@ public class OuterLegAuthService extends OuterLegAuthGrpc.OuterLegAuthImplBase {
 	@Override
 	public void beginDeviceFlow(BeginDeviceFlowRequest request, StreamObserver<BeginDeviceFlowResponse> observer) {
 		String verificationUri = oidcProperties.verificationBaseUrl() + "/v1/auth/verify";
-		// A per-flow 1:1 device_code<->connection binding (anti-phishing, §15),
-		// generated CP-side; the Gateway drives exactly one flow per SSH connection.
+		// connectionBinding is a reserved field no path reads (RC-1): the real 1:1
+		// device_code<->connection binding is device_code secrecy (per-connection,
+		// hashed at rest, never logged, §15). Minted for schema parity, not relied on.
 		String connectionBinding = Secrets.randomToken(32);
 		Mono<BeginDeviceFlowResponse> result = deviceFlowService
 				.begin(blankToNull(request.getSourceIp()), connectionBinding)
