@@ -12,5 +12,13 @@ public enum LeafPurpose {
 	SERVER,
 
 	/** A Gateway's mTLS client identity certificate (EKU clientAuth). */
-	CLIENT
+	CLIENT,
+
+	/**
+	 * The CP's decision-context signing certificate (EKU codeSigning): it signs the
+	 * connect-time {@code DecisionContext} bytes, not a TLS handshake. It chains to
+	 * the same internal mTLS CA the Gateway already pins, so the Gateway verifies a
+	 * signed context with no new trust distribution (S5).
+	 */
+	CONTEXT_SIGNER
 }

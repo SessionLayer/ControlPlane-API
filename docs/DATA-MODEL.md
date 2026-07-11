@@ -440,3 +440,54 @@ raw token is never persisted) and gate the consume race with a `@Version` optimi
   consumed/used), never a DELETE; `V15` **REVOKEs DELETE** on both from `cp_runtime` (V11's `ALTER DEFAULT
   PRIVILEGES` had auto-granted it), mirroring V12's write-once discipline. Runtime can create and consume a token
   but can never erase the single-use evidence.
+
+## 15. Session Five (authorization) — **no schema change**
+
+S5 builds the two authorization systems and the connect-time decision **entirely on the existing schema** —
+no migration is added (the next free version stays **V16**). What S5 fills in is the *interpretation* of the
+`jsonb` selectors S2 said it would only "store + round-trip + shape-validate" (§5), plus the runtime writes the
+decision produces. The selector shapes below are the **contract the evaluator now enforces**; later sessions and
+GitOps validation must stay aligned.
+
+### 15.1 Data-plane RBAC selector shapes (`config.dp_rule`, read by the evaluator)
+- **`identity_selector`** — `{"identities": [..], "groups": [..], "all": <bool>}`. Matches if the resolved
+  identity is listed, any of its groups intersects `groups`, or `all` is true. An **absent/empty** identity
+  selector selects **no one** (a grant must name a subject — fail safe).
+- **`node_label_selector`** — `{ "<label-key>": <condition>, ... }` where a condition is
+  `{"op": "eq"|"glob"|"in"|"regex", "value": "..", "values": [..]}` **or an array of conditions**. **AND across
+  keys, OR within a key** (FR-AUTHZ-2). The `regex` operator is **anchored RE2/J** (linear-time, no ReDoS); a
+  `null`/`{}` selector matches all nodes; a key the node lacks fails that key.
+- **`source_ip_condition`** — `{"permit_cidrs": [..], "deny_cidrs": [..]}`. A pure **deny-only reducer**
+  (FR-AUTH-15): a rule applies only if the source is inside `permit_cidrs` (when present) **and** outside every
+  `deny_cidrs`. An unknown source with any restriction present **fails closed** (the grant is suppressed, never
+  granted). Stored as `jsonb`, not a `cidr` column, so the driver's missing-`cidr`-codec limitation (§9) is moot;
+  containment is computed in-process (`Cidrs`).
+
+### 15.2 Lock target shape (`runtime.access_lock.target_selector`)
+`{"identity": ".."}` / `{"node_id": ".."}` / `{"principal": ".."}` / `{"node_label": {"key":..,"value":..}}` —
+a lock matches if **any** facet matches the connect. A Lock is the **top-tier un-overridable deny**; an empty or
+uninterpretable target **matches** (a deliberate global-lockdown / typo-over-blocks-not-under-blocks — deny wins).
+
+### 15.3 Platform RBAC scope shape (`config.role_binding.scope`)
+`{"node_labels": {..}, "users": [..], "time": {"not_before": "<ISO>", "not_after": "<ISO>"}}` — a binding's scope
+must **cover** a scopable request (`recording:replay/export`, FR-PADM-2): each present facet must be satisfied
+(AND); an absent facet is unrestricted; a `null`/`{}` scope is an unrestricted binding. A **scoped** binding
+cannot authorize an **unscoped/global** request.
+
+### 15.4 Runtime writes the decision produces
+- **`runtime.ssh_session`** — the decision snapshot is written on **allow** (`access_model='standing'`, the
+  resolved `principal`, `capabilities`, `matched_rule_id`+`matched_rule_name`, `policy_epoch`, `grant_expiry`).
+  The row's PK is the **Gateway-allocated `session_id`** so the decision context, the minted token, and the
+  session history all correlate by one id.
+- **`runtime.session_signing_token`** — now minted **from the real decision** (replacing S4's minimal path),
+  bound to `{gateway_id, session_id, node_id, principal, capabilities, source_address, exp}`; minted **only on
+  allow** (deny/lock → none, fail closed). ssh_session insert + allow audit + token mint are **one transaction**.
+- **`runtime.audit_event`** — every data-plane decision (allow/deny/error) and every platform decision is
+  recorded (FR-AUTHZ-5 / FR-PADM-3 / FR-AUD-7): generic outcome to the caller, specific reason (`matched_rule` /
+  `LOCKED` / `NO_MATCHING_ALLOW` / …) in the log.
+
+### 15.5 Decision-context signing key — **no table**
+The connect-time context is signed by a dedicated **decision-context signer**: a fresh ECDSA P-256 keypair whose
+public half is certified as a `CONTEXT_SIGNER` leaf (EKU codeSigning, URI SAN `sessionlayer://decision-context-signer`)
+from the **internal mTLS CA** (`ca_kind='mtls'`). It is minted **in-memory, once per boot** (the Gateway pins the
+CA, not the leaf — like the gRPC server cert), so **nothing is persisted** and no schema/migration is needed.

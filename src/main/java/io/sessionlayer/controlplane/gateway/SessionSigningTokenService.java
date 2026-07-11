@@ -22,8 +22,10 @@ import reactor.core.publisher.Mono;
  * cross-gateway from cross-session from expired from replayed (§15).
  *
  * <p>
- * {@link #mint} is the minimal CP-internal path this session (S5/S8 will mint
- * the token from a real RBAC decision + connection).
+ * {@link #mint} is now driven by the real connect-time RBAC decision
+ * ({@code ConnectAuthorizationService}, S5): the token is minted only on an
+ * <b>allow</b>, bound to the decided {@code principal} + {@code capabilities} +
+ * {@code source_address}. S8 wires it into the live SSH connect flow.
  */
 @Service
 public class SessionSigningTokenService {

@@ -47,6 +47,27 @@
 		<bouncycastle.version>1.84</bouncycastle.version>
 
 		<!--
+		  RE2/J — Google's linear-time regular-expression engine (a Java port of
+		  RE2). Session Five uses it for the data-plane RBAC label `regex` operator
+		  (FR-AUTHZ-2): it is guaranteed to run in time linear in the input, so a
+		  catastrophic-backtracking pattern cannot cause ReDoS on the decision hot
+		  path (a security property here — see guardrails). We do NOT use
+		  java.util.regex for that operator. BSD-style licence (Go licence),
+		  GPL-3.0-compatible; not managed by the Spring Boot BOM, so pinned here.
+		-->
+		<re2j.version>1.7</re2j.version>
+
+		<!--
+		  jqwik — property-based testing on the JUnit Platform. Session Five proves
+		  the deny-overrides algebra's load-bearing invariants as PROPERTIES
+		  (order-independence, deny-overrides, default-deny, lock un-overridability,
+		  capability AND-of-denies) rather than a handful of examples. TEST scope
+		  only (never shipped); EPL-2.0, same posture as the JUnit test deps already
+		  present. Not managed by the BOM, so pinned here.
+		-->
+		<jqwik.version>1.9.1</jqwik.version>
+
+		<!--
 		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
 		  42.7.11 is affected by CVE-2026-54291 (GHSA-j92g-9f8w-j867, channel-binding
 		  downgrade), fixed in 42.7.12. This is the Flyway-only JDBC driver; the
@@ -160,6 +181,18 @@
 			<version>${bouncycastle.version}</version>
 		</dependency>
 
+		<!-- ============ Data-plane RBAC label-regex: RE2/J (linear-time) ======= -->
+		<!--
+		  The anchored-RE2 label operator (FR-AUTHZ-2). Linear-time by construction,
+		  so a catastrophic-backtracking pattern completes in bounded time — no
+		  ReDoS on the decision path (guardrails). NOT java.util.regex.
+		-->
+		<dependency>
+			<groupId>com.google.re2j</groupId>
+			<artifactId>re2j</artifactId>
+			<version>${re2j.version}</version>
+		</dependency>
+
 		<!-- ============================ Tooling =============================== -->
 		<dependency>
 			<groupId>org.projectlombok</groupId>
@@ -212,6 +245,17 @@
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-inprocess</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+		  Property-based testing for the deny-overrides algebra invariants
+		  (order-independence / deny-overrides / default-deny / lock / capability
+		  AND-of-denies). Runs on the JUnit Platform alongside Jupiter. Test-only.
+		-->
+		<dependency>
+			<groupId>net.jqwik</groupId>
+			<artifactId>jqwik</artifactId>
+			<version>${jqwik.version}</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
