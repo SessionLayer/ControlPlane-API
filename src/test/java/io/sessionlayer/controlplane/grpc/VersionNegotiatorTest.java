@@ -48,8 +48,11 @@ class VersionNegotiatorTest {
 	}
 
 	@Test
-	void currentBaselineDisplaysAsOnePointZero() {
-		assertThat(ProtocolVersions.display(ProtocolVersions.CURRENT)).isEqualTo("1.0");
+	void currentVersionDisplaysAsOnePointOne() {
+		// Session Four bumped the CP<->Gateway gRPC protocol to 1.1 (VERSIONING.md §6).
+		assertThat(ProtocolVersions.display(ProtocolVersions.CURRENT)).isEqualTo("1.1");
+		assertThat(ProtocolVersions.display(ProtocolVersions.SUPPORTED_MIN)).isEqualTo("1.0"); // N-1 window
+		assertThat(ProtocolVersions.display(ProtocolVersions.SUPPORTED_MAX)).isEqualTo("1.1");
 	}
 
 	private static ProtocolVersion v(int major, int minor) {

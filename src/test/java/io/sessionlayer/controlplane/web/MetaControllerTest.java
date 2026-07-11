@@ -25,7 +25,7 @@ class MetaControllerTest {
 		client.get().uri("/v1/version").exchange().expectStatus().isOk().expectBody().jsonPath("$.component")
 				.isEqualTo("SessionLayer Control Plane").jsonPath("$.version").isEqualTo("0.1.0")
 				.jsonPath("$.protocols.controlPlaneGatewayGrpc.min").isEqualTo("1.0")
-				.jsonPath("$.protocols.controlPlaneGatewayGrpc.max").isEqualTo("1.0")
+				.jsonPath("$.protocols.controlPlaneGatewayGrpc.max").isEqualTo("1.1")
 				.jsonPath("$.protocols.agentGatewayWire.min").isEqualTo("1.0")
 				.jsonPath("$.protocols.agentGatewayWire.max").isEqualTo("1.0");
 	}

@@ -31,9 +31,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  */
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-		// Ephemeral gRPC port: never clash with a locally running CP or a parallel
-		// build's :9090.
-		properties = "spring.grpc.server.port=0")
+		// Ephemeral mTLS gRPC port: the full production boot (incl. the mTLS server) is
+		// exercised, but on an OS-assigned port so cached test contexts never clash on
+		// :9090.
+		properties = "sessionlayer.mtls.server.port=0")
 class ControlPlaneSmokeIT {
 
 	@Container
@@ -81,10 +82,11 @@ class ControlPlaneSmokeIT {
 	}
 
 	@Test
-	void versionAdvertisesProtocolOnePointZero() {
+	void versionAdvertisesProtocolRange() {
 		webTestClient.get().uri("/v1/version").exchange().expectStatus().isOk().expectBody().jsonPath("$.component")
 				.isEqualTo("SessionLayer Control Plane").jsonPath("$.version").isEqualTo("0.1.0")
-				.jsonPath("$.protocols.controlPlaneGatewayGrpc.max").isEqualTo("1.0");
+				.jsonPath("$.protocols.controlPlaneGatewayGrpc.min").isEqualTo("1.0")
+				.jsonPath("$.protocols.controlPlaneGatewayGrpc.max").isEqualTo("1.1");
 	}
 
 	@Test

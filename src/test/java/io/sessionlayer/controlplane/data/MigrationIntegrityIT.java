@@ -26,7 +26,7 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allMigrationsAppliedThroughLatest() {
 		Integer maxVersion = db.sql("SELECT max(version::int) AS v FROM flyway_schema_history WHERE success = true")
 				.map(row -> row.get("v", Integer.class)).one().block();
-		assertThat(maxVersion).isEqualTo(13); // V1..V13 (S3 adds V6..V13)
+		assertThat(maxVersion).isEqualTo(14); // V1..V14 (S4 adds V14: mTLS CA + tokens)
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
@@ -45,16 +45,16 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	@Test
 	void allBaseEntityTablesExist() {
 		// Top-level entity tables (excludes the audit_event range partitions). S2 had
-		// 22 (9 config + 13 runtime); S3 adds 8 (operator_settings, policy_epoch,
-		// session_limit_policy, service_account_credential, device_flow, node_host_key,
-		// session_lease, ca_key_material) -> 30 (12 config + 18 runtime). A drop fails
-		// it.
+		// 22 (9 config + 13 runtime); S3 adds 8 -> 30 (12 config + 18 runtime); S4
+		// (V14)
+		// adds 2 runtime (gateway_enrollment_token, session_signing_token) -> 32
+		// (12 config + 20 runtime). A drop fails it.
 		Long tables = db
 				.sql("SELECT count(*) AS c FROM information_schema.tables "
 						+ "WHERE table_schema IN ('config','runtime') AND table_type = 'BASE TABLE' "
 						+ "AND NOT (table_schema = 'runtime' AND table_name LIKE 'audit\\_event\\_%')")
 				.map(row -> row.get("c", Long.class)).one().block();
-		assertThat(tables).isEqualTo(30L); // 12 config + 18 runtime
+		assertThat(tables).isEqualTo(32L); // 12 config + 20 runtime
 
 		// spot-check the reserved-name renames and the load-bearing tables actually
 		// landed
