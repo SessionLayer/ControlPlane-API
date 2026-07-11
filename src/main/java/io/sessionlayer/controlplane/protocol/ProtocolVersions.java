@@ -9,27 +9,30 @@ import io.sessionlayer.controlplane.grpc.v1.ProtocolVersion;
  * <p>
  * Consumed by both the gRPC {@code Handshake} server and the REST
  * {@code /v1/version} endpoint so the two surfaces can never disagree. Per
- * {@code contracts/VERSIONING.md} §6 the Session One baseline is a single point
- * range {@code protocol_min == protocol_max == 1.0}.
+ * {@code contracts/VERSIONING.md} §6 the Session Four range is {@code [1.0,
+ * 1.1]}: Session Four added three additive services to the plane
+ * ({@code GatewayIdentity.EnrollGateway/RenewGatewayIdentity} and
+ * {@code SessionSigning.SignSessionCertificate}), which is a MINOR bump, so this
+ * build advertises {@code protocol_max = 1.1} while keeping {@code protocol_min
+ * = 1.0} — the N-1 window (VERSIONING.md §4) that lets a 1.1 CP still negotiate
+ * 1.0 with a Gateway that has not upgraded.
  */
 public final class ProtocolVersions {
 
 	public static final int MAJOR = 1;
-	public static final int MINOR = 0;
+	public static final int MINOR = 1;
 
-	/** The protocol version this build speaks (1.0). */
+	/** The highest protocol version this build speaks (1.1). */
 	public static final ProtocolVersion CURRENT = of(MAJOR, MINOR);
 
 	/**
-	 * Inclusive lowest supported version. Session One: the range is the single
-	 * point [1.0, 1.0].
+	 * Inclusive lowest supported version — held at the previous minor (1.0) to
+	 * honour the N-1 window (VERSIONING.md §4): a 1.1 CP still negotiates 1.0 with
+	 * a peer that has not upgraded.
 	 */
-	public static final ProtocolVersion SUPPORTED_MIN = CURRENT;
+	public static final ProtocolVersion SUPPORTED_MIN = of(MAJOR, MINOR - 1);
 
-	/**
-	 * Inclusive highest supported version. Session One: the range is the single
-	 * point [1.0, 1.0].
-	 */
+	/** Inclusive highest supported version (1.1). */
 	public static final ProtocolVersion SUPPORTED_MAX = CURRENT;
 
 	private ProtocolVersions() {

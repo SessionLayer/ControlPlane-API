@@ -36,6 +36,17 @@
 		<openapi-generator.version>7.23.0</openapi-generator.version>
 
 		<!--
+		  BouncyCastle (NOT managed by the Spring Boot BOM) for the internal mTLS CA
+		  introduced in Session Four: X.509 CA cert issuance, PKCS#10 CSR parsing +
+		  proof-of-possession verification, and server/client leaf issuance (proper
+		  KeyUsage / EKU / SAN / BasicConstraints). We do NOT hand-roll X.509 DER and do
+		  NOT reuse the SSH OpenSshCertificateAssembler (that stays SSH-only). BC's
+		  licence (MIT-style) is GPL-3.0-compatible. Pinned explicitly because the BOM
+		  does not manage it; 1.84 is the latest bc-jdk18on release.
+		-->
+		<bouncycastle.version>1.84</bouncycastle.version>
+
+		<!--
 		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
 		  42.7.11 is affected by CVE-2026-54291 (GHSA-j92g-9f8w-j867, channel-binding
 		  downgrade), fixed in 42.7.12. This is the Flyway-only JDBC driver; the
@@ -126,6 +137,29 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- ================= Internal mTLS CA (X.509) — BouncyCastle ============ -->
+		<!--
+		  Session Four's internal mTLS CA (X.509, ECDSA P-256, distinct from the SSH
+		  CAs): CA self-signed cert issuance, PKCS#10 CSR parse + proof-of-possession,
+		  server/client leaf issuance. bcpkix pulls bcprov + bcutil transitively; all
+		  three pinned to ${bouncycastle.version} (the BOM does not manage BC).
+		-->
+		<dependency>
+			<groupId>org.bouncycastle</groupId>
+			<artifactId>bcpkix-jdk18on</artifactId>
+			<version>${bouncycastle.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.bouncycastle</groupId>
+			<artifactId>bcprov-jdk18on</artifactId>
+			<version>${bouncycastle.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.bouncycastle</groupId>
+			<artifactId>bcutil-jdk18on</artifactId>
+			<version>${bouncycastle.version}</version>
+		</dependency>
+
 		<!-- ============================ Tooling =============================== -->
 		<dependency>
 			<groupId>org.projectlombok</groupId>
@@ -162,6 +196,16 @@
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!--
+		  Vault container for the SSH-engine backend E2E (Part D): enables the Vault
+		  SSH secrets engine via the vendored vault-init flow and signs via /ssh/sign
+		  (never /ssh/issue). Managed by the Boot-imported testcontainers BOM (2.x).
+		-->
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-vault</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<!-- In-process gRPC transport for the Handshake service test (no ports). -->
