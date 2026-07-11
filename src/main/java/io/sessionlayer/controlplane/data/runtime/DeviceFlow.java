@@ -13,8 +13,9 @@ import tools.jackson.databind.JsonNode;
 /**
  * RUNTIME · {@code runtime.device_flow} (FR-AUTH-3, Design §5.2/§15). Device
  * (RFC 8628) flow state. Stores <b>hashes</b> of the device/user codes (never
- * raw). {@code connectionBinding} is the 1:1 device_code↔connection
- * anti-phishing binding (§15).
+ * raw). {@code connectionBinding} is a <b>reserved</b> column — no path reads
+ * or compares it (RC-1); the actual 1:1 device_code↔connection binding is
+ * device_code secrecy (per-connection, hashed at rest, never logged, §15).
  * {@code approverSourceIp}/{@code approverContext}/ {@code sourceContextMatch}
  * carry the §5.2 source-context correlation captured at the CP verification
  * page (a deny-only reducer, FR-AUTH-15). Status:

@@ -4,6 +4,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.sessionlayer.controlplane.ca.CaSignerService;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
+import io.sessionlayer.controlplane.device.DeviceFlowService;
 import io.sessionlayer.controlplane.gateway.GatewayRequestException;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
@@ -33,6 +34,11 @@ final class GrpcErrors {
 				case INVALID_ARGUMENT -> Status.INVALID_ARGUMENT;
 			};
 			return status.withDescription(request.getMessage()).asRuntimeException();
+		}
+		if (error instanceof DeviceFlowService.RateLimited) {
+			// A throttled device-flow poll (§5.2, FR-AUTH-4) — the Gateway backs off and
+			// keeps its num-prompts=0 heartbeat alive.
+			return Status.RESOURCE_EXHAUSTED.withDescription("rate limited").asRuntimeException();
 		}
 		if (error instanceof InternalMtlsCaService.NoMtlsCaAvailable
 				|| error instanceof CaSignerService.NoSignerAvailable) {

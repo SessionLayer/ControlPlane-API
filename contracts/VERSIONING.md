@@ -119,6 +119,20 @@ Gateway already pins and carries the URI SAN `sessionlayer://decision-context-si
 so the Gateway verifies the context with no new trust distribution. Gateway-side
 verification + caching + per-channel checks are **S10**; S5 is the CP producer.
 
+**Session Seven added one more additive service — `OuterLegAuth`** — the
+outer-leg **authentication** RPCs the Gateway calls to resolve an SSH credential
+to a CP-owned identity: `ResolveUserCert`, `ResolvePin`, `ResolveOtp`,
+`BeginDeviceFlow`, `PollDeviceFlow` (FR-AUTH-1..5, FR-AUTH-9/10). Adding a
+service/messages is additive and `buf breaking`-clean, and it fits within the
+existing **1.1** minor (a new RPC within an already-bumped minor does not move the
+number again): the advertised range stays `[1.0, 1.1]`, `protocol_min` stays 1.0,
+still within major 1. Every RPC is on the identity/session (mTLS-required) tier —
+only an authenticated Gateway may resolve credentials. These RPCs authenticate
+only (resolve credential → `{identity, principals}`); the Gateway still calls
+`Authorization.Authorize` for the target node afterwards (invariant I2). Resolution
+failure is **generic** (`resolved = false`, no reason) so the outer-leg auth
+surface discloses no existence (§7.1). Source IP is a deny-only reducer throughout.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
