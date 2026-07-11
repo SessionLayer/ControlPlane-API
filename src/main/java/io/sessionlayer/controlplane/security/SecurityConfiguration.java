@@ -50,7 +50,8 @@ import reactor.core.publisher.Mono;
  */
 @Configuration(proxyBeanMethods = false)
 @EnableWebFluxSecurity
-@EnableConfigurationProperties({SecurityProperties.class, OidcProperties.class, MachineTokenProperties.class})
+@EnableConfigurationProperties({SecurityProperties.class, OidcProperties.class, MachineTokenProperties.class,
+		io.sessionlayer.controlplane.auth.AuthProperties.class})
 public class SecurityConfiguration {
 
 	private static final Logger LOG = LoggerFactory.getLogger(SecurityConfiguration.class);
@@ -70,8 +71,9 @@ public class SecurityConfiguration {
 		http.csrf(ServerHttpSecurity.CsrfSpec::disable).formLogin(ServerHttpSecurity.FormLoginSpec::disable)
 				.logout(ServerHttpSecurity.LogoutSpec::disable).httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
 				.authorizeExchange(ex -> ex.pathMatchers(PUBLIC_PATHS).permitAll()
-						.pathMatchers(HttpMethod.POST, "/v1/oauth2/token", "/v1/auth/backchannel-logout").permitAll()
-						.anyExchange().authenticated())
+						.pathMatchers(HttpMethod.POST, "/v1/oauth2/token", "/v1/auth/backchannel-logout",
+								"/v1/bootstrap/claim")
+						.permitAll().anyExchange().authenticated())
 				.oauth2ResourceServer(oauth2 -> oauth2.authenticationManagerResolver(jwtManagerResolver))
 				.addFilterAt(mtlsAuthenticationFilter(mtlsConverter), SecurityWebFiltersOrder.AUTHENTICATION);
 

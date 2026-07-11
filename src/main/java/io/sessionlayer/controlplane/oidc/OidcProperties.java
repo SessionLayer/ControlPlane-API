@@ -58,6 +58,23 @@ public class OidcProperties {
 		private Duration pollInterval = Duration.ofSeconds(5);
 		/** How long a device flow stays pending before it expires. */
 		private Duration expiry = Duration.ofMinutes(10);
+		/**
+		 * If true, an approving-browser vs SSH source-context mismatch DENIES the flow
+		 * (the enforceable binding, §5.2). Default false: the mismatch is flagged +
+		 * audited (source IP is a deny-only reducer, not positive evidence —
+		 * FR-AUTH-15); a legitimate user commonly approves from a different network
+		 * than the SSH source. Operators enable enforcement where their network
+		 * topology warrants it.
+		 */
+		private boolean enforceSourceMatch = false;
+
+		public boolean isEnforceSourceMatch() {
+			return enforceSourceMatch;
+		}
+
+		public void setEnforceSourceMatch(boolean enforceSourceMatch) {
+			this.enforceSourceMatch = enforceSourceMatch;
+		}
 
 		public Duration getPollInterval() {
 			return pollInterval;
