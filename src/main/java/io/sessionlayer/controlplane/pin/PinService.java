@@ -57,6 +57,39 @@ public class PinService {
 						.thenReturn(saved));
 	}
 
+	/**
+	 * A pin resolved to its bound identity + cert-scoped principals (FR-AUTH-10).
+	 */
+	public record Resolved(String identity, List<String> principals) {
+	}
+
+	/**
+	 * Resolve a pinned public-key fingerprint from {@code sourceIp} to its identity
+	 * (Design §5.5, the outer-leg reconnect shortcut consumed by the Gateway, S7).
+	 * The pin must be active and its source binding admit {@code sourceIp}
+	 * (deny-only). None or an ambiguous match (a fingerprint pinned to more than
+	 * one identity) resolves nothing — generic, no disclosure (§7.1).
+	 * Authentication only: the Gateway still calls {@code Authorize} afterwards
+	 * (I2).
+	 */
+	public Mono<Resolved> resolveForSource(String fingerprint, String sourceIp) {
+		if (fingerprint == null || fingerprint.isBlank()) {
+			return Mono.empty();
+		}
+		String ip = sourceIp == null ? "" : sourceIp;
+		return pins.findActiveByFingerprintForSource(fingerprint, ip).collectList().flatMap(matches -> {
+			if (matches.size() != 1) {
+				String reason = matches.isEmpty() ? "no_active_pin" : "ambiguous_fingerprint";
+				return audit.record("system", null, "pin.resolve", "denied", null, null,
+						Map.of("reason", reason, "source_ip", ip)).then(Mono.empty());
+			}
+			Pin pin = matches.get(0);
+			return audit.record(pin.identity(), null, "pin.resolve", "success", null, null, Map.of())
+					.thenReturn(new Resolved(pin.identity(), pin.principals()));
+		}).onErrorResume(err -> audit.record("system", null, "pin.resolve", "error", null, null,
+				Map.of("reason", "evaluation_error", "source_ip", ip)).then(Mono.empty()));
+	}
+
 	/** Active (unrevoked, unexpired) pins for an identity. */
 	public Flux<Pin> listActive(String identity) {
 		Instant now = Instant.now();
