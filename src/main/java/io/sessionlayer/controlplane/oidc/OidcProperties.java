@@ -141,6 +141,26 @@ public class OidcProperties {
 		this.redirectUri = redirectUri;
 	}
 
+	/**
+	 * The CP public origin ({@code scheme://authority}) for user-facing URLs (the
+	 * device-flow verification page), derived from the configured OIDC
+	 * {@code redirect-uri} — never a request {@code Host} header, which a proxy may
+	 * forward verbatim and aid phishing (S6 {@code F-forward-headers}). Empty when
+	 * unconfigured or malformed. The single source of truth for both the REST
+	 * {@code beginDeviceFlow} and the outer-leg {@code BeginDeviceFlow} RPC.
+	 */
+	public String verificationBaseUrl() {
+		if (redirectUri == null || redirectUri.isBlank()) {
+			return "";
+		}
+		try {
+			java.net.URI uri = java.net.URI.create(redirectUri);
+			return uri.getScheme() + "://" + uri.getAuthority();
+		} catch (RuntimeException malformed) {
+			return "";
+		}
+	}
+
 	public List<String> getScopes() {
 		return scopes;
 	}

@@ -81,6 +81,38 @@ public final class EcdsaSignatures {
 		return new SshWriter().writeString(keyType.keyTypeName()).writeString(inner).toByteArray();
 	}
 
+	/**
+	 * DER-encode {@code (r, s)} as {@code SEQUENCE { INTEGER r, INTEGER s }} — the
+	 * inverse of {@link #fromDer}, for feeding a JCA {@code Signature.verify} when
+	 * verifying an OpenSSH-format ECDSA signature (whose {@code (r, s)} arrive as
+	 * mpints, not DER). {@link BigInteger#toByteArray()} already yields the minimal
+	 * signed big-endian form that is exactly a DER INTEGER's content.
+	 */
+	public static byte[] toDer(RS rs) {
+		byte[] r = derInteger(rs.r());
+		byte[] s = derInteger(rs.s());
+		SshWriter seq = new SshWriter().writeByte(0x30);
+		writeDerLength(seq, r.length + s.length);
+		return seq.writeBytes(r).writeBytes(s).toByteArray();
+	}
+
+	private static byte[] derInteger(BigInteger value) {
+		SshWriter w = new SshWriter().writeByte(0x02);
+		byte[] content = value.toByteArray();
+		writeDerLength(w, content.length);
+		return w.writeBytes(content).toByteArray();
+	}
+
+	private static void writeDerLength(SshWriter w, int len) {
+		if (len < 0x80) {
+			w.writeByte(len);
+		} else if (len < 0x100) {
+			w.writeByte(0x81).writeByte(len);
+		} else {
+			w.writeByte(0x82).writeByte((len >>> 8) & 0xFF).writeByte(len & 0xFF);
+		}
+	}
+
 	private static void requirePositive(BigInteger r, BigInteger s) {
 		if (r.signum() <= 0 || s.signum() <= 0) {
 			throw new IllegalArgumentException("ECDSA (r,s) must be positive");

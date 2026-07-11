@@ -223,22 +223,8 @@ public class AuthController implements AuthApi {
 		return remote == null || remote.getAddress() == null ? null : remote.getAddress().getHostAddress();
 	}
 
-	/**
-	 * The CP public origin for the verification URL — derived from the configured
-	 * OIDC {@code redirect-uri} (not the request Host header, which a proxy may
-	 * forward verbatim, aiding phishing). Falls back to the redirect-uri as-is.
-	 */
 	private String verificationBase() {
-		String redirect = oidcProperties.getRedirectUri();
-		if (redirect == null || redirect.isBlank()) {
-			return "";
-		}
-		try {
-			java.net.URI uri = java.net.URI.create(redirect);
-			return uri.getScheme() + "://" + uri.getAuthority();
-		} catch (RuntimeException malformed) {
-			return "";
-		}
+		return oidcProperties.verificationBaseUrl();
 	}
 
 	private static OffsetDateTime toOffset(Instant instant) {
