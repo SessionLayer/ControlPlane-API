@@ -109,6 +109,273 @@ paths:
           $ref: '#/components/responses/Problem'
         default:
           $ref: '#/components/responses/Problem'
+  /v1/oauth2/token:
+    post:
+      operationId: issueMachineToken
+      summary: OAuth 2.0 client-credentials token endpoint (machine identity).
+      description: |
+        Machine consumers exchange a client credential — a `private_key_jwt`
+        client assertion (RFC 7523) or a mutual-TLS client certificate,
+        preferred over a static secret — for a short-lived CP-signed bearer
+        token (Design §5.6, FR-AUTH-12). The token resolves to a first-class
+        RBAC principal. The client authenticates itself here, so the endpoint is
+        not behind the bearer/mTLS API gate; the `clientCredentials`/`mtls`
+        schemes below document the accepted client-authentication methods.
+      tags:
+        - auth
+      security:
+        - clientCredentials: []
+        - mtls: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+      responses:
+        '200':
+          description: An access token was issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/otp:
+    post:
+      operationId: issueOtp
+      summary: Issue a single-use OTP for an identity (admin).
+      description: |
+        Server-generates a single-use, short-TTL OTP bound to an identity and
+        allowed principals (Design §5.4, FR-AUTH-9). The raw OTP is returned once
+        (for out-of-band delivery); only its hash is stored. Platform-RBAC gated
+        (`user:manage`) and audited.
+      tags:
+        - auth
+      responses:
+        '201':
+          description: An OTP was issued (raw value returned once).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedOtp'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueOtpRequest'
+  /v1/pins:
+    get:
+      operationId: listPins
+      summary: List pins for an identity (admin).
+      tags:
+        - auth
+      parameters:
+        - name: identity
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The identity's pins.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createPin
+      summary: Create an authN-shortcut pin (admin).
+      description: |
+        Pins a public-key fingerprint to `{identity, source-cidr, principals}`
+        with a TTL capped at the authorization TTL (Design §5.5, FR-AUTH-10).
+        Source IP is a deny-only reducer. Platform-RBAC gated + audited.
+      tags:
+        - auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePinRequest'
+      responses:
+        '201':
+          description: The pin was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/pins/{pinId}:
+    delete:
+      operationId: revokePin
+      summary: Revoke a pin (admin / offboarding / lock).
+      tags:
+        - auth
+      parameters:
+        - name: pinId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The pin was revoked (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/service-accounts/{serviceAccountId}/credentials:
+    post:
+      operationId: issueServiceAccountCredential
+      summary: Issue a machine-consumer credential (admin).
+      description: |
+        Issues a rotatable, revocable credential for a service account
+        (FR-AUTH-12): a `private_key_jwt` public-key/JWKS reference, an mTLS
+        certificate fingerprint, or (discouraged) a generated `client_secret`
+        returned once. Stored hashed / by reference. Platform-RBAC gated +
+        audited.
+      tags:
+        - auth
+      parameters:
+        - name: serviceAccountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueServiceAccountCredentialRequest'
+      responses:
+        '201':
+          description: The credential was issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountCredentialResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/service-accounts/{serviceAccountId}/credentials/{credentialId}:
+    delete:
+      operationId: revokeServiceAccountCredential
+      summary: Revoke a machine-consumer credential (admin).
+      description: Revocation takes effect immediately (new sessions denied, FR-AUTH-12).
+      tags:
+        - auth
+      parameters:
+        - name: serviceAccountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: credentialId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The credential was revoked (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/auth/device:
+    post:
+      operationId: beginDeviceFlow
+      summary: Begin an OIDC device-authorization flow (RFC 8628).
+      description: |
+        Starts a device flow bound to the SSH source context (Design §5.2,
+        FR-AUTH-3). Returns the user code + CP verification URI to present to the
+        user, and the device code the caller polls with. Fallback-only. The
+        caller is the Gateway (mTLS); S7 will move this onto the auth gRPC plane.
+      tags:
+        - auth
+      security:
+        - mtls: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeginDeviceFlowRequest'
+      responses:
+        '201':
+          description: A device flow was started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceFlowResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/auth/device/poll:
+    post:
+      operationId: pollDeviceFlow
+      summary: Poll a device flow for completion (RFC 8628).
+      description: |
+        Polls with the opaque device code (its own credential). Returns
+        `pending` until the user approves at the verification page, then
+        `authorized` with the resolved identity, or `denied`/`expired`. Public
+        (the device code is the authenticator); rate-limited.
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PollDeviceFlowRequest'
+      responses:
+        '200':
+          description: The current device-flow status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceFlowStatus'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
     oidcBearer:
@@ -230,4 +497,293 @@ components:
             agentGatewayWire:
               $ref: '#/components/schemas/ProtocolVersionRange'
           additionalProperties: false
+      additionalProperties: false
+    TokenRequest:
+      type: object
+      title: OAuth Token Request
+      description: |
+        Client-credentials token request (Design §5.6). Sent as
+        `application/x-www-form-urlencoded`. Client authentication is by
+        `client_assertion` (private_key_jwt) or by the mTLS client certificate;
+        a static `client_secret` is accepted but discouraged.
+      required:
+        - grant_type
+      properties:
+        grant_type:
+          type: string
+          description: Must be `client_credentials`.
+        client_id:
+          type: string
+        client_assertion_type:
+          type: string
+          description: 'For private_key_jwt: urn:ietf:params:oauth:client-assertion-type:jwt-bearer.'
+        client_assertion:
+          type: string
+          description: The signed JWT client assertion (RFC 7523).
+        client_secret:
+          type: string
+          description: Discouraged static secret (only if the SA uses client_secret).
+        scope:
+          type: string
+      additionalProperties: false
+    TokenResponse:
+      type: object
+      title: OAuth Token Response
+      required:
+        - access_token
+        - token_type
+        - expires_in
+      properties:
+        access_token:
+          type: string
+          description: The short-lived CP-signed bearer token.
+        token_type:
+          type: string
+          description: Always `Bearer`.
+        expires_in:
+          type: integer
+          format: int64
+          description: Token lifetime in seconds.
+        scope:
+          type: string
+      additionalProperties: false
+    IssueOtpRequest:
+      type: object
+      title: Issue OTP Request
+      required:
+        - identity
+        - allowedPrincipals
+      properties:
+        identity:
+          type: string
+          description: The identity the OTP authenticates (taken from the record, never client input at validation).
+        allowedPrincipals:
+          type: array
+          items:
+            type: string
+        sourceCidr:
+          type: string
+          description: Optional source-CIDR binding (deny-only reducer).
+        ttlSeconds:
+          type: integer
+          format: int32
+          description: OTP lifetime (60–300s); defaults to the operator setting.
+      additionalProperties: false
+    IssuedOtp:
+      type: object
+      title: Issued OTP
+      required:
+        - otpId
+        - otp
+        - expiresAt
+      properties:
+        otpId:
+          type: string
+          format: uuid
+        otp:
+          type: string
+          description: The raw OTP, returned ONCE for out-of-band delivery; only its hash is stored.
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CreatePinRequest:
+      type: object
+      title: Create Pin Request
+      required:
+        - fingerprint
+        - identity
+        - principals
+        - ttlSeconds
+      properties:
+        fingerprint:
+          type: string
+          description: The pinned public-key fingerprint (SHA256:...).
+        identity:
+          type: string
+        sourceCidr:
+          type: string
+          description: Source-CIDR binding (deny-only reducer, FR-AUTH-15).
+        principals:
+          type: array
+          items:
+            type: string
+        ttlSeconds:
+          type: integer
+          format: int64
+          description: Pin lifetime; capped at the authorization TTL (FR-AUTH-10).
+      additionalProperties: false
+    PinResource:
+      type: object
+      title: Pin
+      required:
+        - id
+        - fingerprint
+        - identity
+        - principals
+        - expiresAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        fingerprint:
+          type: string
+        identity:
+          type: string
+        sourceCidr:
+          type: string
+        principals:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    PinList:
+      type: object
+      title: Pin List
+      required:
+        - pins
+      properties:
+        pins:
+          type: array
+          items:
+            $ref: '#/components/schemas/PinResource'
+      additionalProperties: false
+    IssueServiceAccountCredentialRequest:
+      type: object
+      title: Issue Service-Account Credential Request
+      required:
+        - credentialType
+      properties:
+        credentialType:
+          type: string
+          enum:
+            - private_key_jwt
+            - mtls
+            - client_secret
+        publicKeyPem:
+          type: string
+          description: For private_key_jwt — the client's public key (PEM). Public material only.
+        jwksUri:
+          type: string
+          description: For private_key_jwt — a JWKS URI reference (alternative to publicKeyPem).
+        certificateFingerprint:
+          type: string
+          description: For mtls — the client certificate SHA-256 fingerprint.
+        ttlSeconds:
+          type: integer
+          format: int64
+          description: Credential validity; null = non-expiring until revoked.
+      additionalProperties: false
+    ServiceAccountCredentialResource:
+      type: object
+      title: Service-Account Credential
+      required:
+        - id
+        - serviceAccountId
+        - credentialType
+        - status
+        - issuedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        serviceAccountId:
+          type: string
+          format: uuid
+        credentialType:
+          type: string
+        fingerprint:
+          type: string
+        clientSecret:
+          type: string
+          description: For client_secret — the raw secret, returned ONCE; only its hash is stored.
+        status:
+          type: string
+        issuedAt:
+          type: string
+          format: date-time
+        notAfter:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BeginDeviceFlowRequest:
+      type: object
+      title: Begin Device Flow Request
+      properties:
+        sourceIp:
+          type: string
+          description: The SSH source IP to bind for anti-phishing correlation (§5.2).
+        connectionBinding:
+          type: string
+          description: An opaque 1:1 device-code↔connection binding value.
+      additionalProperties: false
+    DeviceFlowResource:
+      type: object
+      title: Device Flow
+      required:
+        - deviceFlowId
+        - userCode
+        - verificationUri
+        - deviceCode
+        - interval
+        - expiresIn
+      properties:
+        deviceFlowId:
+          type: string
+          format: uuid
+        userCode:
+          type: string
+          description: The short code the user enters at the verification page.
+        verificationUri:
+          type: string
+          description: The CP-hosted verification page URL.
+        verificationUriComplete:
+          type: string
+          description: Verification URI with the user code embedded (convenience).
+        deviceCode:
+          type: string
+          description: The opaque device code the caller polls with (its own credential).
+        interval:
+          type: integer
+          format: int32
+          description: Minimum poll interval in seconds.
+        expiresIn:
+          type: integer
+          format: int64
+          description: Seconds until the flow expires.
+      additionalProperties: false
+    PollDeviceFlowRequest:
+      type: object
+      title: Poll Device Flow Request
+      required:
+        - deviceCode
+      properties:
+        deviceCode:
+          type: string
+      additionalProperties: false
+    DeviceFlowStatus:
+      type: object
+      title: Device Flow Status
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - pending
+            - authorized
+            - denied
+            - expired
+        identity:
+          type: string
+          description: The resolved identity, present when status=authorized.
+        sourceContextMatch:
+          type: boolean
+          description: Whether the approving browser source correlated with the SSH source (§5.2).
       additionalProperties: false
