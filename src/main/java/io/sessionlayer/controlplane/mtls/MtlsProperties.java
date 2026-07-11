@@ -7,9 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * Typed configuration for the Session Four CP↔Gateway mTLS plane
- * ({@code sessionlayer.mtls.*}). This is the first {@code @ConfigurationProperties}
- * in the code base; the open values chosen this session live here with documented
- * defaults (RESULT §7):
+ * ({@code sessionlayer.mtls.*}). This is the first
+ * {@code @ConfigurationProperties} in the code base; the open values chosen
+ * this session live here with documented defaults (RESULT §7):
  *
  * <ul>
  * <li><b>identity-cert-ttl</b> — the renewable Gateway mTLS identity cert TTL
@@ -36,7 +36,9 @@ public class MtlsProperties {
 	/** The single-use session-signing token TTL (Design §15). */
 	private Duration sessionSigningTokenTtl = Duration.ofSeconds(120);
 
-	/** Backdating applied to issued certs' not-before for clock skew (FR-BOOT-4). */
+	/**
+	 * Backdating applied to issued certs' not-before for clock skew (FR-BOOT-4).
+	 */
 	private Duration certBackdate = Duration.ofMinutes(2);
 
 	public Server getServer() {

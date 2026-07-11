@@ -22,8 +22,8 @@ import reactor.core.publisher.Mono;
  * cross-gateway from cross-session from expired from replayed (§15).
  *
  * <p>
- * {@link #mint} is the minimal CP-internal path this session (S5/S8 will mint the
- * token from a real RBAC decision + connection).
+ * {@link #mint} is the minimal CP-internal path this session (S5/S8 will mint
+ * the token from a real RBAC decision + connection).
  */
 @Service
 public class SessionSigningTokenService {
@@ -36,15 +36,15 @@ public class SessionSigningTokenService {
 		this.properties = properties;
 	}
 
-	/** Mint a single-use session-signing token; returns the raw token (shown once). */
+	/**
+	 * Mint a single-use session-signing token; returns the raw token (shown once).
+	 */
 	public Mono<String> mint(UUID gatewayId, UUID sessionId, UUID nodeId, String principal, List<String> capabilities,
 			String sourceAddress) {
 		SingleUseTokens.Minted minted = SingleUseTokens.mint();
 		Instant expiresAt = Instant.now().plus(properties.getSessionSigningTokenTtl());
-		return tokens
-				.save(SessionSigningToken.create(minted.hash(), gatewayId, sessionId, nodeId, principal, capabilities,
-						sourceAddress, expiresAt))
-				.thenReturn(minted.raw());
+		return tokens.save(SessionSigningToken.create(minted.hash(), gatewayId, sessionId, nodeId, principal,
+				capabilities, sourceAddress, expiresAt)).thenReturn(minted.raw());
 	}
 
 	/**

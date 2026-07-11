@@ -19,7 +19,8 @@ import org.springframework.data.relational.core.mapping.Table;
  */
 @Table(schema = "runtime", name = "gateway_enrollment_token")
 public record GatewayEnrollmentToken(@Id UUID id, String tokenHash, String gatewayName, boolean singleUse,
-		Instant expiresAt, Instant consumedAt, String createdBy, @Version Long version, @CreatedDate Instant createdAt) {
+		Instant expiresAt, Instant consumedAt, String createdBy, @Version Long version,
+		@CreatedDate Instant createdAt) {
 
 	public static GatewayEnrollmentToken create(String tokenHash, String gatewayName, Instant expiresAt,
 			String createdBy) {

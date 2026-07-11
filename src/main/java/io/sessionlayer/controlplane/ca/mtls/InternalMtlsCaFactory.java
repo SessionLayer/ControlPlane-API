@@ -25,14 +25,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Creates and loads the internal mTLS CA (X.509, ECDSA P-256) — the trust anchor
- * for the CP↔Gateway plane (VERSIONING.md §7). Mirrors {@code LocalCaFactory}
- * (the SSH local CA) but produces an X.509 self-signed CA certificate rather than
- * an SSH signer. The CA private key is envelope-encrypted under the operator KEK
- * (FR-CA-8) with the identical row-binding AAD scheme, so a wrapped blob cannot
- * be lifted into a different CA's row (cross-CA substitution). Only the local
- * backend is implemented; a cloud X.509 backend plugs in behind
- * {@link X509CaBackend}.
+ * Creates and loads the internal mTLS CA (X.509, ECDSA P-256) — the trust
+ * anchor for the CP↔Gateway plane (VERSIONING.md §7). Mirrors
+ * {@code LocalCaFactory} (the SSH local CA) but produces an X.509 self-signed
+ * CA certificate rather than an SSH signer. The CA private key is
+ * envelope-encrypted under the operator KEK (FR-CA-8) with the identical
+ * row-binding AAD scheme, so a wrapped blob cannot be lifted into a different
+ * CA's row (cross-CA substitution). Only the local backend is implemented; a
+ * cloud X.509 backend plugs in behind {@link X509CaBackend}.
  */
 @Component
 public class InternalMtlsCaFactory {
@@ -90,7 +90,10 @@ public class InternalMtlsCaFactory {
 		return new Provisioned(config, material);
 	}
 
-	/** Load a persisted internal mTLS CA into a signing backend (unwraps transiently). */
+	/**
+	 * Load a persisted internal mTLS CA into a signing backend (unwraps
+	 * transiently).
+	 */
 	public LocalX509CaBackend load(CaConfig config, CaKeyMaterial material) {
 		warn();
 		if (material.caCertificate() == null) {

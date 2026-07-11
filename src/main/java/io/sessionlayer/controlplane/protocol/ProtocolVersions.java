@@ -12,8 +12,9 @@ import io.sessionlayer.controlplane.grpc.v1.ProtocolVersion;
  * {@code contracts/VERSIONING.md} §6 the Session Four range is {@code [1.0,
  * 1.1]}: Session Four added three additive services to the plane
  * ({@code GatewayIdentity.EnrollGateway/RenewGatewayIdentity} and
- * {@code SessionSigning.SignSessionCertificate}), which is a MINOR bump, so this
- * build advertises {@code protocol_max = 1.1} while keeping {@code protocol_min
+ * {@code SessionSigning.SignSessionCertificate}), which is a MINOR bump, so
+ * this build advertises {@code protocol_max = 1.1} while keeping
+ * {@code protocol_min
  * = 1.0} — the N-1 window (VERSIONING.md §4) that lets a 1.1 CP still negotiate
  * 1.0 with a Gateway that has not upgraded.
  */

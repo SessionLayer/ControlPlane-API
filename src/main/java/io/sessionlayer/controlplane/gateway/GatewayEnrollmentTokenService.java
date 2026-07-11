@@ -10,12 +10,12 @@ import reactor.core.publisher.Mono;
 
 /**
  * Mints and atomically consumes single-use Gateway enrollment tokens (Design
- * §4.B, FR-JOIN-3) — the bootstrap credential presented to {@code EnrollGateway}.
- * {@link #mint} is the CP-internal/admin mechanism (surfaced like the first-admin
- * bootstrap, not a secured REST endpoint this session); {@link #consume} verifies
- * scope + expiry and burns the token under the {@code @Version} optimistic lock,
- * so a concurrent replay loses the race and is rejected. All rejections are
- * generic (fail closed, NFR-2).
+ * §4.B, FR-JOIN-3) — the bootstrap credential presented to
+ * {@code EnrollGateway}. {@link #mint} is the CP-internal/admin mechanism
+ * (surfaced like the first-admin bootstrap, not a secured REST endpoint this
+ * session); {@link #consume} verifies scope + expiry and burns the token under
+ * the {@code @Version} optimistic lock, so a concurrent replay loses the race
+ * and is rejected. All rejections are generic (fail closed, NFR-2).
  */
 @Service
 public class GatewayEnrollmentTokenService {

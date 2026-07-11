@@ -6,10 +6,10 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * The variable fields of an internal-mTLS-CA leaf certificate: the public key to
- * certify (the private half never reaches the CP — D2/§15), the subject CN, the
- * SANs, the leaf {@link LeafPurpose role} (which fixes the EKU), the serial and
- * the validity window. The CA-independent inputs to
+ * The variable fields of an internal-mTLS-CA leaf certificate: the public key
+ * to certify (the private half never reaches the CP — D2/§15), the subject CN,
+ * the SANs, the leaf {@link LeafPurpose role} (which fixes the EKU), the serial
+ * and the validity window. The CA-independent inputs to
  * {@link X509CaBackend#issueLeaf(LeafCertificateSpec)}, so a cloud backend seam
  * signs exactly the same to-be-signed structure as the local backend.
  *

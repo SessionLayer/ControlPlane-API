@@ -37,8 +37,7 @@ public final class SingleUseTokens {
 	/** The SHA-256 hash (lowercase hex) of a raw token — the lookup/storage key. */
 	public static String hash(String rawToken) {
 		try {
-			byte[] digest = MessageDigest.getInstance("SHA-256")
-					.digest(rawToken.getBytes(StandardCharsets.UTF_8));
+			byte[] digest = MessageDigest.getInstance("SHA-256").digest(rawToken.getBytes(StandardCharsets.UTF_8));
 			return HexFormat.of().formatHex(digest);
 		} catch (Exception e) {
 			throw new IllegalStateException("SHA-256 unavailable", e);

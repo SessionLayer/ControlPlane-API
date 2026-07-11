@@ -26,8 +26,8 @@ import org.bouncycastle.pkcs.PKCS10CertificationRequest;
  * enrollment scope / current identity.</li>
  * </ul>
  *
- * The CP receives only the CSR (public key + PoP) and returns a certificate; the
- * private key never leaves the Gateway (D2/§15).
+ * The CP receives only the CSR (public key + PoP) and returns a certificate;
+ * the private key never leaves the Gateway (D2/§15).
  */
 public final class Pkcs10Csrs {
 

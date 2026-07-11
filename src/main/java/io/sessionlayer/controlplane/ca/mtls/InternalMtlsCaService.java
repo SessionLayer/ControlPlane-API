@@ -8,13 +8,14 @@ import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
 /**
- * Provisions (idempotently, race-safely) and loads the internal mTLS CA (Part B).
- * The CA is provisioned as part of cold start ({@code CaProvisioningService} calls
- * {@link #ensureProvisioned} under the shared advisory lock) and is also
- * self-provisioned on demand by the gRPC server startup via
- * {@link #loadOrProvision} (which takes the same lock), so the mTLS plane comes up
- * even if it is the first thing to touch the CA. Loading is fail-closed: if there
- * is no active mTLS CA it errors rather than falling back (NFR-2).
+ * Provisions (idempotently, race-safely) and loads the internal mTLS CA (Part
+ * B). The CA is provisioned as part of cold start
+ * ({@code CaProvisioningService} calls {@link #ensureProvisioned} under the
+ * shared advisory lock) and is also self-provisioned on demand by the gRPC
+ * server startup via {@link #loadOrProvision} (which takes the same lock), so
+ * the mTLS plane comes up even if it is the first thing to touch the CA.
+ * Loading is fail-closed: if there is no active mTLS CA it errors rather than
+ * falling back (NFR-2).
  */
 @Service
 public class InternalMtlsCaService {
@@ -76,12 +77,12 @@ public class InternalMtlsCaService {
 	}
 
 	/**
-	 * Load the active internal mTLS CA, provisioning it first (race-safely, under the
-	 * cold-start advisory lock) if absent. Used by the gRPC server startup.
+	 * Load the active internal mTLS CA, provisioning it first (race-safely, under
+	 * the cold-start advisory lock) if absent. Used by the gRPC server startup.
 	 */
 	public Mono<X509CaBackend> loadOrProvision(String backend) {
-		return activeBackend()
-				.onErrorResume(NoMtlsCaAvailable.class, absent -> provisionUnderLock(backend).then(activeBackend()));
+		return activeBackend().onErrorResume(NoMtlsCaAvailable.class,
+				absent -> provisionUnderLock(backend).then(activeBackend()));
 	}
 
 	private Mono<Void> provisionUnderLock(String backend) {

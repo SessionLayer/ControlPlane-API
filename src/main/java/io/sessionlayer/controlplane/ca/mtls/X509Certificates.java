@@ -130,8 +130,8 @@ public final class X509Certificates {
 	/**
 	 * Build a PKIX {@link X509TrustManager} anchored on a single CA certificate —
 	 * used by the {@code AuthInterceptor} to independently re-validate a presented
-	 * client-cert chain against the internal CA (not relying solely on the TLS-layer
-	 * toggle, per the trust model in VERSIONING.md §7).
+	 * client-cert chain against the internal CA (not relying solely on the
+	 * TLS-layer toggle, per the trust model in VERSIONING.md §7).
 	 */
 	public static X509TrustManager trustManagerFor(X509Certificate caCertificate) {
 		try {
@@ -151,7 +151,9 @@ public final class X509Certificates {
 		}
 	}
 
-	/** A validity window backdated by {@code backdate} and running for {@code ttl}. */
+	/**
+	 * A validity window backdated by {@code backdate} and running for {@code ttl}.
+	 */
 	public static Instant[] validityWindow(Instant now, Duration backdate, Duration ttl) {
 		return new Instant[]{now.minus(backdate), now.plus(ttl)};
 	}
