@@ -15,6 +15,8 @@ import java.util.List;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.ExtendedKeyUsage;
 import org.bouncycastle.asn1.x509.Extension;
@@ -47,6 +49,16 @@ public final class X509Certificates {
 	}
 
 	/**
+	 * Build a {@code CN=<value>} subject via {@link X500NameBuilder} (L1): the
+	 * builder RDN-escapes the value, so a name is never string-concatenated into
+	 * the DN. Callers additionally allowlist-validate the value (gateway names,
+	 * configured server hostnames).
+	 */
+	private static X500Name cn(String commonName) {
+		return new X500NameBuilder(BCStyle.INSTANCE).addRDN(BCStyle.CN, commonName).build();
+	}
+
+	/**
 	 * Self-sign an internal CA certificate over {@code caKeyPair}. BasicConstraints
 	 * CA=true with pathLen 0 (it signs only leaves), KeyUsage
 	 * {@code keyCertSign|cRLSign}, and a Subject Key Identifier.
@@ -54,7 +66,7 @@ public final class X509Certificates {
 	public static X509Certificate selfSignCa(String commonName, PublicKey caPublicKey, PrivateKey caPrivateKey,
 			BigInteger serial, Instant notBefore, Instant notAfter) {
 		try {
-			X500Name subject = new X500Name("CN=" + commonName);
+			X500Name subject = cn(commonName);
 			JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(subject, serial, Date.from(notBefore),
 					Date.from(notAfter), subject, caPublicKey);
 			JcaX509ExtensionUtils ext = new JcaX509ExtensionUtils();
@@ -77,7 +89,7 @@ public final class X509Certificates {
 			LeafCertificateSpec spec) {
 		try {
 			X500Name issuer = new X500Name(caCertificate.getSubjectX500Principal().getName());
-			X500Name subject = new X500Name("CN=" + spec.subjectCommonName());
+			X500Name subject = cn(spec.subjectCommonName());
 			JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(issuer, spec.serial(),
 					Date.from(spec.notBefore()), Date.from(spec.notAfter()), subject, spec.subjectPublicKey());
 			JcaX509ExtensionUtils ext = new JcaX509ExtensionUtils();

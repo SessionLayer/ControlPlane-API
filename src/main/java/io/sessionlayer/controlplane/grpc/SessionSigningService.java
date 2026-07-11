@@ -10,10 +10,13 @@ import io.sessionlayer.controlplane.grpc.v1.SessionSigningGrpc;
 import io.sessionlayer.controlplane.grpc.v1.SignContext;
 import io.sessionlayer.controlplane.grpc.v1.SignSessionCertificateRequest;
 import io.sessionlayer.controlplane.grpc.v1.SignSessionCertificateResponse;
+import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
+import io.sessionlayer.controlplane.mtls.MtlsProperties;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
 
 /**
  * gRPC server for {@code SessionSigning} (Part C, Design §15): mints the
@@ -27,31 +30,23 @@ import org.springframework.stereotype.Service;
 public class SessionSigningService extends SessionSigningGrpc.SessionSigningImplBase {
 
 	private final SessionCertificateService signing;
+	private final MtlsProperties properties;
 
-	public SessionSigningService(SessionCertificateService signing) {
+	public SessionSigningService(SessionCertificateService signing, MtlsProperties properties) {
 		this.signing = signing;
+		this.properties = properties;
 	}
 
 	@Override
 	public void signSessionCertificate(SignSessionCertificateRequest request,
 			StreamObserver<SignSessionCertificateResponse> observer) {
 		MtlsPeer peer = MtlsContext.peer();
-		SignRequestContext context;
-		try {
-			context = toContext(request);
-		} catch (GatewayRequestException badContext) {
-			observer.onError(GrpcErrors.toStatus(badContext, "SignSessionCertificate"));
-			return;
-		}
-		signing.sign(peer.gatewayId(), request.getSessionToken(), request.getSubjectPublicKey().toByteArray(), context)
-				.subscribe(signed -> complete(observer, toResponse(signed)),
-						error -> observer.onError(GrpcErrors.toStatus(error, "SignSessionCertificate")));
-	}
-
-	private static void complete(StreamObserver<SignSessionCertificateResponse> observer,
-			SignSessionCertificateResponse value) {
-		observer.onNext(value);
-		observer.onCompleted();
+		String presentedFingerprint = CertificateFingerprints.sha256Hex(peer.certificate());
+		Mono<SignSessionCertificateResponse> result = Mono.fromCallable(() -> toContext(request))
+				.flatMap(context -> signing.sign(peer.gatewayId(), presentedFingerprint, request.getSessionToken(),
+						request.getSubjectPublicKey().toByteArray(), context))
+				.map(SessionSigningService::toResponse);
+		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "SignSessionCertificate");
 	}
 
 	// The advisory context: an unset field is left null; a set-but-malformed UUID

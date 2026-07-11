@@ -40,6 +40,23 @@ public class GatewayEnrollmentTokenService {
 	}
 
 	/**
+	 * Non-consuming validity check for {@code gatewayName} (M1): true iff the token
+	 * exists, is scoped to this name, is unexpired, and has not been consumed. Used
+	 * to gate the already-enrolled decision behind a proven-valid token WITHOUT
+	 * burning the single-use token on a probe. The atomic single-use guarantee
+	 * still rests on {@link #consume}.
+	 */
+	public Mono<Boolean> isValid(String rawToken, String gatewayName) {
+		if (rawToken == null || rawToken.isBlank()) {
+			return Mono.just(false);
+		}
+		String hash = SingleUseTokens.hash(rawToken);
+		Instant now = Instant.now();
+		return tokens.findByTokenHash(hash).map(token -> token.gatewayName().equals(gatewayName)
+				&& token.consumedAt() == null && token.expiresAt().isAfter(now)).defaultIfEmpty(false);
+	}
+
+	/**
 	 * Verify + atomically consume the enrollment token for {@code gatewayName}. Any
 	 * unknown / wrong-scope / expired / already-consumed token — or a lost consume
 	 * race — is rejected with a generic {@code UNAUTHENTICATED}.

@@ -69,6 +69,23 @@ class MtlsPlaneIT extends AbstractMtlsIT {
 	}
 
 	@Test
+	void tls12ClientIsRefused() {
+		// The server is TLS-1.3-only (MtlsServerContext.protocols("TLSv1.3")). A
+		// TLS-1.2-only
+		// client cannot complete the handshake, so even the bootstrap negotiate fails
+		// closed (L2).
+		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(),
+				MtlsTestSupport.tls12ClientContext(caCertificate()));
+		try {
+			StatusRuntimeException error = catchThrowableOfType(StatusRuntimeException.class,
+					() -> HandshakeGrpc.newBlockingStub(channel).negotiate(hello(1, 0, 1, 1)));
+			assertThat(error.getStatus().getCode()).isIn(Status.Code.UNAVAILABLE, Status.Code.INTERNAL);
+		} finally {
+			shutdown(channel);
+		}
+	}
+
+	@Test
 	void noClientCertIsRefusedOnMtlsRequiredRpcButBootstrapWorks() {
 		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), null, null);
 		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);

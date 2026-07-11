@@ -5,6 +5,7 @@ import io.grpc.StatusRuntimeException;
 import io.sessionlayer.controlplane.ca.CaSignerService;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.gateway.GatewayRequestException;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,6 +38,12 @@ final class GrpcErrors {
 				|| error instanceof CaSignerService.NoSignerAvailable) {
 			LOG.warn("gRPC {} refused — CA unavailable: {}", operation, error.getMessage());
 			return Status.UNAVAILABLE.withDescription("certificate authority unavailable").asRuntimeException();
+		}
+		if (error instanceof TimeoutException) {
+			// Server-side deadline hit (M3) — a saturated DB / R2DBC pool, not a client
+			// fault.
+			LOG.warn("gRPC {} exceeded the server deadline", operation);
+			return Status.DEADLINE_EXCEEDED.withDescription("request deadline exceeded").asRuntimeException();
 		}
 		// Unexpected: log the real cause server-side, return a generic error.
 		LOG.warn("gRPC {} failed", operation, error);

@@ -9,6 +9,8 @@ import io.sessionlayer.controlplane.grpc.AuthInterceptor;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +44,7 @@ public class GrpcMtlsServer implements SmartLifecycle {
 	private final List<BindableService> services;
 
 	private volatile Server server;
+	private volatile ExecutorService handlerExecutor;
 	private volatile int port = -1;
 	private volatile boolean running;
 
@@ -69,9 +72,29 @@ public class GrpcMtlsServer implements SmartLifecycle {
 					properties.getCertBackdate());
 			AuthInterceptor interceptor = new AuthInterceptor(context.trustManager());
 
+			// Bounded handler pool so a request flood can't spawn unbounded threads;
+			// the CPU-heavy crypto/DB steps are additionally offloaded to Reactor's
+			// boundedElastic inside the services (M7).
+			this.handlerExecutor = Executors.newFixedThreadPool(serverProps.getHandlerThreads(), runnable -> {
+				Thread thread = new Thread(runnable, "mtls-grpc-handler");
+				thread.setDaemon(true);
+				return thread;
+			});
+
+			// DoS bounds (M2): small message/metadata caps (the plane carries only tiny
+			// control messages), bounded concurrency, ping-flood + connection-age/idle
+			// limits. The TLS handshake timeout stays as configured on the SslContext.
 			NettyServerBuilder builder = NettyServerBuilder
 					.forAddress(new InetSocketAddress(serverProps.getBindAddress(), serverProps.getPort()))
-					.sslContext(context.sslContext()).intercept(interceptor);
+					.sslContext(context.sslContext()).intercept(interceptor).executor(handlerExecutor)
+					.maxInboundMessageSize(serverProps.getMaxInboundMessageSize())
+					.maxInboundMetadataSize(serverProps.getMaxInboundMetadataSize())
+					.maxConcurrentCallsPerConnection(serverProps.getMaxConcurrentCallsPerConnection())
+					.permitKeepAliveTime(serverProps.getPermitKeepAliveTime().toMillis(), TimeUnit.MILLISECONDS)
+					.permitKeepAliveWithoutCalls(false)
+					.maxConnectionAge(serverProps.getMaxConnectionAge().toMillis(), TimeUnit.MILLISECONDS)
+					.maxConnectionAgeGrace(serverProps.getMaxConnectionAgeGrace().toMillis(), TimeUnit.MILLISECONDS)
+					.maxConnectionIdle(serverProps.getMaxConnectionIdle().toMillis(), TimeUnit.MILLISECONDS);
 			services.forEach(builder::addService);
 
 			this.server = builder.build().start();
@@ -86,17 +109,30 @@ public class GrpcMtlsServer implements SmartLifecycle {
 
 	@Override
 	public synchronized void stop() {
+		// Flip running->false first so a gRPC readiness indicator reports NOT-READY
+		// before the drain begins (M5 / L4): the LB stops routing new work to us.
+		this.running = false;
 		Server current = this.server;
 		if (current != null) {
-			current.shutdown();
+			current.shutdown(); // stop accepting new RPCs; let in-flight ones drain
 			try {
-				current.awaitTermination(10, TimeUnit.SECONDS);
+				if (!current.awaitTermination(properties.getServer().getDrainTimeout().toMillis(),
+						TimeUnit.MILLISECONDS)) {
+					// Past the drain deadline: force-close whatever is still in flight (M5).
+					current.shutdownNow();
+					current.awaitTermination(2, TimeUnit.SECONDS);
+				}
 			} catch (InterruptedException e) {
+				current.shutdownNow();
 				Thread.currentThread().interrupt();
 			}
 			this.server = null;
 		}
-		this.running = false;
+		ExecutorService executor = this.handlerExecutor;
+		if (executor != null) {
+			executor.shutdownNow();
+			this.handlerExecutor = null;
+		}
 	}
 
 	@Override

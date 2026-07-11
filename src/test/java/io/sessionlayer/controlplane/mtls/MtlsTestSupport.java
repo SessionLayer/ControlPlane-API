@@ -74,6 +74,19 @@ public final class MtlsTestSupport {
 		}
 	}
 
+	/**
+	 * A client SslContext that offers ONLY TLS 1.2 — used to assert the
+	 * TLS-1.3-only server refuses it (L2). Trusts {@code caCertificate}; presents
+	 * no client cert.
+	 */
+	public static SslContext tls12ClientContext(X509Certificate caCertificate) {
+		try {
+			return GrpcSslContexts.forClient().trustManager(caCertificate).protocols("TLSv1.2").build();
+		} catch (Exception e) {
+			throw new IllegalStateException("failed to build TLS-1.2 client SslContext", e);
+		}
+	}
+
 	/** An mTLS channel to the CP server on {@code localhost:port}. */
 	public static ManagedChannel channel(int port, SslContext sslContext) {
 		return NettyChannelBuilder.forAddress("localhost", port).sslContext(sslContext).overrideAuthority("localhost")

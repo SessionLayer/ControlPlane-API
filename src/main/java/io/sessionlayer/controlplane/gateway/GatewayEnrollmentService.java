@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Enrolls a Gateway (Part B, FR-BOOT-3): verify + atomically consume the
@@ -57,34 +58,62 @@ public class GatewayEnrollmentService {
 	 * enrolled (rotation goes through renew).
 	 */
 	public Mono<IssuedIdentity> enroll(String rawToken, byte[] csrDer, String gatewayName) {
-		if (gatewayName == null || gatewayName.isBlank()) {
+		if (!GatewayNames.isValid(gatewayName)) {
+			// A name-format error reveals nothing about the fleet's enrolment state.
 			return Mono.error(new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT,
-					"gateway_name is required"));
+					"invalid gateway_name"));
 		}
-		return Mono.fromCallable(() -> parseCsr(csrDer, gatewayName)).flatMap(csr -> gatewayIdentities
-				.findByName(gatewayName)
-				.flatMap(existing -> Mono.<IssuedIdentity>error(new GatewayRequestException(
-						GatewayRequestException.Reason.FAILED_PRECONDITION, "gateway already enrolled (use renew)")))
-				.switchIfEmpty(Mono.defer(() -> issue(rawToken, gatewayName, csr))));
+		// M1: prove a VALID token AND that the name is free BEFORE revealing anything.
+		// Both "invalid/expired token" and "already enrolled" collapse to ONE generic
+		// error (identical status + description), so an unauthenticated bootstrap-tier
+		// peer cannot enumerate fleet gateway names; the specific reason is audited
+		// server-side only, and the single-use token is NOT burned on either denial.
+		return Mono.zip(tokenService.isValid(rawToken, gatewayName),
+				gatewayIdentities.findByName(gatewayName).hasElement()).flatMap(state -> {
+					boolean tokenValid = state.getT1();
+					boolean alreadyEnrolled = state.getT2();
+					if (!tokenValid || alreadyEnrolled) {
+						String reason = tokenValid ? "already_enrolled" : "invalid_or_expired_token";
+						return audit.record(gatewayName, gatewayName, "gateway.enroll", "denied", null, null,
+								Map.of("reason", reason)).then(Mono.error(enrollmentRefused()));
+					}
+					// Token proven valid + name free. Parse/verify the CSR now — POST-token, so an
+					// unauthenticated peer never reaches the CPU-bound CSR PoP verify (M2) — on a
+					// bounded scheduler (M7); then atomically consume the token and issue.
+					return Mono.fromCallable(() -> parseCsr(csrDer, gatewayName))
+							.subscribeOn(Schedulers.boundedElastic())
+							.flatMap(csr -> tokenService.consume(rawToken, gatewayName).then(issue(gatewayName, csr)));
+				});
 	}
 
-	private Mono<IssuedIdentity> issue(String rawToken, String gatewayName, Pkcs10Csrs.ParsedCsr csr) {
-		return tokenService.consume(rawToken, gatewayName).then(mtlsCa.activeBackend()).flatMap(backend -> {
+	private Mono<IssuedIdentity> issue(String gatewayName, Pkcs10Csrs.ParsedCsr csr) {
+		return mtlsCa.activeBackend().flatMap(backend -> {
 			UUID gatewayId = Uuids.v7();
 			Instant now = Instant.now();
 			Instant notBefore = now.minus(properties.getCertBackdate());
 			Instant notAfter = now.plus(properties.getIdentityCertTtl());
-			X509Certificate leaf = backend.issueLeaf(new LeafCertificateSpec(csr.publicKey(), gatewayName,
-					List.of(gatewayName), List.of(GatewayIdentityUri.of(gatewayId)), LeafPurpose.CLIENT,
-					serial(gatewayId), notBefore, notAfter));
-			String fingerprint = CertificateFingerprints.sha256Hex(leaf);
-			GatewayIdentity identity = new GatewayIdentity(gatewayId, gatewayName, "mtls:" + gatewayId, fingerprint, 0L,
-					"token", "active", notBefore, notAfter, null, null, null, null, null, null);
-			return gatewayIdentities.save(identity)
-					.then(audit.record(gatewayName, gatewayName, "gateway.enroll", "success", null, null,
-							Map.of("generation", "0", "fingerprint", fingerprint)))
-					.thenReturn(toIssued(leaf, backend, gatewayId, 0L, notBefore, notAfter));
+			// M7: X.509 issuance (ECDSA sign) is CPU-bound — run it off the reactive event
+			// loop. L3: a fresh random serial (not derived from the gateway id).
+			return Mono
+					.fromCallable(() -> backend.issueLeaf(new LeafCertificateSpec(csr.publicKey(), gatewayName,
+							List.of(gatewayName), List.of(GatewayIdentityUri.of(gatewayId)), LeafPurpose.CLIENT,
+							serial(Uuids.v7()), notBefore, notAfter)))
+					.subscribeOn(Schedulers.boundedElastic()).flatMap(leaf -> {
+						String fingerprint = CertificateFingerprints.sha256Hex(leaf);
+						GatewayIdentity identity = new GatewayIdentity(gatewayId, gatewayName, "mtls:" + gatewayId,
+								fingerprint, null, 0L, "token", "active", notBefore, notAfter, null, null, null, null,
+								null, null);
+						return gatewayIdentities.save(identity)
+								.then(audit.record(gatewayName, gatewayName, "gateway.enroll", "success", null, null,
+										Map.of("generation", "0", "fingerprint", fingerprint)))
+								.thenReturn(toIssued(leaf, backend, gatewayId, 0L, notBefore, notAfter));
+					});
 		});
+	}
+
+	private static GatewayRequestException enrollmentRefused() {
+		// ONE generic error for both invalid-token and already-enrolled (M1/NFR-2).
+		return new GatewayRequestException(GatewayRequestException.Reason.UNAUTHENTICATED, "enrollment refused");
 	}
 
 	private static Pkcs10Csrs.ParsedCsr parseCsr(byte[] csrDer, String gatewayName) {

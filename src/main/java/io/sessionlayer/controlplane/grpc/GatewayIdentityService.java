@@ -10,8 +10,10 @@ import io.sessionlayer.controlplane.grpc.v1.EnrollGatewayResponse;
 import io.sessionlayer.controlplane.grpc.v1.GatewayIdentityGrpc;
 import io.sessionlayer.controlplane.grpc.v1.RenewGatewayIdentityRequest;
 import io.sessionlayer.controlplane.grpc.v1.RenewGatewayIdentityResponse;
+import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
+import io.sessionlayer.controlplane.mtls.MtlsProperties;
 import org.springframework.stereotype.Service;
 
 /**
@@ -27,17 +29,21 @@ public class GatewayIdentityService extends GatewayIdentityGrpc.GatewayIdentityI
 
 	private final GatewayEnrollmentService enrollment;
 	private final GatewayRenewalService renewal;
+	private final MtlsProperties properties;
 
-	public GatewayIdentityService(GatewayEnrollmentService enrollment, GatewayRenewalService renewal) {
+	public GatewayIdentityService(GatewayEnrollmentService enrollment, GatewayRenewalService renewal,
+			MtlsProperties properties) {
 		this.enrollment = enrollment;
 		this.renewal = renewal;
+		this.properties = properties;
 	}
 
 	@Override
 	public void enrollGateway(EnrollGatewayRequest request, StreamObserver<EnrollGatewayResponse> observer) {
-		enrollment.enroll(request.getEnrollmentToken(), request.getPkcs10Csr().toByteArray(), request.getGatewayName())
-				.subscribe(issued -> complete(observer, toEnrollResponse(issued)),
-						error -> observer.onError(GrpcErrors.toStatus(error, "EnrollGateway")));
+		ReactiveBridge.forward(
+				enrollment.enroll(request.getEnrollmentToken(), request.getPkcs10Csr().toByteArray(),
+						request.getGatewayName()).map(GatewayIdentityService::toEnrollResponse),
+				observer, properties.getRpcTimeout(), "EnrollGateway");
 	}
 
 	@Override
@@ -46,14 +52,11 @@ public class GatewayIdentityService extends GatewayIdentityGrpc.GatewayIdentityI
 		// The interceptor resolved the caller synchronously into the gRPC context; read
 		// it before subscribing (the reactive callbacks run on other threads).
 		MtlsPeer peer = MtlsContext.peer();
-		renewal.renew(peer.gatewayId(), request.getPkcs10Csr().toByteArray(), request.getCurrentGeneration()).subscribe(
-				issued -> complete(observer, toRenewResponse(issued)),
-				error -> observer.onError(GrpcErrors.toStatus(error, "RenewGatewayIdentity")));
-	}
-
-	private static <T> void complete(StreamObserver<T> observer, T value) {
-		observer.onNext(value);
-		observer.onCompleted();
+		String presentedFingerprint = CertificateFingerprints.sha256Hex(peer.certificate());
+		ReactiveBridge.forward(
+				renewal.renew(peer.gatewayId(), presentedFingerprint, request.getPkcs10Csr().toByteArray(),
+						request.getCurrentGeneration()).map(GatewayIdentityService::toRenewResponse),
+				observer, properties.getRpcTimeout(), "RenewGatewayIdentity");
 	}
 
 	private static EnrollGatewayResponse toEnrollResponse(IssuedIdentity issued) {

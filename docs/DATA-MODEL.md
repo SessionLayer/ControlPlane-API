@@ -391,3 +391,52 @@ The `jit_request.approvals` chain stays **jsonb** (intentionally flexible; S11 f
 element shape: `{approver, level, decision, reason, at}`. The self-approval invariant (approver ≠ requester,
 FR-ACC-4) and the approver-queue index remain S11 concerns; keeping the shape as jsonb now is the deliberate choice
 (a child table would over-commit before the logic exists).
+
+### 13.5 CA-rotation uniqueness guard (`V13`, closes `R-ROT-2`)
+`V13` adds a **partial unique index** so at most one `incoming` CA row can exist per `ca_kind` — without it, two
+concurrent (or retried) `beginRotation` calls create two `incoming` rows and `promote` picks one arbitrarily,
+stranding a never-expiring key in the trusted set. Forward-only; no table shape change.
+
+## 14. Session Four additions (`V14`–`V15`) — internal mTLS plane + T4 hardening
+
+S4 adds migrations `V14`–`V15` (forward-only; V2–V13 unchanged). New top-level tables: **12 config + 20 runtime =
+32** (was 30), plus the `audit_event` range partitions. These carry the CP↔Gateway mTLS plane (VERSIONING.md §7,
+Design §2A/§8/§15). No config table is added; the two new tables are both runtime.
+
+### 14.1 Internal mTLS CA reuses the CA machinery (`V14`)
+The internal mTLS CA is an **X.509 CA distinct from the three SSH CAs**, but it reuses the S3 CA lifecycle rather
+than a parallel one:
+- `config.ca_config.ca_kind` gains a fourth value **`'mtls'`** (expand/contract: the inline CHECK is dropped by
+  its generated name and recreated as `('user','session','host','mtls')`; existing SSH-CA rows are untouched).
+- `runtime.ca_key_material` gains a nullable **`ca_certificate bytea`** — the self-signed X.509 CA cert (DER),
+  populated for the `mtls` CA (so the CP can serve `EnrollGatewayResponse.ca_chain` and reload the anchor) and
+  **NULL** for SSH CAs (whose trust anchor is an OpenSSH public key, not an X.509 cert). The V12 write-once trigger
+  is extended to cover `ca_certificate` alongside `wrapped_key`/`iv`/`public_key` — set once at insert, immortal
+  after. The KEK-wrapped private key stays **ciphertext only**; the KEK is env-sourced (D2 key custody).
+
+### 14.2 Single-use token tables (`V14`) — hash only, `@Version` consume
+Two tables mirror the `join_token`/`otp` single-use shape (Design §8.1); both store the token **hash only** (the
+raw token is never persisted) and gate the consume race with a `@Version` optimistic lock:
+- **`runtime.gateway_enrollment_token`** (FR-JOIN-3 / Design §4.B) — the operator-provisioned bootstrap credential,
+  scoped to one `gateway_name`, single-use (`consumed_at` set atomically on successful enroll), short TTL
+  (`expires_at`, 10 min). This is the *only* credential that authenticates `GatewayIdentity.EnrollGateway`, which
+  is reachable **without** a client certificate (the bootstrap exception, VERSIONING.md §7).
+- **`runtime.session_signing_token`** (FR-CA-3 / Design §15) — the per-RPC session-bound authority for
+  `SignSessionCertificate`, bound to `{gateway_id, session_id, node_id, principal, capabilities, exp}`. Single-use
+  (`used`/`used_at`, atomic mark-used → replay is rejected), 120 s TTL. `capabilities` is CHECK-constrained to the
+  SSH capability set; `source_address` is CIDR/IP-validated. S5/S8 will mint it from a real RBAC decision; S4 mints
+  it via a minimal CP-internal path so the signing RPC is testable end-to-end.
+
+### 14.3 T4 hardening (`V15`) — fingerprint pin + token-table least privilege
+`V15` is forward-only and additive; it closes two T4 review findings:
+- **M6 — client-cert fingerprint pin.** `runtime.gateway_identity` gains **`prev_fingerprint text`**. The
+  `RenewGatewayIdentity` and `SignSessionCertificate` tiers pin the *presented* client cert's SHA-256 fingerprint
+  to the stored `gateway_identity.fingerprint`, tolerating `{current, previous}` so the renew-ahead overlap still
+  authenticates. `renew` records the outgoing fingerprint into `prev_fingerprint`; it is **NULL** for a
+  freshly-enrolled (generation 0) identity. This makes `renew` an effective rotation/compromise-recovery primitive
+  — a superseded certificate stops authenticating those tiers immediately, without waiting for the S10
+  CRL/OCSP/lock-push fan-out. Public material.
+- **L5 — token-table least privilege.** Both single-use token tables are consumed via an **UPDATE** (mark
+  consumed/used), never a DELETE; `V15` **REVOKEs DELETE** on both from `cp_runtime` (V11's `ALTER DEFAULT
+  PRIVILEGES` had auto-granted it), mirroring V12's write-once discipline. Runtime can create and consume a token
+  but can never erase the single-use evidence.

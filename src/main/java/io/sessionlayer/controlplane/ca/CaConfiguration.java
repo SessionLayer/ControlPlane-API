@@ -61,15 +61,16 @@ public class CaConfiguration {
 	 * the CAs exist, and this runs on the startup thread, never the reactive event
 	 * loop.
 	 */
-	// Ordering note (R-WR-3): this ApplicationRunner is the first code to open an
-	// R2DBC
-	// connection (as cp_runtime), and it runs after Flyway has migrated (creating
-	// the
-	// cp_runtime role in V11) — Flyway completes during context refresh, before any
-	// runner and before the server accepts traffic, and the R2DBC pool opens no
-	// eager
-	// connections. Any future eager @PostConstruct R2DBC work must respect this
-	// invariant.
+	// Ordering note (R-WR-3, I1): the FIRST code to open an R2DBC connection (as
+	// cp_runtime) is now the GrpcMtlsServer SmartLifecycle (it loads/provisions the
+	// internal mTLS CA in start(), which runs during finishRefresh, before any
+	// ApplicationRunner). This cold-start runner is next. The invariant still
+	// holds:
+	// Flyway completes earlier in context refresh (creating the cp_runtime role in
+	// V11) and the R2DBC pool opens no eager connections, so the first real
+	// connection is always post-migration. Any future eager
+	// @PostConstruct/lifecycle
+	// R2DBC work must respect this invariant.
 	@Bean
 	@ConditionalOnProperty(value = "sessionlayer.coldstart.enabled", havingValue = "true", matchIfMissing = true)
 	public ApplicationRunner caColdStartRunner(CaProvisioningService provisioningService,

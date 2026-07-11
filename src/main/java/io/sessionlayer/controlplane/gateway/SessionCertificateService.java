@@ -19,6 +19,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Signs a session's inner-leg SSH certificate over gRPC with per-RPC,
@@ -54,8 +55,8 @@ public class SessionCertificateService {
 	 * disagrees with the token. A malformed subject key is an
 	 * {@code INVALID_ARGUMENT}.
 	 */
-	public Mono<SignedInnerCert> sign(UUID callerGatewayId, String rawToken, byte[] subjectPublicKeyBlob,
-			SignRequestContext context) {
+	public Mono<SignedInnerCert> sign(UUID callerGatewayId, String presentedFingerprint, String rawToken,
+			byte[] subjectPublicKeyBlob, SignRequestContext context) {
 		ECPublicKey subjectKey;
 		try {
 			subjectKey = SshEcdsaPublicKeys.parse(subjectPublicKeyBlob);
@@ -63,20 +64,39 @@ public class SessionCertificateService {
 			return Mono.error(new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT,
 					"invalid subject public key"));
 		}
-		return requireActiveGateway(callerGatewayId).then(tokenService.consume(rawToken, callerGatewayId, context))
-				.flatMap(token -> caSigner.activeSigner("session").map(signer -> mint(signer, subjectKey, token))
+		return requireAuthorizedGateway(callerGatewayId, presentedFingerprint)
+				.then(tokenService.consume(rawToken, callerGatewayId, context))
+				.flatMap(token -> caSigner.activeSigner("session")
+						// M7: OpenSSH cert assembly + ECDSA sign is CPU-bound — off the event loop.
+						.flatMap(signer -> Mono.fromCallable(() -> mint(signer, subjectKey, token))
+								.subscribeOn(Schedulers.boundedElastic()))
 						.flatMap(signed -> audit
 								.record(callerGatewayId.toString(), token.principal(), "session.sign", "success",
 										token.sessionId(), token.nodeId(), Map.of("key_id", signed.keyId()))
-								.thenReturn(signed)));
+								.thenReturn(signed)))
+				// M4 / FR-AUD-7: every fail-closed denial on the signing path is audited
+				// (generic to the client; the category reason + caller id stay server-side).
+				.onErrorResume(GatewayRequestException.class,
+						denial -> audit
+								.record(callerGatewayId == null ? "unknown" : callerGatewayId.toString(), null,
+										"session.sign", "denied", null, null, Map.of("reason", denial.reason().name()))
+								.then(Mono.error(denial)));
 	}
 
-	private Mono<GatewayIdentity> requireActiveGateway(UUID callerGatewayId) {
-		if (callerGatewayId == null) {
+	// M6: the caller's identity must be active AND the presented client cert must
+	// pin to
+	// the identity's current or previous fingerprint (a superseded/stolen cert is
+	// refused).
+	private Mono<GatewayIdentity> requireAuthorizedGateway(UUID callerGatewayId, String presentedFingerprint) {
+		if (callerGatewayId == null || presentedFingerprint == null) {
 			return Mono.error(denied());
 		}
-		return gatewayIdentities.findById(callerGatewayId).switchIfEmpty(Mono.error(denied()))
-				.flatMap(identity -> "active".equals(identity.status()) ? Mono.just(identity) : Mono.error(denied()));
+		return gatewayIdentities.findById(callerGatewayId).switchIfEmpty(Mono.error(denied())).flatMap(identity -> {
+			boolean active = "active".equals(identity.status());
+			boolean pinned = presentedFingerprint.equals(identity.fingerprint())
+					|| presentedFingerprint.equals(identity.prevFingerprint());
+			return active && pinned ? Mono.just(identity) : Mono.error(denied());
+		});
 	}
 
 	// Compute the cert parameters ONCE, sign over the presented public key, and

@@ -11,7 +11,6 @@ import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
 import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.GatewayIdentityUri;
 import io.sessionlayer.controlplane.mtls.MtlsProperties;
-import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +18,7 @@ import java.util.UUID;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Renews a Gateway's mTLS identity (Part B, FR-JOIN-4). Authenticated by the
@@ -46,19 +46,33 @@ public class GatewayRenewalService {
 		this.audit = audit;
 	}
 
-	/** Rotate the caller's identity certificate and increment the generation. */
-	public Mono<IssuedIdentity> renew(UUID callerGatewayId, byte[] csrDer, long currentGeneration) {
+	/**
+	 * Rotate the caller's identity certificate and increment the generation.
+	 * {@code presentedFingerprint} is the SHA-256 of the client certificate the
+	 * caller presented on this mTLS call (resolved by the interceptor / handler);
+	 * it must pin to the identity's current or previous fingerprint (M6).
+	 */
+	public Mono<IssuedIdentity> renew(UUID callerGatewayId, String presentedFingerprint, byte[] csrDer,
+			long currentGeneration) {
 		if (callerGatewayId == null) {
 			return Mono.error(unauthenticated());
 		}
 		return gatewayIdentities.findById(callerGatewayId).switchIfEmpty(Mono.error(unauthenticated()))
-				.flatMap(identity -> renewFor(identity, csrDer, currentGeneration));
+				.flatMap(identity -> renewFor(identity, presentedFingerprint, csrDer, currentGeneration));
 	}
 
-	private Mono<IssuedIdentity> renewFor(GatewayIdentity identity, byte[] csrDer, long currentGeneration) {
+	private Mono<IssuedIdentity> renewFor(GatewayIdentity identity, String presentedFingerprint, byte[] csrDer,
+			long currentGeneration) {
 		if (!"active".equals(identity.status())) {
-			return Mono.error(new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED,
-					"gateway identity is not active"));
+			return denied(identity, "inactive");
+		}
+		// M6: the presented client cert must be the current or previous-generation cert
+		// —
+		// a superseded/stolen prior cert cannot renew. {current, previous} tolerates
+		// the
+		// renew-ahead overlap.
+		if (!fingerprintPins(identity, presentedFingerprint)) {
+			return denied(identity, "fingerprint_mismatch");
 		}
 		Pkcs10Csrs.ParsedCsr csr;
 		try {
@@ -84,21 +98,44 @@ public class GatewayRenewalService {
 			Instant now = Instant.now();
 			Instant notBefore = now.minus(properties.getCertBackdate());
 			Instant notAfter = now.plus(properties.getIdentityCertTtl());
-			X509Certificate leaf = backend.issueLeaf(new LeafCertificateSpec(csr.publicKey(), identity.name(),
-					List.of(identity.name()), List.of(GatewayIdentityUri.of(identity.id())), LeafPurpose.CLIENT,
-					GatewayEnrollmentService.serial(Uuids.v7()), notBefore, notAfter));
-			String fingerprint = CertificateFingerprints.sha256Hex(leaf);
-			GatewayIdentity renewed = new GatewayIdentity(identity.id(), identity.name(),
-					"mtls:" + identity.id() + ":" + newGeneration, fingerprint, newGeneration, identity.joinMethod(),
-					identity.status(), notBefore, notAfter, identity.statusReason(), identity.statusChangedBy(),
-					identity.statusChangedAt(), identity.version(), identity.createdAt(), identity.updatedAt());
-			return gatewayIdentities.save(renewed)
-					.onErrorMap(OptimisticLockingFailureException.class, race -> generationMismatch())
-					.then(audit.record(identity.name(), identity.name(), "gateway.renew", "success", null, null,
-							Map.of("generation", Long.toString(newGeneration), "fingerprint", fingerprint)))
-					.thenReturn(GatewayEnrollmentService.toIssued(leaf, backend, identity.id(), newGeneration,
-							notBefore, notAfter));
+			// M7: X.509 issuance (ECDSA sign) is CPU-bound — off the reactive event loop.
+			return Mono
+					.fromCallable(() -> backend.issueLeaf(new LeafCertificateSpec(csr.publicKey(), identity.name(),
+							List.of(identity.name()), List.of(GatewayIdentityUri.of(identity.id())), LeafPurpose.CLIENT,
+							GatewayEnrollmentService.serial(Uuids.v7()), notBefore, notAfter)))
+					.subscribeOn(Schedulers.boundedElastic()).flatMap(leaf -> {
+						String fingerprint = CertificateFingerprints.sha256Hex(leaf);
+						// M6: record the OUTGOING fingerprint as prev_fingerprint so the pin
+						// tolerates the renew-ahead overlap until the next renew.
+						GatewayIdentity renewed = new GatewayIdentity(identity.id(), identity.name(),
+								"mtls:" + identity.id() + ":" + newGeneration, fingerprint, identity.fingerprint(),
+								newGeneration, identity.joinMethod(), identity.status(), notBefore, notAfter,
+								identity.statusReason(), identity.statusChangedBy(), identity.statusChangedAt(),
+								identity.version(), identity.createdAt(), identity.updatedAt());
+						return gatewayIdentities.save(renewed)
+								.onErrorMap(OptimisticLockingFailureException.class, race -> generationMismatch())
+								.then(audit.record(identity.name(), identity.name(), "gateway.renew", "success", null,
+										null,
+										Map.of("generation", Long.toString(newGeneration), "fingerprint", fingerprint)))
+								.thenReturn(GatewayEnrollmentService.toIssued(leaf, backend, identity.id(),
+										newGeneration, notBefore, notAfter));
+					});
 		});
+	}
+
+	private static boolean fingerprintPins(GatewayIdentity identity, String presented) {
+		return presented != null
+				&& (presented.equals(identity.fingerprint()) || presented.equals(identity.prevFingerprint()));
+	}
+
+	// M4: audit the fail-closed denial (generic to the client, specific reason
+	// server-side only).
+	private Mono<IssuedIdentity> denied(GatewayIdentity identity, String reason) {
+		return audit
+				.record(identity.name(), identity.name(), "gateway.renew", "denied", null, null,
+						Map.of("reason", reason))
+				.then(Mono.error(new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED,
+						"renewal refused")));
 	}
 
 	private static GatewayRequestException unauthenticated() {

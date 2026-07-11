@@ -41,8 +41,23 @@ public class MtlsProperties {
 	 */
 	private Duration certBackdate = Duration.ofMinutes(2);
 
+	/**
+	 * Server-side deadline applied to every mTLS RPC handler (M3): a hung DB /
+	 * saturated R2DBC pool surfaces as {@code DEADLINE_EXCEEDED} rather than a hung
+	 * call. The Gateway sets its own client deadline too.
+	 */
+	private Duration rpcTimeout = Duration.ofSeconds(15);
+
 	public Server getServer() {
 		return server;
+	}
+
+	public Duration getRpcTimeout() {
+		return rpcTimeout;
+	}
+
+	public void setRpcTimeout(Duration rpcTimeout) {
+		this.rpcTimeout = rpcTimeout;
 	}
 
 	public Duration getIdentityCertTtl() {
@@ -92,6 +107,41 @@ public class MtlsProperties {
 		/** SANs stamped into the CP's gRPC server certificate. */
 		private List<String> hostnames = new ArrayList<>(List.of("localhost", "controlplane"));
 
+		// --- DoS bounds (M2) — the plane carries only tiny control messages (CSR,
+		// pubkey), so these are deliberately small. ---
+
+		/**
+		 * Max inbound message size (bytes). A CSR/pubkey is ~1 KiB; 64 KiB is generous.
+		 */
+		private int maxInboundMessageSize = 64 * 1024;
+
+		/** Max inbound header/metadata size (bytes). */
+		private int maxInboundMetadataSize = 16 * 1024;
+
+		/** Max concurrent in-flight calls per connection. */
+		private int maxConcurrentCallsPerConnection = 128;
+
+		/**
+		 * Bounded handler-executor thread count (crypto/DB offload runs on Reactor
+		 * schedulers).
+		 */
+		private int handlerThreads = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
+
+		/** Reject client keepalive pings faster than this (ping-flood guard). */
+		private Duration permitKeepAliveTime = Duration.ofSeconds(30);
+
+		/** Recycle a connection after this age (bounds long-lived connection abuse). */
+		private Duration maxConnectionAge = Duration.ofMinutes(30);
+
+		/** Grace period for in-flight RPCs when a connection is aged out. */
+		private Duration maxConnectionAgeGrace = Duration.ofSeconds(30);
+
+		/** Close a connection idle for this long. */
+		private Duration maxConnectionIdle = Duration.ofMinutes(5);
+
+		/** Drain deadline on shutdown before a forced close (M5). */
+		private Duration drainTimeout = Duration.ofSeconds(10);
+
 		public boolean isEnabled() {
 			return enabled;
 		}
@@ -122,6 +172,78 @@ public class MtlsProperties {
 
 		public void setHostnames(List<String> hostnames) {
 			this.hostnames = hostnames;
+		}
+
+		public int getMaxInboundMessageSize() {
+			return maxInboundMessageSize;
+		}
+
+		public void setMaxInboundMessageSize(int maxInboundMessageSize) {
+			this.maxInboundMessageSize = maxInboundMessageSize;
+		}
+
+		public int getMaxInboundMetadataSize() {
+			return maxInboundMetadataSize;
+		}
+
+		public void setMaxInboundMetadataSize(int maxInboundMetadataSize) {
+			this.maxInboundMetadataSize = maxInboundMetadataSize;
+		}
+
+		public int getMaxConcurrentCallsPerConnection() {
+			return maxConcurrentCallsPerConnection;
+		}
+
+		public void setMaxConcurrentCallsPerConnection(int maxConcurrentCallsPerConnection) {
+			this.maxConcurrentCallsPerConnection = maxConcurrentCallsPerConnection;
+		}
+
+		public int getHandlerThreads() {
+			return handlerThreads;
+		}
+
+		public void setHandlerThreads(int handlerThreads) {
+			this.handlerThreads = handlerThreads;
+		}
+
+		public Duration getPermitKeepAliveTime() {
+			return permitKeepAliveTime;
+		}
+
+		public void setPermitKeepAliveTime(Duration permitKeepAliveTime) {
+			this.permitKeepAliveTime = permitKeepAliveTime;
+		}
+
+		public Duration getMaxConnectionAge() {
+			return maxConnectionAge;
+		}
+
+		public void setMaxConnectionAge(Duration maxConnectionAge) {
+			this.maxConnectionAge = maxConnectionAge;
+		}
+
+		public Duration getMaxConnectionAgeGrace() {
+			return maxConnectionAgeGrace;
+		}
+
+		public void setMaxConnectionAgeGrace(Duration maxConnectionAgeGrace) {
+			this.maxConnectionAgeGrace = maxConnectionAgeGrace;
+		}
+
+		public Duration getMaxConnectionIdle() {
+			return maxConnectionIdle;
+		}
+
+		public void setMaxConnectionIdle(Duration maxConnectionIdle) {
+			this.maxConnectionIdle = maxConnectionIdle;
+		}
+
+		public Duration getDrainTimeout() {
+			return drainTimeout;
+		}
+
+		public void setDrainTimeout(Duration drainTimeout) {
+			this.drainTimeout = drainTimeout;
 		}
 	}
 }

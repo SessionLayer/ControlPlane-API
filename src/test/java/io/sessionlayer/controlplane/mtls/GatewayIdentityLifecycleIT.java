@@ -52,6 +52,34 @@ class GatewayIdentityLifecycleIT extends AbstractMtlsIT {
 	}
 
 	@Test
+	void enrollErrorIsIndistinguishableForAlreadyEnrolledAndInvalidToken() {
+		// M1: a bootstrap-tier (no-client-cert) peer must not be able to enumerate
+		// fleet
+		// gateway names — "already enrolled" and "invalid token" must be
+		// indistinguishable.
+		// Case A — a VALID token, but the name is already enrolled.
+		enroll("gw-oracle");
+		String freshToken = enrollmentTokens.mint("gw-oracle", "test-operator").block();
+		StatusRuntimeException alreadyEnrolled = catchThrowableOfType(StatusRuntimeException.class,
+				() -> enrollWithToken("gw-oracle", freshToken));
+		// Case B — a FREE name, but an invalid token.
+		StatusRuntimeException invalidToken = catchThrowableOfType(StatusRuntimeException.class,
+				() -> enrollWithToken("gw-oracle-free", "not-a-real-token"));
+
+		// Identical status code AND description (no enumeration oracle, NFR-2/§15).
+		assertThat(alreadyEnrolled.getStatus().getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+		assertThat(invalidToken.getStatus().getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+		assertThat(alreadyEnrolled.getStatus().getDescription()).isEqualTo(invalidToken.getStatus().getDescription());
+
+		// And the fresh single-use token was NOT burned by the already-enrolled probe
+		// (M1).
+		Long unconsumed = db.sql(
+				"SELECT count(*) FROM runtime.gateway_enrollment_token WHERE gateway_name = 'gw-oracle' AND consumed_at IS NULL")
+				.map(row -> row.get(0, Long.class)).one().block();
+		assertThat(unconsumed).isEqualTo(1L);
+	}
+
+	@Test
 	void renewRotatesCertificateAndIncrementsGeneration() {
 		EnrolledGateway gateway = enroll("gw-renew");
 		String beforeFingerprint = gatewayIdentities.findById(gateway.gatewayId()).block().fingerprint();

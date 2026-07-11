@@ -26,7 +26,9 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allMigrationsAppliedThroughLatest() {
 		Integer maxVersion = db.sql("SELECT max(version::int) AS v FROM flyway_schema_history WHERE success = true")
 				.map(row -> row.get("v", Integer.class)).one().block();
-		assertThat(maxVersion).isEqualTo(14); // V1..V14 (S4 adds V14: mTLS CA + tokens)
+		// V1..V15. S4 adds V14 (mTLS CA + enrollment/signing tokens) and V15
+		// (gateway_identity.prev_fingerprint pin + REVOKE DELETE on the token tables).
+		assertThat(maxVersion).isEqualTo(15);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
