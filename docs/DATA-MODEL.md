@@ -733,3 +733,78 @@ The three in-scope join methods and clone-detection add **no tables**:
   a distinct `audit_event` alert (`agent.identity.clone_detected`). It **never
   auto-clears** — operator re-provision (§8.2). Revocation for every join method is via
   lock + generation counter, so no method is a standing bypass.
+
+---
+
+## 21. Session Thirteen (access models — JIT, break-glass & FIDO2) additions — `V20`
+
+Session Thirteen wires the two elevated access models (Design §7, D15/D17;
+FR-ACC-2..8). The JIT + break-glass **state** model was front-loaded in `V2`/`V3`
+(`config.jit_policy`, `config.breakglass_policy`, `runtime.jit_request`,
+`runtime.breakglass_activation`, and `ssh_session.access_model`/`jit_request_id`/
+`breakglass_activation_id`), so S13 adds only the IdP-independent break-glass
+**authentication** stores + one platform permission. One forward-only migration,
+`V20`; the next free version is **V21**.
+
+### 21.1 New runtime tables (`V20`)
+
+- **`runtime.breakglass_credential`** — a registered break-glass FIDO2 `sk-ecdsa`
+  **PUBLIC** key (the PRIMARY IdP-independent path, §5.2/§7). Mirrors `runtime.pin`:
+  keyed by SHA-256 `key_fingerprint` (UNIQUE), holds the OpenSSH `sk-ecdsa` wire pubkey
+  (`public_key bytea`, public material only), `sk_application` (audit legibility),
+  `identity`, `allowed_principals` (a deny-only reducer on the requested login), an
+  optional `node_selector` scope, optional `expires_at`, and `revoked_at`. No private
+  key is ever at rest.
+- **`runtime.breakglass_offline_code`** — a pre-issued single-use break-glass code (the
+  IdP-independent FALLBACK, §7). Mirrors `runtime.otp`: `code_hash` only (UNIQUE; the
+  raw code is never stored), ≥128-bit entropy, `identity` from the record (never client
+  input), `allowed_principals`, optional `node_selector`/`source_cidr`, `expires_at`,
+  atomic single-use via `used` under the `@Version` lock, and `revoked_at` for
+  batch-invalidation without DELETE.
+- **`runtime.breakglass_token`** — the single-use authority the CP mints on a successful
+  break-glass RESOLVE and consumes at `Authorize` (§15). Mirrors `runtime.recording_token`:
+  `token_hash` only, bound to `{gateway_id, identity, node_id, source_address, exp}` +
+  the carried `allowed_principals`, atomic single-use. It ties a break-glass `Authorize`
+  to a genuine credential resolution performed by THAT gateway — a Gateway can never
+  assert break-glass without one.
+
+### 21.2 `breakglass_activation` enrichment (`V20` ALTER)
+
+`runtime.breakglass_activation` (created `V3`, with principal/reason/alert_ref/
+review_status/reviewer + policy snapshot) gains **`identity`**, **`source_ip`**,
+**`target_node_id`** (snapshot; no FK) and **`credential_ref`** so a post-hoc reviewer
+sees the whole break-glass event (who, from where, against which node, with which
+credential) without stitching from `audit_event` (FR-ACC-6, FR-AUD-7).
+
+### 21.3 `platform_role.permissions` CHECK widened (`V20`)
+
+The named `platform_role_permissions_check` is dropped + recreated (the `V18` pattern)
+to admit **`breakglass:manage`** — the permission gating break-glass credential
+registration (FIDO2 key add/revoke) and offline-code issuance. JIT approve/deny keeps
+the existing `request:approve` (`V2`/`V18`); no other permission is added.
+
+### 21.4 Grants + single-use posture
+
+The three new runtime tables auto-inherit `cp_runtime` CRUD via `V11`'s
+`ALTER DEFAULT PRIVILEGES`. Mirroring `V15`/`V17`, the **single-use** stores
+(`breakglass_offline_code`, `breakglass_token`) `REVOKE DELETE` (a row is consumed by an
+UPDATE, never DELETE); `breakglass_credential` keeps DELETE (an admin may remove a
+registration outright, in addition to the soft `revoked_at`). No raw secret is stored:
+FIDO2 keys are public, offline codes and the break-glass token are SHA-256 hashes;
+source binding uses the shared `runtime.is_ip_or_cidr` guard + the lenient `::inet <<=`
+deny-only reducer.
+
+### 21.5 Access-model flow-through (no schema change)
+
+JIT and break-glass reach the wire via the **existing** decision path. A JIT grant is
+resolved server-side from an ACTIVE `jit_request` and fed to the S5 evaluator as a
+time-boxed synthetic allow (so deny-overrides + the top-tier Lock still apply — a JIT
+grant can never override an explicit deny or a Lock). Break-glass is the distinct
+always-available path: `AuthorizeRequest.breakglass_token` (proto field 8) is consumed,
+an activation + high-priority alert are raised **before** the decision, then the allow
+is evaluated **subject to** the Lock (a locked target refuses break-glass while the
+activation stands). `DecisionContext.access_model` (proto field 16, SIGNED, emitted only
+when non-standing so standing decisions stay byte-identical) lets the Gateway force
+strict recording for break-glass and pick the per-model mid-session-expiry behaviour.
+JIT-revoke / break-glass-abort is expressed **as a `Lock`** (runtime), inheriting the
+S10 fail-closed teardown — no new revocation entity.

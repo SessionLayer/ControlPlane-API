@@ -77,12 +77,14 @@ service OuterLegAuth {
 
   // ResolveBreakglassCode validates a pre-issued single-use break-glass OFFLINE CODE
   // (Design §7, FR-ACC-6) — the IdP-independent FALLBACK when no FIDO2 authenticator
-  // is available. Constant-time compare + single-use (atomic mark-used), source-
-  // bound; the identity comes from the code record, never client input. The `code`
-  // field is a SECRET (entered over keyboard-interactive with echo off) — NEVER log
-  // it. On success it mints a single-use `breakglass_token`; a replayed, expired,
-  // wrong-source, or unknown code resolves to `resolved = false` with no token
-  // (generic). Added in Session 13.
+  // is available. The code is looked up by its SHA-256 hash (the raw code is never
+  // stored nor compared in the clear) and consumed by an atomic single-use UPDATE;
+  // it is source-bound and the identity comes from the code record, never client
+  // input. A ≥128-bit code makes the hash-existence timing side-channel useless. The
+  // `code` field is a SECRET (entered over keyboard-interactive with echo off) —
+  // NEVER log it. On success it mints a single-use `breakglass_token`; a replayed,
+  // expired, wrong-source, or unknown code resolves to `resolved = false` with no
+  // token (generic). Added in Session 13.
   rpc ResolveBreakglassCode(ResolveBreakglassCodeRequest) returns (ResolveBreakglassCodeResponse);
 }
 
@@ -263,8 +265,9 @@ message ResolveBreakglassKeyResponse {
 // ResolveBreakglassCodeRequest carries the presented break-glass offline code. The
 // `code` field is a SECRET (keyboard-interactive, echo off) — NEVER log it.
 message ResolveBreakglassCodeRequest {
-  // The one-time break-glass code the user typed. Secret; validated constant-time and
-  // single-use, then consumed. Must never appear in a log or trace.
+  // The one-time break-glass code the user typed. Secret; matched by SHA-256 hash
+  // (never compared in the clear) and consumed single-use. Must never appear in a
+  // log or trace.
   string code = 1;
 
   // The client source IP. The code is source-bound (deny-only, FR-AUTH-15).
