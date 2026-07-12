@@ -45,10 +45,16 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		// The mTLS-required tier guarantees a resolved peer, but never NPE if it isn't:
 		// a null caller fails closed to a generic deny in the service (missing input).
 		UUID caller = peer == null ? null : peer.gatewayId();
-		Mono<AuthorizeResponse> result = authorization
-				.authorize(caller, request.getIdentity(), request.getIdentityGroupsList(),
-						parseUuid(request.getNodeId()), blankToNull(request.getRequestedPrincipal()),
-						blankToNull(request.getSourceIp()), parseUuid(request.getSessionId()))
+		// The break-glass token (field 8) is carried through: when present the CP
+		// consumes
+		// it atomically, raises the activation + alert, and evaluates the break-glass
+		// allow
+		// subject to the Lock. The AUTHENTICATED caller is the mTLS peer, never a
+		// field.
+		Mono<AuthorizeResponse> result = authorization.authorize(caller, request.getIdentity(),
+				request.getIdentityGroupsList(), parseUuid(request.getNodeId()),
+				blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
+				parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()))
 				.map(AuthorizationService::toResponse);
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "Authorize");
 	}

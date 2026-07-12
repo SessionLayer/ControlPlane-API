@@ -10,13 +10,18 @@ import io.netty.handler.ssl.SslContext;
 import io.sessionlayer.controlplane.ca.CaSignerService;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
+import io.sessionlayer.controlplane.data.config.JitPolicy;
+import io.sessionlayer.controlplane.data.config.JitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
+import io.sessionlayer.controlplane.grpc.v1.AccessModel;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeRequest;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeResponse;
 import io.sessionlayer.controlplane.grpc.v1.Decision;
+import io.sessionlayer.controlplane.grpc.v1.DecisionContext;
 import io.sessionlayer.controlplane.grpc.v1.SignSessionCertificateResponse;
+import io.sessionlayer.controlplane.jit.JitLifecycleService;
 import io.sessionlayer.controlplane.testnode.TestSshNode;
 import java.util.List;
 import java.util.UUID;
@@ -44,13 +49,18 @@ class AuthorizeNodeIT extends AbstractMtlsIT {
 	private DpRuleRepository dpRules;
 	@Autowired
 	private CaSignerService caSigner;
+	@Autowired
+	private JitPolicyRepository jitPolicies;
+	@Autowired
+	private JitLifecycleService jit;
 
 	@Test
 	void allowSignsACertTheNodeAcceptsAndDenyIsRefused() throws Exception {
 		String caLine = caSigner.activeSigner("session").block().caAuthorizedKey("session-ca");
 		try (GenericContainer<?> node = TestSshNode.start(caLine)) {
 			EnrolledGateway gateway = enroll("gw-node-" + unique());
-			UUID nodeId = seedProdNode();
+			String jitZone = unique();
+			UUID nodeId = seedProdNode(jitZone);
 
 			// ----- ALLOW: decision → token → sign → real handshake accepts -----
 			String allowed = "alice-" + unique();
@@ -76,7 +86,37 @@ class AuthorizeNodeIT extends AbstractMtlsIT {
 			StatusRuntimeException refused = catchThrowableOfType(StatusRuntimeException.class,
 					() -> signSessionCertificate(gateway, deny.getSessionToken(), denyKey, null));
 			assertThat(refused.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+
+			// ----- JIT: a default-deny elevated by a JIT grant signs a cert the node
+			// accepts, and the signed context carries access_model=JIT (FR-ACC-2) -----
+			String jitUser = "jituser-" + unique();
+			seedJitPolicy(jitZone);
+			jit.submit(jitUser, nodeId, "deploy", List.of("shell", "exec"), "prod fix").block();
+			UUID jitSession = UUID.randomUUID();
+			AuthorizeResponse jitAllow = authorize(gateway, jitUser, nodeId, "deploy", jitSession);
+			assertThat(jitAllow.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+			DecisionContext ctx = DecisionContext.parseFrom(jitAllow.getSignedContext());
+			assertThat(ctx.getAccessModel()).isEqualTo(AccessModel.ACCESS_MODEL_JIT);
+			// The grant_expiry reflects the JIT TTL (bounded by the cred-TTL ceiling).
+			assertThat(ctx.getGrantExpiryEpochSeconds()).isGreaterThan(java.time.Instant.now().getEpochSecond());
+
+			byte[] jitKey = TestSshNode.generateInnerKey(node, "/tmp/jit");
+			SignSessionCertificateResponse jitSigned = signSessionCertificate(gateway, jitAllow.getSessionToken(),
+					jitKey, null);
+			TestSshNode.installCertificate(node, "/tmp/jit-cert.pub", jitSigned.getCertificateLine());
+			String jitHandshake = TestSshNode.handshake(node, "/tmp/jit", "/tmp/jit-cert.pub", "deploy");
+			assertThat(jitHandshake).contains("HANDSHAKE_OK");
 		}
+	}
+
+	// Zone-scoped so this node matches ONLY this policy (the mTLS ITs share one
+	// Postgres and JIT policy matching takes the first policy whose selector
+	// matches).
+	private void seedJitPolicy(String zone) {
+		ObjectNode targetSelector = JSON.objectNode();
+		targetSelector.set("jitzone", JSON.objectNode().put("op", "eq").put("value", zone));
+		jitPolicies.save(JitPolicy.create("jit-" + unique(), targetSelector, List.of("shell", "exec"), 1800,
+				JSON.arrayNode(), "api")).block();
 	}
 
 	private AuthorizeResponse authorize(EnrolledGateway gateway, String identity, UUID nodeId, String principal,
@@ -98,8 +138,8 @@ class AuthorizeNodeIT extends AbstractMtlsIT {
 		}
 	}
 
-	private UUID seedProdNode() {
-		ObjectNode labels = JSON.objectNode().put("env", "prod");
+	private UUID seedProdNode(String jitZone) {
+		ObjectNode labels = JSON.objectNode().put("env", "prod").put("jitzone", jitZone);
 		return nodes.save(Node.create("node-" + unique(), null, labels, "agent", "active", "healthy", null, null))
 				.map(Node::id).block();
 	}

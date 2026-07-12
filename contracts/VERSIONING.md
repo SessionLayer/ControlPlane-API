@@ -202,6 +202,37 @@ tier. Revocation for every join method is via lock + generation counter (no join
 method is a standing bypass). Join-token **issuance/CRUD is REST**; the
 enroll/renew plane is **gRPC**.
 
+**Session Thirteen added the access-models surface** (JIT + break-glass, Design §7,
+D15/D17; FR-ACC-2..8) — additive, staying within **1.1**. Three changes, all
+`buf breaking`-clean (new RPCs/messages/fields within an already-bumped minor do not
+move the number): the advertised range stays `[1.0, 1.1]`, `protocol_min` stays 1.0.
+1. **`OuterLegAuth` gained two RPCs** — `ResolveBreakglassKey` (a registered FIDO2
+   `sk-ecdsa` PUBLIC key) and `ResolveBreakglassCode` (a pre-issued single-use offline
+   code) — the **IdP-independent** break-glass authentication path (FIDO2 primary,
+   offline codes fallback). Both are on the identity/session (mTLS-required) tier,
+   authenticate only (resolve credential → `{identity, principals}` + a single-use
+   `breakglass_token`), and fail generically (`resolved = false`, no token) so the
+   surface discloses no existence (§7.1). The `code` is a secret (never logged).
+2. **`AuthorizeRequest` gained `breakglass_token` (field 8).** Present only on a
+   break-glass connect: the CP consumes it atomically, creates the
+   `breakglass_activation`, fires the high-priority alert (on use), forces
+   `access_model = BREAKGLASS` + strict recording, and evaluates a break-glass allow
+   (the distinct always-available override of the standing dp_rule deny) **SUBJECT TO
+   the top-tier Lock** — a matching Lock still denies (deny wins; a locked target
+   refuses break-glass). JIT needs **no** request field: the CP resolves an ACTIVE
+   `jit_request` grant for `{identity, node}` server-side and feeds it to the same
+   evaluator as a time-boxed allow (subject to deny-overrides + Lock), so a JIT grant
+   can never override an explicit deny or a Lock.
+3. **`DecisionContext` gained `access_model` (field 16) + the `AccessModel` enum**
+   (STANDING/JIT/BREAKGLASS), SIGNED into the context so the Gateway selects the
+   per-model mid-session-expiry behaviour (FR-ACC-8/D17) and forces strict recording
+   for break-glass against trusted data. An older (N-1) Gateway ignores the field and
+   treats the decision as STANDING — the safe default. JIT/break-glass revocation is
+   expressed **as a Lock** (runtime), inheriting the S10 fail-closed teardown — no new
+   revocation RPC. The JIT/approval-chain/break-glass **admin CRUD is REST**
+   (`/v1/jit-requests` + approve/deny/revoke, `/v1/breakglass/*`); only the break-glass
+   **auth resolution** and the JIT/break-glass **grant flow-through** are gRPC.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

@@ -20,7 +20,7 @@ class DecisionContextCodecTest {
 		DecisionContext ctx = new DecisionContext(UUID.randomUUID(), "node-a", List.of("deploy"), List.of("shell"),
 				"deploy", Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(),
 				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of("admins", "oncall"),
-				List.of("env=prod", "tier=db"));
+				List.of("env=prod", "tier=db"), "standing");
 
 		io.sessionlayer.controlplane.grpc.v1.DecisionContext proto = DecisionContextCodec.toProto(ctx);
 
@@ -31,12 +31,32 @@ class DecisionContextCodecTest {
 		assertThat(proto.getNodeName()).isEqualTo("node-a");
 		assertThat(proto.getPrincipal()).isEqualTo("deploy");
 		assertThat(proto.getPolicyEpoch()).isEqualTo(7L);
+		// STANDING stays UNSPECIFIED on the wire (byte-identity with the pre-S13
+		// encoding).
+		assertThat(proto.getAccessModel())
+				.isEqualTo(io.sessionlayer.controlplane.grpc.v1.AccessModel.ACCESS_MODEL_UNSPECIFIED);
+	}
+
+	@Test
+	void emitsNonStandingAccessModel() {
+		DecisionContext jit = new DecisionContext(UUID.randomUUID(), "node-a", List.of("deploy"), List.of("shell"),
+				"deploy", Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(),
+				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of(), List.of(), "jit");
+		assertThat(DecisionContextCodec.toProto(jit).getAccessModel())
+				.isEqualTo(io.sessionlayer.controlplane.grpc.v1.AccessModel.ACCESS_MODEL_JIT);
+
+		DecisionContext bg = new DecisionContext(UUID.randomUUID(), "node-a", List.of("root"), List.of("shell"), "root",
+				Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(), UUID.randomUUID(),
+				"10.0.0.5", Instant.now(), "root", List.of(), List.of(), "breakglass");
+		assertThat(DecisionContextCodec.toProto(bg).getAccessModel())
+				.isEqualTo(io.sessionlayer.controlplane.grpc.v1.AccessModel.ACCESS_MODEL_BREAKGLASS);
 	}
 
 	@Test
 	void toleratesEmptyIdentityAndCollections() {
 		DecisionContext ctx = new DecisionContext(UUID.randomUUID(), "node-b", List.of(), List.of(), "", Instant.now(),
-				0L, Duration.ZERO, UUID.randomUUID(), UUID.randomUUID(), "", Instant.now(), null, List.of(), List.of());
+				0L, Duration.ZERO, UUID.randomUUID(), UUID.randomUUID(), "", Instant.now(), null, List.of(), List.of(),
+				null);
 
 		io.sessionlayer.controlplane.grpc.v1.DecisionContext proto = DecisionContextCodec.toProto(ctx);
 

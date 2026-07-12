@@ -1,24 +1,39 @@
 package io.sessionlayer.controlplane.authz;
 
 import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.breakglass.BreakglassProperties;
+import io.sessionlayer.controlplane.breakglass.BreakglassTokenService;
 import io.sessionlayer.controlplane.ca.CaRotationService;
+import io.sessionlayer.controlplane.data.config.BreakglassPolicy;
+import io.sessionlayer.controlplane.data.config.BreakglassPolicyRepository;
+import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.config.PolicyEpochRepository;
+import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
+import io.sessionlayer.controlplane.data.runtime.BreakglassActivation;
+import io.sessionlayer.controlplane.data.runtime.BreakglassActivationRepository;
+import io.sessionlayer.controlplane.data.runtime.BreakglassToken;
 import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
+import io.sessionlayer.controlplane.data.runtime.JitRequest;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
+import io.sessionlayer.controlplane.jit.JitLifecycleService;
 import io.sessionlayer.controlplane.recording.RecordingTokenService;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,23 +41,47 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Orchestrates the connect-time decision (Part B, FR-CHAN-1). It resolves the
- * node's labels, evaluates the data-plane RBAC set with the
- * {@link PolicyEngine} (fail-closed, deny-overrides), and on <b>allow</b>:
- * produces a signed decision context, writes the {@code ssh_session} decision
- * snapshot, and mints the single-use {@code session_signing_token} bound to the
- * AUTHENTICATED caller gateway — replacing S4's minimal token path with the
- * real decision. On <b>deny/Lock</b> (and on any datastore/evaluation error) it
- * mints nothing and records the specific reason to the decision log while the
- * caller sees only a generic deny (FR-AUTHZ-5, §8.4).
+ * Orchestrates the connect-time decision (Part B, FR-CHAN-1) across the three
+ * access models (§7, S13). It resolves the node's labels, evaluates the
+ * standing data-plane RBAC set with the {@link PolicyEngine} (deny-overrides),
+ * and:
+ *
+ * <ul>
+ * <li><b>STANDING</b> — a standing allow proceeds unchanged.</li>
+ * <li><b>JIT</b> — a standing default-deny ({@code NO_MATCHING_ALLOW} only,
+ * never a Lock or explicit deny) may be satisfied by an ACTIVE/APPROVED JIT
+ * grant: the grant is synthesized as an in-memory allow and the engine is
+ * <b>re-run</b>, so a Lock or explicit deny still wins (deny wins). A usable
+ * grant flips APPROVED → ACTIVE.</li>
+ * <li><b>BREAK-GLASS</b> — a present {@code breakglass_token} is consumed
+ * atomically; on a valid token the {@code breakglass_activation} +
+ * high-priority alert are raised UNCONDITIONALLY (before the decision), then
+ * the allow is evaluated SUBJECT TO the top-tier Lock (a locked target still
+ * denies; the activation stands). Break-glass bypasses the standing dp_rule
+ * deny but never the Lock.</li>
+ * </ul>
+ *
+ * <p>
+ * On allow it produces a signed decision context (carrying the access model),
+ * writes the {@code ssh_session} decision snapshot, and mints the single-use
+ * {@code session_signing_token} + {@code recording_token} bound to the
+ * AUTHENTICATED caller gateway. On deny/Lock (and any datastore/evaluation
+ * error) it mints nothing and records the specific reason to the decision log
+ * while the caller sees only a generic deny (FR-AUTHZ-5, §8.4).
  */
 @Service
 public class ConnectAuthorizationService {
 
 	private static final Logger LOG = LoggerFactory.getLogger(ConnectAuthorizationService.class);
 	private static final String DECISION_ACTION = "authz.decision";
+	private static final String MODEL_STANDING = "standing";
+	private static final String MODEL_JIT = "jit";
+	private static final String MODEL_BREAKGLASS = "breakglass";
 
 	private final NodeRepository nodes;
 	private final NodeHostKeyRepository hostKeys;
@@ -56,16 +95,24 @@ public class ConnectAuthorizationService {
 	private final DecisionContextSigner signer;
 	private final SessionSigningTokenService tokens;
 	private final RecordingTokenService recordingTokens;
+	private final JitLifecycleService jit;
+	private final BreakglassTokenService breakglassTokens;
+	private final BreakglassActivationRepository breakglassActivations;
+	private final BreakglassPolicyRepository breakglassPolicies;
+	private final BreakglassProperties breakglassProperties;
 	private final AuditWriter audit;
 	private final AuthzProperties properties;
+	private final ObjectMapper objectMapper;
 	private final TransactionalOperator tx;
 
 	public ConnectAuthorizationService(NodeRepository nodes, NodeHostKeyRepository hostKeys,
 			CaRotationService caRotation, DpRuleRepository dpRules, AccessLockRepository accessLocks,
 			PolicyEpochRepository policyEpochs, GatewayIdentityRepository gatewayIdentities,
 			SshSessionRepository sshSessions, PolicyEngine engine, DecisionContextSigner signer,
-			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, AuditWriter audit,
-			AuthzProperties properties, TransactionalOperator tx) {
+			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, JitLifecycleService jit,
+			BreakglassTokenService breakglassTokens, BreakglassActivationRepository breakglassActivations,
+			BreakglassPolicyRepository breakglassPolicies, BreakglassProperties breakglassProperties, AuditWriter audit,
+			AuthzProperties properties, ObjectMapper objectMapper, TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -78,13 +125,19 @@ public class ConnectAuthorizationService {
 		this.signer = signer;
 		this.tokens = tokens;
 		this.recordingTokens = recordingTokens;
+		this.jit = jit;
+		this.breakglassTokens = breakglassTokens;
+		this.breakglassActivations = breakglassActivations;
+		this.breakglassPolicies = breakglassPolicies;
+		this.breakglassProperties = breakglassProperties;
 		this.audit = audit;
 		this.properties = properties;
+		this.objectMapper = objectMapper;
 		this.tx = tx;
 	}
 
 	public Mono<ConnectDecision> authorize(UUID callerGatewayId, String identity, List<String> groups, UUID nodeId,
-			String requestedPrincipal, String sourceIp, UUID sessionId) {
+			String requestedPrincipal, String sourceIp, UUID sessionId, String breakglassToken) {
 		// The connect decision requires a concrete authenticated caller, target node,
 		// session, resolved identity, and requested login — a blank one of any of these
 		// is meaningless and fails closed (never allow/mint on a subject-less probe).
@@ -92,8 +145,9 @@ public class ConnectAuthorizationService {
 				|| isBlank(requestedPrincipal)) {
 			return denyMissingInput(callerGatewayId, identity, nodeId, sourceIp);
 		}
-		return nodes.findById(nodeId).flatMap(
-				node -> decide(callerGatewayId, identity, groups, node, requestedPrincipal, sourceIp, sessionId))
+		return nodes.findById(nodeId)
+				.flatMap(node -> decide(callerGatewayId, identity, groups, node, requestedPrincipal, sourceIp,
+						sessionId, breakglassToken))
 				.switchIfEmpty(auditDeny(callerGatewayId, identity, nodeId, sourceIp,
 						DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "node_unknown")
 						.thenReturn(ConnectDecision.denied()))
@@ -105,7 +159,7 @@ public class ConnectAuthorizationService {
 	}
 
 	private Mono<ConnectDecision> decide(UUID callerGatewayId, String identity, List<String> groups, Node node,
-			String requestedPrincipal, String sourceIp, UUID sessionId) {
+			String requestedPrincipal, String sourceIp, UUID sessionId, String breakglassToken) {
 		Mono<Long> epochMono = policyEpochs.findSingleton().map(e -> e.epoch()).defaultIfEmpty(0L);
 		Mono<String> gwNameMono = gatewayIdentities.findById(callerGatewayId).map(g -> g.name())
 				.defaultIfEmpty("unknown");
@@ -120,51 +174,182 @@ public class ConnectAuthorizationService {
 					Instant now = Instant.now();
 					AuthorizationRequest request = new AuthorizationRequest(identity, groups, node.id(),
 							labelsOf(node.resolvedLabels()), sourceIp, requestedPrincipal);
-					DataPlaneDecision decision = engine.evaluate(request, grants, locks, now);
-					if (!decision.allowed()) {
-						return auditDeny(callerGatewayId, identity, node.id(), sourceIp, decision, null)
-								.thenReturn(ConnectDecision.denied());
+
+					// The break-glass path is a distinct, always-available authentication path
+					// (I3): a present token means the user authenticated via FIDO2/offline-code,
+					// so honour break-glass semantics regardless of standing rules.
+					if (!isBlank(breakglassToken)) {
+						return breakglass(callerGatewayId, node, gatewayName, request, sessionId, breakglassToken,
+								locks, epoch, now);
 					}
-					return allow(callerGatewayId, identity, groups, node, gatewayName, requestedPrincipal, sourceIp,
-							sessionId, decision, epoch, now);
+
+					DataPlaneDecision decision = engine.evaluate(request, grants, locks, now);
+					if (decision.allowed()) {
+						return emitAllow(callerGatewayId, node, gatewayName, request, sessionId,
+								decision.sortedLogins(), decision.sortedCapabilities(), decision.matchedRuleId(),
+								decision.matchedRuleName(), MODEL_STANDING, null, null, decision.grantTtlSeconds(),
+								epoch, now);
+					}
+					// JIT elevates ONLY a default-deny (no standing allow matched). A Lock or an
+					// explicit deny in the first pass is terminal — JIT never overrides it.
+					if (decision.reason() == DataPlaneDecision.Reason.NO_MATCHING_ALLOW) {
+						return tryJit(callerGatewayId, node, gatewayName, request, sessionId, grants, locks, epoch,
+								now);
+					}
+					return auditDeny(callerGatewayId, request.identity(), node.id(), sourceIp, decision, null)
+							.thenReturn(ConnectDecision.denied());
 				})));
 	}
 
-	private Mono<ConnectDecision> allow(UUID callerGatewayId, String identity, List<String> groups, Node node,
-			String gatewayName, String requestedPrincipal, String sourceIp, UUID sessionId, DataPlaneDecision decision,
+	// ----- JIT two-pass (Part E) -----
+
+	private Mono<ConnectDecision> tryJit(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, Collection<DpRule> grants, Collection<AccessLock> locks,
 			long epoch, Instant now) {
-		int ttlSeconds = effectiveGrantTtl(decision.grantTtlSeconds());
+		return jit.findUsableGrant(request.identity(), node.id(), request.requestedPrincipal(), now).flatMap(grant -> {
+			// Synthesize the JIT allow in-memory and RE-RUN the engine: the lock is then
+			// re-evaluated with the JIT-granted login present, so a Lock targeting that
+			// login/principal now denies (deny wins). The synthetic rule is NEVER
+			// persisted.
+			List<DpRule> augmented = new ArrayList<>(grants);
+			augmented.add(syntheticJitRule(grant, request.identity(), now));
+			DataPlaneDecision decision = engine.evaluate(request, augmented, locks, now);
+			if (!decision.allowed()) {
+				return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(), decision, "jit")
+						.thenReturn(ConnectDecision.denied());
+			}
+			// The grant is usable: flip APPROVED → ACTIVE (audited), then emit the allow.
+			return jit.markActive(grant)
+					.then(emitAllow(callerGatewayId, node, gatewayName, request, sessionId, decision.sortedLogins(),
+							decision.sortedCapabilities(), null, "jit:" + nullSafe(grant.jitPolicyName()), MODEL_JIT,
+							grant.id(), null, remainingSeconds(grant.grantExpiresAt(), now), epoch, now));
+		}).switchIfEmpty(auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
+				DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "no_jit_grant")
+				.thenReturn(ConnectDecision.denied()));
+	}
+
+	private DpRule syntheticJitRule(JitRequest grant, String identity, Instant now) {
+		ObjectNode identitySelector = objectMapper.createObjectNode();
+		ArrayNode identities = identitySelector.putArray("identities");
+		identities.add(identity);
+		int ttl = remainingSeconds(grant.grantExpiresAt(), now);
+		// nodeLabelSelector null → matches this (fixed) node; sourceIpCondition null →
+		// no
+		// source restriction; origin "jit" is in-memory only (the DB origin CHECK never
+		// sees it). Principals = the approved JIT login; capabilities = the approved
+		// set.
+		return DpRule.create("jit:" + nullSafe(grant.jitPolicyName()), identitySelector, null, null,
+				List.of(grant.principal()), ttl, grant.capabilities() == null ? List.of() : grant.capabilities(),
+				"allow", "jit");
+	}
+
+	// ----- break-glass (Part C/E) -----
+
+	private Mono<ConnectDecision> breakglass(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, String breakglassToken, Collection<AccessLock> locks,
+			long epoch, Instant now) {
+		return breakglassTokens
+				.consume(breakglassToken, callerGatewayId, request.identity(), node.id(), request.sourceIp())
+				.flatMap(token -> onValidBreakglass(callerGatewayId, node, gatewayName, request, sessionId, token,
+						locks, epoch, now))
+				// An invalid/replayed/cross-gateway token is not a genuine break-glass event:
+				// no activation, no alert — just a generic fail-closed deny (§7.1).
+				.switchIfEmpty(auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
+						DataPlaneDecision.deny(DataPlaneDecision.Reason.EVALUATION_ERROR, null, null),
+						"breakglass_token_invalid").thenReturn(ConnectDecision.denied()));
+	}
+
+	private Mono<ConnectDecision> onValidBreakglass(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, BreakglassToken token, Collection<AccessLock> locks,
+			long epoch, Instant now) {
+		// A valid token is a genuine break-glass event: create the activation + raise
+		// the
+		// high-priority alert UNCONDITIONALLY, BEFORE the allow/deny decision, so a
+		// locked
+		// target still leaves a durable, reviewable record (FR-ACC-6, FR-AUD-7).
+		return firstBreakglassPolicy().flatMap(policyOpt -> {
+			BreakglassPolicy policy = policyOpt.orElse(null);
+			BreakglassActivation activation = BreakglassActivation.activate(request.identity(),
+					request.requestedPrincipal(), "break-glass", "audit:breakglass.activated",
+					policy == null ? null : policy.id(), policy == null ? null : policy.name(), request.sourceIp(),
+					node.id(), "breakglass_token:" + token.id(), now);
+			Mono<BreakglassActivation> persisted = tx
+					.transactional(breakglassActivations.save(activation)
+							.flatMap(saved -> audit
+									.record(request.identity(), request.requestedPrincipal(), "breakglass.activation",
+											"success", sessionId, node.id(), activationDetail(saved))
+									.thenReturn(saved)));
+			// The high-priority alert already fired at authentication (ResolveBreakglass*),
+			// so this path does NOT re-alert; the persisted activation is the durable,
+			// mandatory-review compensating control.
+			return persisted.flatMap(saved -> decideBreakglass(callerGatewayId, node, gatewayName, request, sessionId,
+					token, saved, locks, epoch, now));
+		});
+	}
+
+	private Mono<ConnectDecision> decideBreakglass(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, BreakglassToken token, BreakglassActivation activation,
+			Collection<AccessLock> locks, long epoch, Instant now) {
+		String principal = request.requestedPrincipal();
+		boolean principalAllowed = token.allowedPrincipals() != null && token.allowedPrincipals().contains(principal);
+		AccessLock lock = firstMatchingLock(request, Set.of(principal), locks, now);
+		if (!principalAllowed || lock != null) {
+			// A locked target refuses break-glass (deny wins) and a login outside the
+			// credential's scope is refused — but the activation + alert already STAND.
+			DataPlaneDecision.Reason reason = lock != null
+					? DataPlaneDecision.Reason.LOCKED
+					: DataPlaneDecision.Reason.PRINCIPAL_NOT_ALLOWED;
+			return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
+					DataPlaneDecision.deny(reason, lock == null ? null : lock.id(), lock == null ? null : "lock"),
+					"breakglass").thenReturn(ConnectDecision.denied());
+		}
+		int grantTtlSeconds = (int) Math.min(breakglassProperties.getGrantTtl().toSeconds(), Integer.MAX_VALUE);
+		return emitAllow(callerGatewayId, node, gatewayName, request, sessionId, List.of(principal),
+				Capabilities.DEFAULT.stream().sorted().toList(), null, "breakglass", MODEL_BREAKGLASS, null,
+				activation.id(), grantTtlSeconds, epoch, now);
+	}
+
+	private Mono<java.util.Optional<BreakglassPolicy>> firstBreakglassPolicy() {
+		return breakglassPolicies.findAll().sort((a, b) -> a.name().compareTo(b.name())).next()
+				.map(java.util.Optional::of).defaultIfEmpty(java.util.Optional.empty());
+	}
+
+	// ----- allow emission (shared across models) -----
+
+	private Mono<ConnectDecision> emitAllow(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, List<String> logins, List<String> capabilities,
+			UUID matchedRuleId, String matchedRuleName, String accessModel, UUID jitRequestId,
+			UUID breakglassActivationId, int grantTtlSeconds, long epoch, Instant now) {
+		String identity = request.identity();
+		String requestedPrincipal = request.requestedPrincipal();
+		String sourceIp = request.sourceIp();
+		int ttlSeconds = effectiveGrantTtl(grantTtlSeconds);
 		Instant grantExpiry = now.plusSeconds(ttlSeconds);
-		List<String> logins = decision.sortedLogins();
-		List<String> capabilities = decision.sortedCapabilities();
 		// identity/groups/node-labels are signed into the context so the Gateway
-		// matches identity/group/label locks against trusted data (S10). Node labels
-		// are emitted in a deterministic "key=value" order for stable signed bytes.
-		List<String> identityGroups = groups == null ? List.of() : List.copyOf(groups);
+		// matches
+		// identity/group/label locks against trusted data (S10); the access model is
+		// signed too, so the Gateway forces strict recording for break-glass and picks
+		// the per-model mid-session-expiry behaviour (FR-ACC-8).
+		List<String> identityGroups = request.groups() == null ? List.of() : List.copyOf(request.groups());
 		List<String> nodeLabels = sortedLabelStrings(node.resolvedLabels());
 		DecisionContext context = new DecisionContext(node.id(), node.name(), logins, capabilities, requestedPrincipal,
 				grantExpiry, epoch, properties.getDecisionTtl(), callerGatewayId, sessionId, sourceIp, now, identity,
-				identityGroups, nodeLabels);
+				identityGroups, nodeLabels, accessModel);
 
 		return Mono.zip(signer.sign(context), resolveNodeConnection(node)).flatMap(signedAndConn -> {
 			SignedDecisionContext signed = signedAndConn.getT1();
 			NodeConnectionInfo nodeConnection = signedAndConn.getT2();
 			SshSession session = new SshSession(sessionId, identity, node.id(), node.name(), requestedPrincipal,
-					callerGatewayId, gatewayName, "standing", capabilities, decision.matchedRuleId(),
-					decision.matchedRuleName(), null, null, epoch, grantExpiry, now, null, null, null, null, null);
+					callerGatewayId, gatewayName, accessModel, capabilities, matchedRuleId, matchedRuleName,
+					jitRequestId, breakglassActivationId, epoch, grantExpiry, now, null, null, null, null, null);
 			Map<String, String> detail = new HashMap<>();
-			detail.put("matched_rule", nullSafe(decision.matchedRuleName()));
+			detail.put("matched_rule", nullSafe(matchedRuleName));
 			detail.put("principal", requestedPrincipal);
+			detail.put("access_model", accessModel);
 			detail.put("policy_epoch", Long.toString(epoch));
 			// ssh_session snapshot + the two single-use tokens + the allow audit are one
 			// transaction: a failure rolls all back, so a token is never minted without its
-			// session row. The recording token is bound to the SAME {gateway, session,
-			// node,
-			// principal} as the signing token (Design §12/§15). The tokens/session are
-			// saved
-			// on the single tx connection sequentially; the audit write (which serializes
-			// on
-			// the chain advisory lock) is last so that lock is held only until commit.
+			// session row (Design §12/§15). Audit last (it serializes on the chain lock).
 			Mono<ConnectDecision> allowed = sshSessions.save(session)
 					.then(tokens.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, capabilities,
 							sourceIp))
@@ -177,6 +362,34 @@ public class ConnectAuthorizationService {
 											nodeConnection))));
 			return tx.transactional(allowed);
 		});
+	}
+
+	private static AccessLock firstMatchingLock(AuthorizationRequest request, Set<String> allowedLogins,
+			Collection<AccessLock> locks, Instant now) {
+		LockMatching.LockSubject subject = new LockMatching.LockSubject(request.identity(),
+				request.nodeId() == null ? null : request.nodeId().toString(), request.nodeLabels(),
+				Set.copyOf(allowedLogins), request.requestedPrincipal(), Set.copyOf(request.groups()));
+		return locks.stream().filter(lock -> lock.expiresAt() == null || lock.expiresAt().isAfter(now))
+				.filter(lock -> LockMatching.matches(lock.targetSelector(), subject))
+				.min(java.util.Comparator.comparing(AccessLock::id)).orElse(null);
+	}
+
+	private static int remainingSeconds(Instant grantExpiresAt, Instant now) {
+		if (grantExpiresAt == null) {
+			return 0;
+		}
+		long remaining = Duration.between(now, grantExpiresAt).toSeconds();
+		return (int) Math.max(1, Math.min(remaining, Integer.MAX_VALUE));
+	}
+
+	private static Map<String, String> activationDetail(BreakglassActivation activation) {
+		Map<String, String> detail = new HashMap<>();
+		detail.put("activation_id", activation.id().toString());
+		detail.put("principal", activation.principal());
+		if (activation.credentialRef() != null) {
+			detail.put("credential_ref", activation.credentialRef());
+		}
+		return detail;
 	}
 
 	// The node's connectivity + host-identity answer from inventory (Design §9;
@@ -255,11 +468,9 @@ public class ConnectAuthorizationService {
 	}
 
 	// An OpenSSH host public-key / TrustedUserCAKeys line is `<type> <base64>
-	// [comment]`;
-	// the base64 middle token IS the SSH wire encoding. A malformed line returns
-	// null
-	// and is dropped — fail-closed (dropped trust → the Gateway aborts, never
-	// TOFU).
+	// [comment]`; the base64 middle token IS the SSH wire encoding. A malformed
+	// line returns null and is dropped — fail-closed (dropped trust → the Gateway
+	// aborts, never TOFU).
 	private static byte[] wireBlob(String openSshLine) {
 		if (openSshLine == null) {
 			return null;
