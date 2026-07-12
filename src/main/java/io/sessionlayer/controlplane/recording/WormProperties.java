@@ -1,7 +1,9 @@
 package io.sessionlayer.controlplane.recording;
 
+import jakarta.validation.constraints.NotBlank;
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * WORM object-store configuration for session recordings
@@ -10,18 +12,24 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * {@code sessionlayer}/{@code sessionlayer-dev-secret}); production overrides
  * these to the real object store (AWS S3 / MinIO) and injects credentials from
  * the environment. When {@code accessKey} is blank the AWS default credentials
- * provider chain is used (IAM role in production).
+ * provider chain is used (IAM role in production). The identity/routing fields
+ * are {@code @NotBlank} so a misconfigured deploy fails fast at binding rather
+ * than at first upload (operability).
  */
+@Validated
 @ConfigurationProperties(prefix = "sessionlayer.recording.worm")
 public class WormProperties {
 
 	/** S3 endpoint override (MinIO). Blank uses the default AWS S3 endpoint. */
+	@NotBlank
 	private String endpoint = "http://localhost:9000";
 
 	/** AWS region (MinIO ignores it, but the SDK requires one). */
+	@NotBlank
 	private String region = "us-east-1";
 
 	/** The WORM bucket the encrypted recordings are written to (object-lock on). */
+	@NotBlank
 	private String bucket = "sessionlayer-recordings";
 
 	/** Static access key (dev/MinIO); blank ⇒ AWS default credential chain. */
@@ -37,6 +45,14 @@ public class WormProperties {
 	 * Presigned-upload credential TTL — short-lived, single-object (Design §12.2).
 	 */
 	private Duration credentialTtl = Duration.ofSeconds(120);
+
+	/**
+	 * Gate CP readiness on WORM reachability (default on). Recording is mandatory,
+	 * so a down store trips readiness; set false to decouple the whole CP's
+	 * availability from the recording store (the WORM health indicator then always
+	 * reads UP and BeginRecording/RequestUpload still fail loudly on their own).
+	 */
+	private boolean readinessGate = true;
 
 	public String getEndpoint() {
 		return endpoint;
@@ -92,5 +108,13 @@ public class WormProperties {
 
 	public void setCredentialTtl(Duration credentialTtl) {
 		this.credentialTtl = credentialTtl;
+	}
+
+	public boolean isReadinessGate() {
+		return readinessGate;
+	}
+
+	public void setReadinessGate(boolean readinessGate) {
+		this.readinessGate = readinessGate;
 	}
 }

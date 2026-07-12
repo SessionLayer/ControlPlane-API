@@ -583,8 +583,9 @@ recording policy. The CP holds the **public half only** (crown-jewels invariant,
   into `recording_ref.encryption_key_ref` (never key material; the existing PEM
   content guard applies). Defaults to `customer-recording-key` at the service when
   unset so the NOT-NULL `encryption_key_ref` is always satisfiable.
-- `recording_retention_days int NOT NULL DEFAULT 365` (`>= 0`) — the object-lock
-  retain-until window + `recording_ref.retention_until` (FR-AUD-6).
+- `recording_retention_days int NOT NULL DEFAULT 365` (`>= 1`) — the object-lock
+  retain-until window + `recording_ref.retention_until` (FR-AUD-6). Floored at 1 (DB
+  CHECK + app clamp) so a mis-set 0 can't yield a lock that expires immediately.
 - `recording_strict_default boolean NOT NULL DEFAULT true` — reserved operator knob
   for future per-node recording-required policy; recording is mandatory + fail-closed
   in S9 regardless.
@@ -626,15 +627,32 @@ the audit transaction: take the lock, read the chain head, compute, insert (whic
 assigns the next `seq`). `canonical(event)` is a deterministic, length-framed encoding
 of the semantic fields with `jsonb` keys sorted (invariant to Postgres key reordering)
 and `occurred_at` truncated to microseconds (matching `timestamptz` resolution).
-`AuditChainVerifier` recomputes the chain; a mutated or removed row breaks it (proven
-against the append-only table which cannot itself prove content-integrity).
+`AuditChainVerifier` recomputes the chain; a mutated or interior-removed/reordered row
+breaks it (proven against the append-only table which cannot itself prove
+content-integrity). The verifier also asserts `seq` is **strictly monotonic** (not
+gapless — the IDENTITY sequence legitimately skips a value on a rolled-back insert). A
+partial index `idx_audit_chain_head` on `(seq DESC) WHERE record_hash IS NOT NULL`
+(V17) keeps the per-write chain-head read O(1); it is empty at creation (pre-S9 rows
+have `record_hash` NULL) so the `CREATE INDEX` is instant even on a populated table.
+**Tail-truncation resistance** (a DB superuser deleting the most recent rows, leaving a
+shorter but still-consistent chain) is the SPEC-DEFERRED externally-anchored Merkle root
+(FR-AUD-10 / D34) — hash-chain + WORM is the documented baseline, not a gap.
 
 ### 18.5 Recording bytes never touch the CP (Design §12.2)
 
-The CP issues a short-lived (default 120s), single-object **presigned PUT** (AWS SDK v2
-`S3Presigner`) to a WORM bucket created with **object-lock enabled**; the object-lock
-mode + retain-until are baked into the **signature**, surfaced as `required_headers`
-the Gateway must replay verbatim, so the uploader cannot strip the lock. The Gateway
-uploads the **encrypted** bytes directly. WORM store config is
-`sessionlayer.recording.worm.*` (not in the DB); the customer key + retention/mode are
-operator settings above.
+The upload credential is issued **at upload time** by the separate `RequestUpload` RPC
+(not at `BeginRecording`), so its life is the PUT, not the whole session — a
+short-lived (default 120s), single-object **presigned PUT** (AWS SDK v2 `S3Presigner`)
+to a WORM bucket created with **object-lock enabled**. The object-lock mode +
+retain-until are baked into the **signature**, surfaced as `required_headers` the
+Gateway must replay verbatim, so the uploader cannot strip the lock. No S3 network I/O
+runs inside a DB transaction (bucket-ensure is eager at startup + idempotent; presign
+is pure crypto). The Gateway uploads the **encrypted** bytes directly. WORM store config
+is `sessionlayer.recording.worm.*` (not in the DB); the customer key + retention/mode
+are operator settings above.
+
+**Immutability against a compromised platform requires COMPLIANCE mode.** Governance
+mode is deletable by a privileged, audited role (the GDPR erasure escape hatch), so the
+"a compromised CP/admin can't alter a recording" (§15) guarantee holds strictly only
+under compliance-mode object-lock; governance trades that for an operator-controlled
+delete path.

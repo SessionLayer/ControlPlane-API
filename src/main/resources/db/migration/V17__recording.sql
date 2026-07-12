@@ -37,7 +37,7 @@ ALTER TABLE config.operator_settings
     ADD COLUMN recording_key_ref             text        CHECK (recording_key_ref IS NULL
                                              OR (recording_key_ref NOT LIKE '%PRIVATE KEY%'
                                                  AND recording_key_ref NOT LIKE '%BEGIN %')),
-    ADD COLUMN recording_retention_days      integer     NOT NULL DEFAULT 365 CHECK (recording_retention_days >= 0),
+    ADD COLUMN recording_retention_days      integer     NOT NULL DEFAULT 365 CHECK (recording_retention_days >= 1),
     ADD COLUMN recording_strict_default      boolean     NOT NULL DEFAULT true;
 
 COMMENT ON COLUMN config.operator_settings.recording_customer_public_key IS 'FR-AUD-2 / §15: customer PUBLIC key (DER SubjectPublicKeyInfo) the Gateway seals the per-recording data key to. NULL => recording un-provisioned => BeginRecording fails closed. Public material only (the CP never holds the private half).';
@@ -66,6 +66,16 @@ CREATE TABLE runtime.recording_token (
 );
 COMMENT ON TABLE runtime.recording_token IS 'Design §12/§15 / FR-AUD-1: single-use BeginRecording token bound to {gateway,session,node,principal,exp}. Hash only; atomic single-use. Minted at Authorize ALLOW alongside session_signing_token.';
 CREATE INDEX idx_recording_token_gateway ON runtime.recording_token (gateway_id);
+
+-- 3. ------------------------------------------------------------------------
+-- Hash-chain head-read index. AuditWriter reads the current chain head with
+-- `... WHERE record_hash IS NOT NULL ORDER BY seq DESC LIMIT 1` on every audit
+-- write (under the chain advisory lock), so this partial index keeps that O(1).
+-- Safe as a plain (non-CONCURRENT) CREATE even though audit_event may be populated:
+-- the partial predicate matches only rows the S9 writer stamps, and every row that
+-- exists at migration time predates S9 with record_hash = NULL, so the index is
+-- EMPTY at creation. Propagates to every audit_event partition.
+CREATE INDEX idx_audit_chain_head ON runtime.audit_event (seq DESC) WHERE record_hash IS NOT NULL;
 
 -- Grants. V11's ALTER DEFAULT PRIVILEGES auto-grants CRUD on owner-created runtime
 -- tables to cp_runtime, so recording_token inherits SELECT/INSERT/UPDATE/DELETE.

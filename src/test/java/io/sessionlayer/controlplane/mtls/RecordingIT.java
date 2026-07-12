@@ -31,6 +31,7 @@ import io.sessionlayer.controlplane.grpc.v1.FinalizeRecordingResponse;
 import io.sessionlayer.controlplane.grpc.v1.KeySealAlgorithm;
 import io.sessionlayer.controlplane.grpc.v1.RecordingGrpc;
 import io.sessionlayer.controlplane.grpc.v1.RecordingStatus;
+import io.sessionlayer.controlplane.grpc.v1.RequestUploadRequest;
 import io.sessionlayer.controlplane.grpc.v1.UploadCredential;
 import io.sessionlayer.controlplane.grpc.v1.WormMode;
 import io.sessionlayer.controlplane.recording.WormObjectStore;
@@ -62,13 +63,15 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * Session Nine end-to-end: the {@code Recording} gRPC service over mTLS against
  * a real Postgres + MinIO WORM store (Design §12/§15; FR-AUD-1/2/3/9,
- * FR-DATA-2). Proves: {@code Authorize} ALLOW now mints a recording token;
- * {@code BeginRecording} registers the 1:1 {@code recording_ref}, returns the
- * customer key + a short-lived single-object upload credential, and a real PUT
- * to that presigned URL lands the object; replayed / cross-gateway / expired
- * tokens are rejected; no customer key fails closed; {@code FinalizeRecording}
- * commits the integrity metadata + the SFTP audit, correlated into the one
- * audit stream; and a WORM object-lock cannot be stripped or deleted.
+ * FR-DATA-2). Proves the Begin → RequestUpload → PUT → Finalize lifecycle:
+ * {@code Authorize} ALLOW mints a recording token; {@code BeginRecording}
+ * registers the 1:1 {@code recording_ref} + returns the customer key (no upload
+ * cred); {@code
+ * RequestUpload} issues a fresh short-lived presigned PUT at upload time that
+ * lands the object; replayed / cross-gateway / expired tokens + invalid
+ * customer keys fail closed; {@code FinalizeRecording} commits integrity + the
+ * (validated) SFTP audit correlated into the one stream; and a WORM object-lock
+ * cannot be stripped or deleted.
  */
 class RecordingIT extends AbstractMtlsIT {
 
@@ -114,7 +117,7 @@ class RecordingIT extends AbstractMtlsIT {
 	private WormObjectStore worm;
 
 	@Test
-	void beginRegistersRecordingAndTheUploadCredentialLandsTheObject() throws Exception {
+	void beginThenRequestUploadLandsTheObject() throws Exception {
 		byte[] customerKey = configureCustomerKey("kms://customer-1", "governance");
 		String identity = "alice-" + unique();
 		UUID nodeId = seedProdNode();
@@ -138,12 +141,6 @@ class RecordingIT extends AbstractMtlsIT {
 		assertThat(begin.getCustomerKey().getPublicKey().toByteArray()).isEqualTo(customerKey);
 		assertThat(begin.getCustomerKey().getKeyRef()).isEqualTo("kms://customer-1");
 
-		UploadCredential upload = begin.getUpload();
-		assertThat(upload.getMethod()).isEqualTo("PUT");
-		assertThat(upload.getUrl()).startsWith("http");
-		assertThat(upload.getRequiredHeadersMap()).isNotEmpty();
-		assertThat(upload.getExpiresAtEpochSeconds()).isGreaterThan(Instant.now().getEpochSecond());
-
 		// recording_ref written 1:1 with the session (FR-DATA-2).
 		RecordingRef ref = recordings.findBySessionId(sessionId).block();
 		assertThat(ref).isNotNull();
@@ -153,15 +150,57 @@ class RecordingIT extends AbstractMtlsIT {
 		assertThat(ref.wormMode()).isEqualTo("governance");
 		assertThat(ref.retentionUntil()).isAfter(Instant.now());
 
-		// A real upload to the presigned URL lands the encrypted bytes in the WORM
-		// store.
+		// The upload credential is issued at upload time (RequestUpload), short-lived.
+		UploadCredential upload = requestUpload(gateway, begin.getRecordingId());
+		assertThat(upload.getMethod()).isEqualTo("PUT");
+		assertThat(upload.getUrl()).startsWith("http");
+		assertThat(upload.getRequiredHeadersMap()).isNotEmpty();
+		assertThat(upload.getExpiresAtEpochSeconds()).isGreaterThan(Instant.now().getEpochSecond());
+
 		byte[] ciphertext = "sealed-asciicast-bytes".getBytes();
-		int status = putToPresignedUrl(upload, ciphertext);
-		assertThat(status).isEqualTo(200);
+		assertThat(put(upload, ciphertext)).isEqualTo(200);
 		try (S3Client admin = adminS3()) {
 			long len = admin.headObject(b -> b.bucket(BUCKET).key(begin.getObjectKey())).contentLength();
 			assertThat(len).isEqualTo(ciphertext.length);
 		}
+	}
+
+	@Test
+	void requestUploadIssuesAFreshCredentialAtUploadTime() throws Exception {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "ivan-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-upload-" + unique());
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID());
+		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
+
+		// The credential lifetime is the UPLOAD, not the session: a later RequestUpload
+		// issues a freshly-dated credential (so a long session never carries a stale
+		// begin-time cred). Not single-use — it can be re-requested.
+		UploadCredential first = requestUpload(gateway, begin.getRecordingId());
+		Thread.sleep(2000);
+		UploadCredential second = requestUpload(gateway, begin.getRecordingId());
+		assertThat(second.getExpiresAtEpochSeconds()).isGreaterThanOrEqualTo(first.getExpiresAtEpochSeconds());
+		assertThat(second.getExpiresAtEpochSeconds()).isGreaterThan(Instant.now().getEpochSecond());
+		assertThat(put(second, "bytes".getBytes())).isEqualTo(200);
+	}
+
+	@Test
+	void requestUploadByANonOwnerGatewayIsRejected() {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "heidi-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		EnrolledGateway owner = enroll("gw-up-owner-" + unique());
+		EnrolledGateway other = enroll("gw-up-other-" + unique());
+		AuthorizeResponse authz = authorize(owner, identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID());
+		BeginRecordingResponse begin = beginRecording(owner, authz.getRecordingToken());
+
+		assertThatThrownBy(() -> requestUpload(other, begin.getRecordingId()))
+				.isInstanceOf(StatusRuntimeException.class)
+				.satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode())
+						.isEqualTo(io.grpc.Status.Code.PERMISSION_DENIED));
 	}
 
 	@Test
@@ -213,16 +252,19 @@ class RecordingIT extends AbstractMtlsIT {
 	@Test
 	void noCustomerKeyConfiguredFailsClosed() {
 		clearCustomerKey();
-		String identity = "dave-" + unique();
-		UUID nodeId = seedProdNode();
-		seedAllow(identity, List.of("deploy"), List.of("shell"));
 		EnrolledGateway gateway = enroll("gw-nokey-" + unique());
-		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID());
+		AuthorizeResponse authz = authorizeFresh(gateway);
+		assertBeginFailsClosed(gateway, authz.getRecordingToken());
+	}
 
-		assertThatThrownBy(() -> beginRecording(gateway, authz.getRecordingToken()))
-				.isInstanceOf(StatusRuntimeException.class)
-				.satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode())
-						.isEqualTo(io.grpc.Status.Code.FAILED_PRECONDITION));
+	@Test
+	void invalidCustomerKeyFailsClosed() {
+		// A blob that is not a valid SPKI public key (garbage / a private key) must be
+		// refused rather than handed to the Gateway to seal a recording to (§15).
+		writeSettings("not-a-public-key".getBytes(), "kms://bad", "governance");
+		EnrolledGateway gateway = enroll("gw-badkey-" + unique());
+		AuthorizeResponse authz = authorizeFresh(gateway);
+		assertBeginFailsClosed(gateway, authz.getRecordingToken());
 	}
 
 	@Test
@@ -264,23 +306,67 @@ class RecordingIT extends AbstractMtlsIT {
 	}
 
 	@Test
-	void refinalizeIsIdempotentForSameStatusButRejectsRelabel() {
+	void hostileSftpMetadataIsNormalized() {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "judy-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("sftp"));
+		EnrolledGateway gateway = enroll("gw-hostile-" + unique());
+		UUID sessionId = UUID.randomUUID();
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", sessionId);
+		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
+
+		String longPath = "/" + "a".repeat(9000);
+		FinalizeRecordingRequest finalize = FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1)
+				.addSftpAudit(FileTransferAudit.newBuilder().setOperation("rm -rf /; DROP TABLE").setPath(longPath)
+						.setDirection("sideways").setSize(-5).setSha256("not-a-hash").build())
+				.build();
+		finalizeRecording(gateway, finalize);
+
+		AuditEvent sftp = audits.findBySessionId(sessionId).collectList().block().stream()
+				.filter(e -> e.action().startsWith("sftp.")).findFirst().orElseThrow();
+		// Operation allowlisted → unknown; direction constrained; bad sha256 dropped;
+		// path length-bounded; negative size clamped.
+		assertThat(sftp.action()).isEqualTo("sftp.unknown");
+		assertThat(sftp.detail().get("direction").asString()).isEqualTo("unknown");
+		assertThat(sftp.detail().has("sha256")).isFalse();
+		assertThat(sftp.detail().get("path").asString().length()).isLessThanOrEqualTo(4096);
+		assertThat(sftp.detail().get("size").asString()).isEqualTo("0");
+	}
+
+	@Test
+	void refinalizeIsIdempotentNoOpButRejectsRelabel() {
 		configureCustomerKey("kms://customer-1", "governance");
 		String identity = "grace-" + unique();
 		UUID nodeId = seedProdNode();
-		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		seedAllow(identity, List.of("deploy"), List.of("shell", "sftp"));
 		EnrolledGateway gateway = enroll("gw-refinal-" + unique());
-		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID());
+		UUID sessionId = UUID.randomUUID();
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", sessionId);
 		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
 
 		String head = "sha256:" + "d".repeat(64);
 		FinalizeRecordingRequest first = FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
-				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setHashChainHead(head).setByteLen(10).build();
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setHashChainHead(head).setByteLen(10)
+				.addSftpAudit(FileTransferAudit.newBuilder().setOperation("write").setPath("/a").setDirection("upload")
+						.setSize(1).build())
+				.build();
 		assertThat(finalizeRecording(gateway, first).getStatus()).isEqualTo(RecordingStatus.RECORDING_STATUS_FINALIZED);
-		// same-status retry is idempotent (a lost-response replay)
-		assertThat(finalizeRecording(gateway, first).getStatus()).isEqualTo(RecordingStatus.RECORDING_STATUS_FINALIZED);
+		long afterFirst = audits.findBySessionId(sessionId).count().block();
 
-		// relabeling a finalized recording to FAILED (to hide it) is refused
+		// A same-status re-finalize — even with DIFFERENT sftp_audit — is a no-op that
+		// appends NOTHING (no duplicate audit rows).
+		FinalizeRecordingRequest replay = FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setHashChainHead(head).setByteLen(10)
+				.addSftpAudit(FileTransferAudit.newBuilder().setOperation("read").setPath("/b").setDirection("download")
+						.setSize(2).build())
+				.build();
+		assertThat(finalizeRecording(gateway, replay).getStatus())
+				.isEqualTo(RecordingStatus.RECORDING_STATUS_FINALIZED);
+		assertThat(audits.findBySessionId(sessionId).count().block()).isEqualTo(afterFirst);
+
+		// Relabeling a finalized recording to FAILED (to hide it) is refused.
 		FinalizeRecordingRequest relabel = FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
 				.setStatus(RecordingStatus.RECORDING_STATUS_FAILED).setByteLen(0).build();
 		assertThatThrownBy(() -> finalizeRecording(gateway, relabel)).isInstanceOf(StatusRuntimeException.class)
@@ -310,14 +396,13 @@ class RecordingIT extends AbstractMtlsIT {
 	void complianceWormObjectCannotBeDeleted() throws Exception {
 		String objectKey = "recordings/wormtest/" + UUID.randomUUID() + ".cast.enc";
 		Instant retainUntil = Instant.now().plus(Duration.ofDays(1));
-		PresignedUpload upload = worm.presignPut(objectKey, "compliance", retainUntil).block();
+		PresignedUpload upload = worm.ensureBucket().then(worm.presign(objectKey, "compliance", retainUntil)).block();
 		// The object-lock headers are part of the signature — surfaced so the uploader
 		// replays them verbatim (the lock cannot be stripped).
 		assertThat(upload.requiredHeaders().keySet().stream().map(String::toLowerCase))
 				.anyMatch(h -> h.contains("object-lock-mode"));
 
-		int status = putPresigned(upload, "immutable".getBytes());
-		assertThat(status).isEqualTo(200);
+		assertThat(putPresigned(upload, "immutable".getBytes())).isEqualTo(200);
 
 		try (S3Client admin = adminS3()) {
 			var retention = admin.getObjectRetention(b -> b.bucket(BUCKET).key(objectKey)).retention();
@@ -340,9 +425,29 @@ class RecordingIT extends AbstractMtlsIT {
 		return onChannel(gateway, channel -> AuthorizationGrpc.newBlockingStub(channel).authorize(request));
 	}
 
+	// A minimal allow just to obtain a recording token for the fail-closed begin
+	// tests.
+	private AuthorizeResponse authorizeFresh(EnrolledGateway gateway) {
+		String identity = "user-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		return authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID());
+	}
+
+	private void assertBeginFailsClosed(EnrolledGateway gateway, String recordingToken) {
+		assertThatThrownBy(() -> beginRecording(gateway, recordingToken)).isInstanceOf(StatusRuntimeException.class)
+				.satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode())
+						.isEqualTo(io.grpc.Status.Code.FAILED_PRECONDITION));
+	}
+
 	private BeginRecordingResponse beginRecording(EnrolledGateway gateway, String recordingToken) {
 		BeginRecordingRequest request = BeginRecordingRequest.newBuilder().setRecordingToken(recordingToken).build();
 		return onChannel(gateway, channel -> RecordingGrpc.newBlockingStub(channel).beginRecording(request));
+	}
+
+	private UploadCredential requestUpload(EnrolledGateway gateway, String recordingId) {
+		RequestUploadRequest request = RequestUploadRequest.newBuilder().setRecordingId(recordingId).build();
+		return onChannel(gateway, channel -> RecordingGrpc.newBlockingStub(channel).requestUpload(request)).getUpload();
 	}
 
 	private FinalizeRecordingResponse finalizeRecording(EnrolledGateway gateway, FinalizeRecordingRequest request) {
@@ -360,7 +465,7 @@ class RecordingIT extends AbstractMtlsIT {
 		}
 	}
 
-	private int putToPresignedUrl(UploadCredential upload, byte[] body) throws Exception {
+	private int put(UploadCredential upload, byte[] body) throws Exception {
 		HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(upload.getUrl())).method(upload.getMethod(),
 				HttpRequest.BodyPublishers.ofByteArray(body));
 		upload.getRequiredHeadersMap().forEach((name, value) -> {

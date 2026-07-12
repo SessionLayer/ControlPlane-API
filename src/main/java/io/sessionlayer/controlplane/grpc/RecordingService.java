@@ -13,6 +13,8 @@ import io.sessionlayer.controlplane.grpc.v1.KeySealAlgorithm;
 import io.sessionlayer.controlplane.grpc.v1.RecordingContext;
 import io.sessionlayer.controlplane.grpc.v1.RecordingGrpc;
 import io.sessionlayer.controlplane.grpc.v1.RecordingStatus;
+import io.sessionlayer.controlplane.grpc.v1.RequestUploadRequest;
+import io.sessionlayer.controlplane.grpc.v1.RequestUploadResponse;
 import io.sessionlayer.controlplane.grpc.v1.UploadCredential;
 import io.sessionlayer.controlplane.grpc.v1.WormMode;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
@@ -22,6 +24,7 @@ import io.sessionlayer.controlplane.recording.FileTransferAuditEntry;
 import io.sessionlayer.controlplane.recording.RecordingRegistration;
 import io.sessionlayer.controlplane.recording.RecordingRegistrationService;
 import io.sessionlayer.controlplane.recording.RecordingRequestContext;
+import io.sessionlayer.controlplane.recording.WormObjectStore.PresignedUpload;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -60,6 +63,16 @@ public class RecordingService extends RecordingGrpc.RecordingImplBase {
 	}
 
 	@Override
+	public void requestUpload(RequestUploadRequest request, StreamObserver<RequestUploadResponse> observer) {
+		MtlsPeer peer = MtlsContext.peer();
+		UUID caller = peer == null ? null : peer.gatewayId();
+		// A blank/malformed id parses to null, which the service rejects (fail closed).
+		Mono<RequestUploadResponse> result = registration.requestUpload(caller, parseUuid(request.getRecordingId()))
+				.map(upload -> RequestUploadResponse.newBuilder().setUpload(toUpload(upload)).build());
+		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "RequestUpload");
+	}
+
+	@Override
 	public void finalizeRecording(FinalizeRecordingRequest request,
 			StreamObserver<FinalizeRecordingResponse> observer) {
 		MtlsPeer peer = MtlsContext.peer();
@@ -94,12 +107,15 @@ public class RecordingService extends RecordingGrpc.RecordingImplBase {
 		CustomerKey customerKey = CustomerKey.newBuilder().setKeyRef(reg.customerKey().keyRef())
 				.setPublicKey(ByteString.copyFrom(reg.customerKey().publicKey()))
 				.setAlgorithm(toAlgorithm(reg.customerKey().algorithm())).build();
-		UploadCredential upload = UploadCredential.newBuilder().setUrl(reg.upload().url())
-				.setMethod(reg.upload().method()).putAllRequiredHeaders(reg.upload().requiredHeaders())
-				.setExpiresAtEpochSeconds(reg.upload().expiresAtEpochSeconds()).build();
 		return BeginRecordingResponse.newBuilder().setRecordingId(reg.recordingId().toString())
 				.setObjectKey(reg.objectKey()).setWormMode(toWormMode(reg.wormMode())).setCustomerKey(customerKey)
-				.setUpload(upload).build();
+				.build();
+	}
+
+	private static UploadCredential toUpload(PresignedUpload upload) {
+		return UploadCredential.newBuilder().setUrl(upload.url()).setMethod(upload.method())
+				.putAllRequiredHeaders(upload.requiredHeaders())
+				.setExpiresAtEpochSeconds(upload.expiresAtEpochSeconds()).build();
 	}
 
 	private static List<FileTransferAuditEntry> toEntries(FinalizeRecordingRequest request) {

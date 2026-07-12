@@ -9,6 +9,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -41,10 +43,12 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
  * PUT).
  *
  * <p>
- * The presign is pure local crypto (no network), but bucket-ensure does I/O, so
- * both run off the reactive event loop on the bounded-elastic scheduler
- * (non-blocking discipline). Bucket-ensure is idempotent and short-circuited
- * after the first success.
+ * Bucket-ensure ({@link #ensureBucket()}) does network I/O and is done EAGERLY
+ * at startup (and idempotently short-circuited thereafter) so it never runs
+ * inside a request-path DB transaction (reliability). The presign
+ * ({@link #presign}) is pure local crypto (no network). Both run off the
+ * reactive event loop on the bounded-elastic scheduler (non-blocking
+ * discipline).
  */
 @Component
 public class WormObjectStore {
@@ -81,19 +85,47 @@ public class WormObjectStore {
 			long expiresAtEpochSeconds) {
 	}
 
-	/**
-	 * Ensure the WORM bucket exists (object-lock enabled) and return a presigned
-	 * PUT scoped to {@code objectKey} with the WORM mode + {@code retainUntil}
-	 * locked into the signature. Runs off the event loop.
-	 */
-	public Mono<PresignedUpload> presignPut(String objectKey, String wormMode, Instant retainUntil) {
-		return Mono.fromCallable(() -> {
-			ensureBucket();
-			return presign(objectKey, wormMode, retainUntil);
-		}).subscribeOn(Schedulers.boundedElastic());
+	// Eagerly create the bucket at startup so the request path never does bucket
+	// I/O
+	// inside a DB transaction. Best-effort: if the store is down at boot, the guard
+	// stays unset and the first RequestUpload re-ensures (fail-closed, not
+	// fail-boot).
+	@EventListener(ApplicationReadyEvent.class)
+	void warmUp() {
+		ensureBucket().subscribe(ignored -> {
+		}, error -> LOG.warn("WORM bucket warm-up failed (will retry on first upload): {}", error.toString()));
 	}
 
-	private PresignedUpload presign(String objectKey, String wormMode, Instant retainUntil) {
+	/**
+	 * Ensure the WORM bucket exists with object-lock enabled. Idempotent + short-
+	 * circuited after the first success; runs off the event loop.
+	 */
+	public Mono<Void> ensureBucket() {
+		return Mono.<Void>fromRunnable(this::ensureBucketBlocking).subscribeOn(Schedulers.boundedElastic());
+	}
+
+	/**
+	 * Presign a single-object PUT scoped to {@code objectKey} with the WORM mode +
+	 * {@code retainUntil} locked into the signature. Pure local crypto (no
+	 * network); the caller is responsible for having ensured the bucket. Runs off
+	 * the event loop.
+	 */
+	public Mono<PresignedUpload> presign(String objectKey, String wormMode, Instant retainUntil) {
+		return Mono.fromCallable(() -> presignBlocking(objectKey, wormMode, retainUntil))
+				.subscribeOn(Schedulers.boundedElastic());
+	}
+
+	/**
+	 * Liveness probe for the health indicator: HEAD the bucket. Off the event loop.
+	 */
+	public Mono<Void> probe() {
+		return Mono
+				.<Void>fromRunnable(
+						() -> s3.headBucket(HeadBucketRequest.builder().bucket(properties.getBucket()).build()))
+				.subscribeOn(Schedulers.boundedElastic());
+	}
+
+	private PresignedUpload presignBlocking(String objectKey, String wormMode, Instant retainUntil) {
 		PutObjectRequest put = PutObjectRequest.builder().bucket(properties.getBucket()).key(objectKey)
 				.objectLockMode(objectLockMode(wormMode)).objectLockRetainUntilDate(retainUntil).build();
 		PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
@@ -112,7 +144,7 @@ public class WormObjectStore {
 	// An
 	// existing bucket is assumed correctly configured (created by us or the
 	// operator).
-	private void ensureBucket() {
+	private void ensureBucketBlocking() {
 		if (bucketEnsured.get()) {
 			return;
 		}
