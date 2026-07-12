@@ -43,6 +43,18 @@ tags:
       self-destruct, short-TTL, node-scoped. Platform-RBAC gated (`node:enroll`)
       and audited, so an autoscaler/config-mgmt re-provisions an agent without a
       human (the GitHub-Actions-runner pattern).
+  - name: jit-requests
+    description: >-
+      Just-in-time access requests & approval chain (Design §7; FR-ACC-2/3/4).
+      Submit is open to any authenticated principal; approve/deny/revoke are
+      platform-RBAC gated (`request:approve`). Self-approval is impossible;
+      revoking an active grant also tears down live sessions via a Lock. Audited.
+  - name: breakglass
+    description: >-
+      Break-glass credential management & activation review (Design §7; FR-ACC-6).
+      Register FIDO2 `sk-ecdsa` public keys / issue single-use offline codes
+      (platform-RBAC gated `breakglass:manage`); list activations and record the
+      mandatory post-hoc review. Audited.
 # Default security applied to operations that do not override it. The public
 # meta probes below explicitly opt out with `security: []`. Declaring the three
 # first-class schemes here (Design §13, FR-AUTH-17) fixes them in the contract.
@@ -537,6 +549,395 @@ paths:
       responses:
         '204':
           description: The join token was revoked (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/jit-requests:
+    get:
+      operationId: listJitRequests
+      summary: List JIT requests (admin).
+      description: |
+        Lists JIT requests, optionally filtered by `state` or `requester` (Design
+        §7; FR-ACC-2). Platform-RBAC gated (`request:approve`) + audited.
+      tags:
+        - jit-requests
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: requester
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The JIT requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JitRequestList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: submitJitRequest
+      summary: Submit a JIT access request.
+      description: |
+        Requests just-in-time access to a target node as a principal for a bounded
+        duration (Design §7; FR-ACC-2/3). Open to any authenticated principal — the
+        requester is recorded from the authenticated caller, never a body field. The
+        matching JIT policy's approval chain is snapshotted; a zero-level chain
+        auto-approves (but a Lock still denies on use). Audited.
+      tags:
+        - jit-requests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JitRequestSubmission'
+      responses:
+        '201':
+          description: The JIT request was submitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JitRequestResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/jit-requests/{jitRequestId}:
+    get:
+      operationId: getJitRequest
+      summary: Get a JIT request (admin).
+      tags:
+        - jit-requests
+      parameters:
+        - name: jitRequestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The JIT request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JitRequestResource'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/jit-requests/{jitRequestId}/approve:
+    post:
+      operationId: approveJitRequest
+      summary: Approve a JIT request level (admin).
+      description: |
+        Approves the next level of a pending JIT request (Design §7; FR-ACC-3/4).
+        The approver can NEVER be the requester (self-approval impossible) and may
+        act at most once; when all levels are approved the grant clock starts.
+        Platform-RBAC gated (`request:approve`) + audited.
+      tags:
+        - jit-requests
+      parameters:
+        - name: jitRequestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JitDecisionRequest'
+      responses:
+        '200':
+          description: The updated JIT request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JitRequestResource'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/jit-requests/{jitRequestId}/deny:
+    post:
+      operationId: denyJitRequest
+      summary: Deny a JIT request (admin).
+      description: |
+        Denies a pending JIT request (terminal). The denier can never be the
+        requester. Platform-RBAC gated (`request:approve`) + audited.
+      tags:
+        - jit-requests
+      parameters:
+        - name: jitRequestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JitDecisionRequest'
+      responses:
+        '200':
+          description: The denied JIT request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JitRequestResource'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/jit-requests/{jitRequestId}/revoke:
+    post:
+      operationId: revokeJitRequest
+      summary: Revoke an active JIT grant (admin).
+      description: |
+        Revokes an approved/active JIT grant (Design §7; FR-ACC-2). Also writes a
+        strict Lock on the grant's identity+node so a LIVE session tears down
+        (§8.4). Platform-RBAC gated (`request:approve`) + audited.
+      tags:
+        - jit-requests
+      parameters:
+        - name: jitRequestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JitDecisionRequest'
+      responses:
+        '200':
+          description: The revoked JIT request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JitRequestResource'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/breakglass/credentials:
+    get:
+      operationId: listBreakglassCredentials
+      summary: List break-glass credentials (admin).
+      description: |
+        Lists registered break-glass FIDO2 credentials (public metadata only)
+        (Design §7; FR-ACC-6). Platform-RBAC gated (`breakglass:manage`) + audited.
+      tags:
+        - breakglass
+      responses:
+        '200':
+          description: The break-glass credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreakglassCredentialList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: registerBreakglassCredential
+      summary: Register a break-glass FIDO2 key (admin).
+      description: |
+        Registers a break-glass FIDO2 `sk-ecdsa` PUBLIC key (Design §7; FR-ACC-6).
+        Attestation is not required — an admin vouches for the key; only PUBLIC
+        material and the SHA-256 fingerprint are stored. Platform-RBAC gated
+        (`breakglass:manage`) + audited.
+      tags:
+        - breakglass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterBreakglassCredentialRequest'
+      responses:
+        '201':
+          description: The credential was registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreakglassCredentialResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/breakglass/credentials/{credentialId}:
+    delete:
+      operationId: revokeBreakglassCredential
+      summary: Revoke a break-glass credential (admin).
+      description: |
+        Revokes (soft, `revoked_at`) a registered break-glass credential.
+        Idempotent. Platform-RBAC gated (`breakglass:manage`) + audited.
+      tags:
+        - breakglass
+      parameters:
+        - name: credentialId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The credential was revoked (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/breakglass/offline-codes:
+    get:
+      operationId: listBreakglassOfflineCodes
+      summary: List break-glass offline codes (admin).
+      description: |
+        Lists issued offline-code metadata (NEVER the raw codes) (Design §7;
+        FR-ACC-6). Platform-RBAC gated (`breakglass:manage`) + audited.
+      tags:
+        - breakglass
+      responses:
+        '200':
+          description: The offline-code metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreakglassOfflineCodeList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: issueBreakglassOfflineCodes
+      summary: Issue a batch of break-glass offline codes (admin).
+      description: |
+        Issues a batch of single-use break-glass offline codes (Design §7;
+        FR-ACC-6). The raw codes are returned exactly ONCE; only their SHA-256
+        hashes are stored. Platform-RBAC gated (`breakglass:manage`) + audited.
+      tags:
+        - breakglass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueBreakglassOfflineCodesRequest'
+      responses:
+        '201':
+          description: The codes were issued (raw values returned once).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedBreakglassOfflineCodes'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/breakglass/activations:
+    get:
+      operationId: listBreakglassActivations
+      summary: List break-glass activations (admin).
+      description: |
+        Lists break-glass activations, optionally filtered by `reviewStatus`
+        (Design §7; FR-ACC-6/FR-AUD-7). An unreviewed activation is a standing
+        signal. Platform-RBAC gated (`breakglass:manage`) + audited.
+      tags:
+        - breakglass
+      parameters:
+        - name: reviewStatus
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - pending
+              - reviewed
+      responses:
+        '200':
+          description: The break-glass activations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreakglassActivationList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/breakglass/activations/{activationId}/review:
+    post:
+      operationId: reviewBreakglassActivation
+      summary: Record the mandatory review of a break-glass activation (admin).
+      description: |
+        Records the mandatory post-hoc review of a break-glass activation (Design
+        §7; FR-ACC-6/FR-AUD-7). Platform-RBAC gated (`breakglass:manage`) +
+        audited.
+      tags:
+        - breakglass
+      parameters:
+        - name: activationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewBreakglassActivationRequest'
+      responses:
+        '200':
+          description: The reviewed activation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreakglassActivationResource'
         '403':
           $ref: '#/components/responses/Problem'
         '404':
@@ -1145,4 +1546,379 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JoinTokenResource'
+      additionalProperties: false
+    JitRequestSubmission:
+      type: object
+      title: JIT Request Submission
+      description: A just-in-time access request. The requester is the authenticated caller, never a field.
+      required:
+        - targetNodeId
+        - principal
+        - reason
+      properties:
+        targetNodeId:
+          type: string
+          format: uuid
+          description: The target node to request JIT access to.
+        principal:
+          type: string
+          description: The Linux login requested (must be within what the JIT policy allows).
+        capabilities:
+          type: array
+          description: Requested capabilities (narrowed to the policy's set; default = the policy set).
+          items:
+            type: string
+        reason:
+          type: string
+          description: The justification for the request (audited).
+      additionalProperties: false
+    JitDecisionRequest:
+      type: object
+      title: JIT Decision Request
+      description: The optional reason attached to an approve/deny/revoke action.
+      properties:
+        reason:
+          type: string
+      additionalProperties: false
+    JitApprovalLevel:
+      type: object
+      title: JIT Approval Level
+      properties:
+        kind:
+          type: string
+          enum:
+            - email
+            - oidc_group
+        value:
+          type: string
+      additionalProperties: false
+    JitApproval:
+      type: object
+      title: JIT Approval Entry
+      properties:
+        approver:
+          type: string
+        level:
+          type: integer
+          format: int32
+        decision:
+          type: string
+        reason:
+          type: string
+        at:
+          type: string
+      additionalProperties: false
+    JitRequestResource:
+      type: object
+      title: JIT Request
+      required:
+        - id
+        - requester
+        - principal
+        - reason
+        - state
+        - requestedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        requester:
+          type: string
+        targetNodeId:
+          type: string
+          format: uuid
+        targetNodeName:
+          type: string
+        principal:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        reason:
+          type: string
+        state:
+          type: string
+          description: REQUESTED | PENDING_APPROVAL | APPROVED | DENIED | EXPIRED | ACTIVE | REVOKED.
+        jitPolicyName:
+          type: string
+        approvalChain:
+          type: array
+          items:
+            $ref: '#/components/schemas/JitApprovalLevel'
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/JitApproval'
+        approvalDeadline:
+          type: string
+          format: date-time
+        grantExpiresAt:
+          type: string
+          format: date-time
+        requestedAt:
+          type: string
+          format: date-time
+        decidedAt:
+          type: string
+          format: date-time
+        decidedBy:
+          type: string
+      additionalProperties: false
+    JitRequestList:
+      type: object
+      title: JIT Request List
+      required:
+        - jitRequests
+      properties:
+        jitRequests:
+          type: array
+          items:
+            $ref: '#/components/schemas/JitRequestResource'
+      additionalProperties: false
+    RegisterBreakglassCredentialRequest:
+      type: object
+      title: Register Break-glass Credential Request
+      description: Registers a break-glass FIDO2 sk-ecdsa PUBLIC key. Public material only.
+      required:
+        - publicKey
+        - identity
+        - allowedPrincipals
+      properties:
+        publicKey:
+          type: string
+          format: byte
+          description: The OpenSSH sk-ecdsa-sha2-nistp256 wire pubkey blob (base64). PUBLIC.
+        identity:
+          type: string
+          description: The break-glass operator identity this key resolves to.
+        allowedPrincipals:
+          type: array
+          items:
+            type: string
+        nodeIds:
+          type: array
+          description: Optional node scope (a fleet credential omits it).
+          items:
+            type: string
+            format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+          description: Optional expiry (a hardware token is durable; omit for none).
+      additionalProperties: false
+    BreakglassCredentialResource:
+      type: object
+      title: Break-glass Credential
+      required:
+        - id
+        - keyFingerprint
+        - identity
+        - allowedPrincipals
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        keyFingerprint:
+          type: string
+          description: The OpenSSH SHA256 fingerprint of the registered key.
+        skApplication:
+          type: string
+        identity:
+          type: string
+        allowedPrincipals:
+          type: array
+          items:
+            type: string
+        nodeIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BreakglassCredentialList:
+      type: object
+      title: Break-glass Credential List
+      required:
+        - credentials
+      properties:
+        credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/BreakglassCredentialResource'
+      additionalProperties: false
+    IssueBreakglassOfflineCodesRequest:
+      type: object
+      title: Issue Break-glass Offline Codes Request
+      required:
+        - identity
+        - allowedPrincipals
+      properties:
+        identity:
+          type: string
+        allowedPrincipals:
+          type: array
+          items:
+            type: string
+        nodeIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        sourceCidr:
+          type: string
+          description: Optional source-CIDR binding (deny-only reducer).
+        count:
+          type: integer
+          format: int32
+          description: How many codes to issue (default 10).
+        ttlSeconds:
+          type: integer
+          format: int64
+          description: Code lifetime (default 90d).
+      additionalProperties: false
+    IssuedBreakglassOfflineCodes:
+      type: object
+      title: Issued Break-glass Offline Codes
+      required:
+        - ids
+        - codes
+        - expiresAt
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        codes:
+          type: array
+          description: The raw offline codes, returned ONCE; only their hashes are stored.
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BreakglassOfflineCodeResource:
+      type: object
+      title: Break-glass Offline Code
+      description: Offline-code metadata (never the raw code).
+      required:
+        - id
+        - identity
+        - expiresAt
+        - used
+      properties:
+        id:
+          type: string
+          format: uuid
+        identity:
+          type: string
+        allowedPrincipals:
+          type: array
+          items:
+            type: string
+        sourceCidr:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        used:
+          type: boolean
+        usedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BreakglassOfflineCodeList:
+      type: object
+      title: Break-glass Offline Code List
+      required:
+        - offlineCodes
+      properties:
+        offlineCodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BreakglassOfflineCodeResource'
+      additionalProperties: false
+    BreakglassActivationResource:
+      type: object
+      title: Break-glass Activation
+      required:
+        - id
+        - principal
+        - reason
+        - reviewStatus
+        - activatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        identity:
+          type: string
+        principal:
+          type: string
+        reason:
+          type: string
+        alertRef:
+          type: string
+        breakglassPolicyName:
+          type: string
+        reviewStatus:
+          type: string
+          enum:
+            - pending
+            - reviewed
+        reviewer:
+          type: string
+        sourceIp:
+          type: string
+        targetNodeId:
+          type: string
+          format: uuid
+        credentialRef:
+          type: string
+        activatedAt:
+          type: string
+          format: date-time
+        reviewedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    BreakglassActivationList:
+      type: object
+      title: Break-glass Activation List
+      required:
+        - activations
+      properties:
+        activations:
+          type: array
+          items:
+            $ref: '#/components/schemas/BreakglassActivationResource'
+      additionalProperties: false
+    ReviewBreakglassActivationRequest:
+      type: object
+      title: Review Break-glass Activation Request
+      properties:
+        note:
+          type: string
       additionalProperties: false
