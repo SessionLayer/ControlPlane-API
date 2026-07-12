@@ -125,20 +125,26 @@ public class ConnectAuthorizationService {
 						return auditDeny(callerGatewayId, identity, node.id(), sourceIp, decision, null)
 								.thenReturn(ConnectDecision.denied());
 					}
-					return allow(callerGatewayId, identity, node, gatewayName, requestedPrincipal, sourceIp, sessionId,
-							decision, epoch, now);
+					return allow(callerGatewayId, identity, groups, node, gatewayName, requestedPrincipal, sourceIp,
+							sessionId, decision, epoch, now);
 				})));
 	}
 
-	private Mono<ConnectDecision> allow(UUID callerGatewayId, String identity, Node node, String gatewayName,
-			String requestedPrincipal, String sourceIp, UUID sessionId, DataPlaneDecision decision, long epoch,
-			Instant now) {
+	private Mono<ConnectDecision> allow(UUID callerGatewayId, String identity, List<String> groups, Node node,
+			String gatewayName, String requestedPrincipal, String sourceIp, UUID sessionId, DataPlaneDecision decision,
+			long epoch, Instant now) {
 		int ttlSeconds = effectiveGrantTtl(decision.grantTtlSeconds());
 		Instant grantExpiry = now.plusSeconds(ttlSeconds);
 		List<String> logins = decision.sortedLogins();
 		List<String> capabilities = decision.sortedCapabilities();
+		// identity/groups/node-labels are signed into the context so the Gateway
+		// matches identity/group/label locks against trusted data (S10). Node labels
+		// are emitted in a deterministic "key=value" order for stable signed bytes.
+		List<String> identityGroups = groups == null ? List.of() : List.copyOf(groups);
+		List<String> nodeLabels = sortedLabelStrings(node.resolvedLabels());
 		DecisionContext context = new DecisionContext(node.id(), node.name(), logins, capabilities, requestedPrincipal,
-				grantExpiry, epoch, properties.getDecisionTtl(), callerGatewayId, sessionId, sourceIp, now);
+				grantExpiry, epoch, properties.getDecisionTtl(), callerGatewayId, sessionId, sourceIp, now, identity,
+				identityGroups, nodeLabels);
 
 		return Mono.zip(signer.sign(context), resolveNodeConnection(node)).flatMap(signedAndConn -> {
 			SignedDecisionContext signed = signedAndConn.getT1();
@@ -341,5 +347,11 @@ public class ConnectAuthorizationService {
 			}
 		}
 		return labels;
+	}
+
+	// The signed context's node labels: "key=value" strings sorted so the signed
+	// bytes are deterministic for the Gateway's local label-lock matching (S10).
+	private static List<String> sortedLabelStrings(JsonNode resolvedLabels) {
+		return labelsOf(resolvedLabels).entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).sorted().toList();
 	}
 }

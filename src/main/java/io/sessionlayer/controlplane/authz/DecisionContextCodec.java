@@ -20,7 +20,8 @@ public final class DecisionContextCodec {
 				.setGrantExpiryEpochSeconds(ctx.grantExpiry().getEpochSecond()).setPolicyEpoch(ctx.policyEpoch())
 				.setDecisionTtlSeconds(ctx.decisionTtl().toSeconds()).setGatewayId(str(ctx.gatewayId()))
 				.setSessionId(str(ctx.sessionId())).setSourceAddress(nullToEmpty(ctx.sourceAddress()))
-				.setIssuedAtEpochSeconds(ctx.issuedAt().getEpochSecond()).build();
+				.setIssuedAtEpochSeconds(ctx.issuedAt().getEpochSecond()).setIdentity(nullToEmpty(ctx.identity()))
+				.addAllIdentityGroups(ctx.identityGroups()).addAllNodeLabels(ctx.nodeLabels()).build();
 	}
 
 	/** The exact bytes signed by the decision-context signer. */

@@ -656,3 +656,43 @@ mode is deletable by a privileged, audited role (the GDPR erasure escape hatch),
 "a compromised CP/admin can't alter a recording" (§15) guarantee holds strictly only
 under compliance-mode object-lock; governance trades that for an operator-controlled
 delete path.
+
+## 19. Session Ten (per-channel re-eval & lock push) additions — `V18`
+
+Session Ten adds the incident-response **lock CRUD** + the actively-pushed lock
+deny-list (Design §6.3/§8.3/§8.4; FR-CHAN-3, FR-LOCK-1/2). One migration, `V18`; the
+next free version is **V19**. It adds **no new table** — the lock is the existing
+`runtime.access_lock` (`V3`, API-only, never reconciled).
+
+### 19.1 `platform_role.permissions` CHECK widened (`V18`)
+
+The lock CRUD is platform-RBAC gated by two new permissions, `lock:read` (list) and
+`lock:write` (create/release). The `config.platform_role.permissions` column
+CHECK-constrains the closed permission vocabulary (`V2`), so `V18` drops + recreates the
+(anonymously-named) `platform_role_permissions_check` constraint with the two strings
+added — mirroring the `V14` `ca_config_ca_kind_check` precedent. Existing roles remain a
+subset of the widened set (no data change), and the S6 first-admin role (seeded from
+`PlatformPermissions.ALL`) now carries the lock permissions automatically. No GRANT is
+needed — `cp_runtime` already holds CRUD on `config.platform_role` (`V11`).
+
+### 19.2 `access_lock.target_selector` canonical shape
+
+The lock CRUD writes `target_selector` in the frozen `LockTarget` **plural** shape
+(`identities` / `groups` / `node_ids` / `principals` / `node_labels` as `"key=value"` /
+`all`), the exact facets the Gateway matches locally against the SIGNED decision context
+(S5 `LockMatching`, ported to Rust). `LockMatching` recognises **both** this plural form
+and the S5 **singular** back-compat form (`identity`/`group`/`node_id`/`principal`/
+`node_label{key,value}`), OR-matched, so the connect-time deny path and the pushed
+deny-list agree; an empty/unrecognised target still fails **closed** (matches — "deny
+wins"). Ingest validation (`LockController`) rejects an empty/typo'd target up front and
+requires an explicit `all:true` for a fleet-wide lock, so a global lockdown is never the
+result of a typo.
+
+### 19.3 Signed decision context gains identity / groups / node labels (no migration)
+
+`DecisionContext` (the signed connect-time context, not a table) gains `identity`,
+`identity_groups` and `node_labels` (sorted `"key=value"`), populated on the ALLOW path
+from the resolved subject and the fixed node's inventory labels. They are **signed** so
+the Gateway matches identity/group/label locks against trusted data on the per-channel
+hot path — never data it was merely told. Additive; nothing is persisted (the context is
+signed with the CA-anchored context-signer key, S5).

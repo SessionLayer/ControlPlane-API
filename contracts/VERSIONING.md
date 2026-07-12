@@ -167,6 +167,23 @@ issued credential — bytes never proxy through the CP (§12.2) — and the CP n
 sees recording plaintext nor the per-recording data key (customer-held-key
 sealing, FR-AUD-2).
 
+**Session Ten added one additive service — `LockFeed`** (`StreamLocks`, the CP's
+first **server-streaming** RPC — the actively-pushed lock deny-list, Design §6.3/
+§8.3/§8.4; FR-CHAN-3, FR-LOCK-1/2) — plus three additive fields on
+`DecisionContext`: `identity` (13), `identity_groups` (14), `node_labels` (15).
+The new fields are SIGNED into the decision context so the Gateway matches
+identity-/group-/label-targeted locks against trusted data locally, without a CP
+round-trip on the per-channel hot path (FR-CHAN-2). Adding a service + messages +
+three fields is additive and `buf breaking`-clean; it stays within **1.1** (a new
+RPC/field within an already-bumped minor does not move the number): the advertised
+range stays `[1.0, 1.1]`, `protocol_min` stays 1.0. `StreamLocks` is on the
+gateway-identity (mTLS-required) tier; the whole fleet-wide lock set is delivered
+to every Gateway (no per-Gateway filtering) and matching is a local Gateway
+decision. The feed is the datastore-independent deny-list: a lock pushed once
+keeps denying on every Gateway even under total datastore loss (the
+asymmetric-degradation invariant). Lock CRUD is added as REST (`/v1/locks`,
+platform-RBAC gated) — the **push** is gRPC; the **CRUD** is REST.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

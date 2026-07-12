@@ -144,6 +144,31 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(response.getSessionToken()).isEmpty();
 	}
 
+	@Test
+	void signedContextCarriesIdentityGroupsAndNodeLabels() throws Exception {
+		String identity = "alice-" + unique();
+		UUID nodeId = seedProdNode(); // resolved labels {env:prod}
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-ctx-" + unique());
+		UUID sessionId = UUID.randomUUID();
+
+		AuthorizeRequest request = AuthorizeRequest.newBuilder().setIdentity(identity).setNodeId(nodeId.toString())
+				.addIdentityGroups("admins").addIdentityGroups("oncall").setRequestedPrincipal("deploy")
+				.setSourceIp("10.0.0.5").setSessionId(sessionId.toString()).build();
+		AuthorizeResponse response = authorize(gateway, request);
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		DecisionContext parsed = DecisionContext.parseFrom(response.getSignedContext());
+		// S10: identity/groups/node-labels are SIGNED so the Gateway matches locks
+		// against trusted data (never data it was merely told).
+		assertThat(parsed.getIdentity()).isEqualTo(identity);
+		assertThat(parsed.getIdentityGroupsList()).containsExactly("admins", "oncall");
+		assertThat(parsed.getNodeLabelsList()).containsExactly("env=prod");
+		// The signature still verifies over the now-larger signed bytes (round-trip).
+		assertThat(DecisionContextVerifier.verify(caCertificate(), response.getSignerCertificate().toByteArray(),
+				response.getSignedContext().toByteArray(), response.getSignature().toByteArray())).isTrue();
+	}
+
 	// ----- Part E: node connection + host-identity lookup (Design §9;
 	// FR-CONN-1/2/5/7) -----
 

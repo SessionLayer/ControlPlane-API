@@ -5,10 +5,11 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Wiring for the Session Five authorization layer: enables
- * {@link AuthzProperties}. The engine, decision service, signer and platform
- * enforcement are component-scanned.
+ * {@link AuthzProperties} (and, since Session Ten, {@link LockFeedProperties}).
+ * The engine, decision service, signer and platform enforcement are
+ * component-scanned.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(AuthzProperties.class)
+@EnableConfigurationProperties({AuthzProperties.class, LockFeedProperties.class})
 public class AuthzConfiguration {
 }
