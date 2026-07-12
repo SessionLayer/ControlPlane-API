@@ -696,3 +696,40 @@ from the resolved subject and the fixed node's inventory labels. They are **sign
 the Gateway matches identity/group/label locks against trusted data on the per-channel
 hot path — never data it was merely told. Additive; nothing is persisted (the context is
 signed with the CA-anchored context-signer key, S5).
+
+## 20. Session Twelve (Agent join & renewable identity) additions — `V19`
+
+Session Twelve generalizes the Session-Four Gateway enrollment/renewal machinery for
+per-node **Agents** (Design §8, FR-JOIN-1/3/4/6). The durable Agent credential is the
+same renewable internal mTLS X.509 identity + generation counter the Gateway holds
+(D25/D28), so the schema change is deliberately **symmetric with the gateway** and reuses
+existing tables. One migration, `V19`; the next free version is **V20**.
+
+### 20.1 `agent_identity.prev_fingerprint` (`V19`)
+
+`runtime.agent_identity` (created `V3`) gains a nullable **`prev_fingerprint text`** — the
+exact mirror of `V15`'s `gateway_identity.prev_fingerprint` (M6). At renew the CP pins the
+presented client cert to **{current, prev}**, so a superseded (renewed-away) certificate
+stops authenticating while the brief renew-ahead overlap is tolerated. `NULL` for a
+freshly-enrolled (generation 0) identity; the previous generation's SHA-256 cert
+fingerprint thereafter. Public material. `V19` also re-asserts the `cp_runtime` GRANTs on
+`agent_identity`/`join_token` idempotently (already held from `V11`).
+
+### 20.2 No new tables — the join methods reuse existing runtime entities
+
+The three in-scope join methods and clone-detection add **no tables**:
+
+- **`join_token`** (`V3`) backs `TokenJoin` — single-use, hash-only (the raw token is
+  never stored), scope-bound; issuance/CRUD is the new `/v1/join-tokens` REST surface
+  (platform-RBAC `node:enroll`, `V2`). `OidcJoin`/`MtlsJoin` are **tokenless** (a workload
+  OIDC JWT verified against the issuer's JWKS; an operator-PKI cert + PoP) — verifier
+  config lives in `sessionlayer.agent-join.*` application properties, not the DB.
+- **`agent_identity`** (`V3`) holds the per-node mTLS identity ref + `generation` counter
+  (§8.2) + `join_method` + `status`; one `active` per node (partial unique index, `V5`),
+  and the `V4` monotonic-generation trigger already guards regressions.
+- **`access_lock`** (`V3`, S10 push) is the clone-detection lock: a generation mismatch
+  auto-locks by flipping `agent_identity.status='locked'` **and** inserting a strict,
+  no-TTL `access_lock` covering the node (pushed to Gateways via the S10 `LockFeed`), plus
+  a distinct `audit_event` alert (`agent.identity.clone_detected`). It **never
+  auto-clears** — operator re-provision (§8.2). Revocation for every join method is via
+  lock + generation counter, so no method is a standing bypass.
