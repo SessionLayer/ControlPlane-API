@@ -67,8 +67,12 @@ service OuterLegAuth {
   // ResolveBreakglassKey resolves a registered break-glass FIDO2 `sk-ecdsa` PUBLIC
   // key to its break-glass identity + scoped principals, INDEPENDENT of the primary
   // OIDC IdP (Design §5.2/§7, FR-ACC-6). The key is public and russh has already
-  // verified the FIDO possession signature (sk flags/counter) before the Gateway
-  // calls this — the CP only maps the key to its registered break-glass credential.
+  // verified the FIDO POSSESSION signature before the Gateway calls this (proving the
+  // hardware authenticator, whose private key never leaves it, is present) — the CP
+  // only maps the key to its registered break-glass credential. NOTE: touch
+  // (user-presence) is enforced by the AUTHENTICATOR for a standard touch-required
+  // sk key; it is NOT asserted server-side (this russh does not expose the sk flags),
+  // so break-glass keys MUST be provisioned touch-required (never `-O no-touch-required`).
   // On success it mints a single-use `breakglass_token` (in BreakglassResolution)
   // that authorises exactly one break-glass Authorize. A key that is unknown,
   // revoked, expired, or out-of-source resolves to `resolved = false` with no token
