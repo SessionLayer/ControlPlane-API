@@ -93,6 +93,22 @@ public final class StubIdp implements AutoCloseable {
 		codes.put(code, b.build());
 	}
 
+	/**
+	 * Mint a standalone RS256-signed workload token (the OidcJoin proof, S12): iss
+	 * = this issuer, the given audience, and {@code claimName=claimValue} (the
+	 * node-binding claim). Verified by the CP against this stub's JWKS.
+	 */
+	public String workloadToken(String audience, String claimName, String claimValue, Instant expiry) {
+		JWTClaimsSet claims = new JWTClaimsSet.Builder().issuer(issuer).subject("workload-sa").audience(audience)
+				.claim(claimName, claimValue).issueTime(Date.from(Instant.now().minusSeconds(5)))
+				.expirationTime(Date.from(expiry)).build();
+		try {
+			return sign(claims);
+		} catch (Exception signingFailed) {
+			throw new IllegalStateException("failed to sign workload token", signingFailed);
+		}
+	}
+
 	private String sign(JWTClaimsSet claims) throws Exception {
 		SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("stub-1").build(), claims);
 		jwt.sign(new RSASSASigner(keyPair.getPrivate()));

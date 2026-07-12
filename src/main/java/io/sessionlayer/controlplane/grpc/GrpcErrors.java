@@ -2,6 +2,7 @@ package io.sessionlayer.controlplane.grpc;
 
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.sessionlayer.controlplane.agent.AgentJoinException;
 import io.sessionlayer.controlplane.ca.CaSignerService;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.device.DeviceFlowService;
@@ -27,6 +28,15 @@ final class GrpcErrors {
 
 	static StatusRuntimeException toStatus(Throwable error, String operation) {
 		if (error instanceof GatewayRequestException request) {
+			Status status = switch (request.reason()) {
+				case UNAUTHENTICATED -> Status.UNAUTHENTICATED;
+				case PERMISSION_DENIED -> Status.PERMISSION_DENIED;
+				case FAILED_PRECONDITION -> Status.FAILED_PRECONDITION;
+				case INVALID_ARGUMENT -> Status.INVALID_ARGUMENT;
+			};
+			return status.withDescription(request.getMessage()).asRuntimeException();
+		}
+		if (error instanceof AgentJoinException request) {
 			Status status = switch (request.reason()) {
 				case UNAUTHENTICATED -> Status.UNAUTHENTICATED;
 				case PERMISSION_DENIED -> Status.PERMISSION_DENIED;
