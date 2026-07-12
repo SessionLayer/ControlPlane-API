@@ -147,6 +147,26 @@ over the authenticated, integrity-protected mTLS channel from the trusted CP, an
 forging it requires compromising the CP itself (which already holds the
 decision-context signing key), so a separate signature would add no security.
 
+**Session Nine added one additive service — `Recording`** (`BeginRecording`,
+`RequestUpload`, `FinalizeRecording`) — plus one field, `recording_token`
+(field 9), on `AuthorizeResponse`. `RequestUpload` issues the short-lived,
+single-object WORM upload credential at upload time (session end) rather than at
+`BeginRecording`, so the credential's TTL need only cover the PUT — never the
+whole session (§12.2; no long-lived upload creds). The service registers/finalizes a session recording and
+issues short-lived, single-object WORM upload credentials (Design §12; FR-AUD-1/
+2/3/9). `recording_token` is a second single-use token minted on ALLOW, bound to
+the same `{gateway_id, session_id, node, principal, exp}` as `session_token`, that
+authorises exactly one `BeginRecording` (session-bound authorization, §15).
+Adding a service + messages + one field is additive and `buf breaking`-clean; it
+stays within **1.1** (a new RPC/field within an already-bumped minor does not move
+the number): the advertised range stays `[1.0, 1.1]`, `protocol_min` stays 1.0.
+The `Recording` RPCs are on the identity/session (mTLS-required) tier;
+`BeginRecording` additionally consumes the single-use `recording_token`. The
+Gateway uploads the ENCRYPTED recording **directly** to the WORM store with the
+issued credential — bytes never proxy through the CP (§12.2) — and the CP never
+sees recording plaintext nor the per-recording data key (customer-held-key
+sealing, FR-AUD-2).
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

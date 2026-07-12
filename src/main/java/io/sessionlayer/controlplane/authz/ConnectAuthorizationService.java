@@ -12,6 +12,7 @@ import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
+import io.sessionlayer.controlplane.recording.RecordingTokenService;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
@@ -54,6 +55,7 @@ public class ConnectAuthorizationService {
 	private final PolicyEngine engine;
 	private final DecisionContextSigner signer;
 	private final SessionSigningTokenService tokens;
+	private final RecordingTokenService recordingTokens;
 	private final AuditWriter audit;
 	private final AuthzProperties properties;
 	private final TransactionalOperator tx;
@@ -62,8 +64,8 @@ public class ConnectAuthorizationService {
 			CaRotationService caRotation, DpRuleRepository dpRules, AccessLockRepository accessLocks,
 			PolicyEpochRepository policyEpochs, GatewayIdentityRepository gatewayIdentities,
 			SshSessionRepository sshSessions, PolicyEngine engine, DecisionContextSigner signer,
-			SessionSigningTokenService tokens, AuditWriter audit, AuthzProperties properties,
-			TransactionalOperator tx) {
+			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, AuditWriter audit,
+			AuthzProperties properties, TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -75,6 +77,7 @@ public class ConnectAuthorizationService {
 		this.engine = engine;
 		this.signer = signer;
 		this.tokens = tokens;
+		this.recordingTokens = recordingTokens;
 		this.audit = audit;
 		this.properties = properties;
 		this.tx = tx;
@@ -147,14 +150,26 @@ public class ConnectAuthorizationService {
 			detail.put("matched_rule", nullSafe(decision.matchedRuleName()));
 			detail.put("principal", requestedPrincipal);
 			detail.put("policy_epoch", Long.toString(epoch));
-			// ssh_session snapshot + allow audit + token mint are one transaction: a
-			// failure rolls all back, so a token is never minted without its session row.
-			Mono<String> mint = sshSessions.save(session)
-					.then(audit.record(callerGatewayId.toString(), identity, DECISION_ACTION, "success", sessionId,
-							node.id(), detail))
+			// ssh_session snapshot + the two single-use tokens + the allow audit are one
+			// transaction: a failure rolls all back, so a token is never minted without its
+			// session row. The recording token is bound to the SAME {gateway, session,
+			// node,
+			// principal} as the signing token (Design §12/§15). The tokens/session are
+			// saved
+			// on the single tx connection sequentially; the audit write (which serializes
+			// on
+			// the chain advisory lock) is last so that lock is held only until commit.
+			Mono<ConnectDecision> allowed = sshSessions.save(session)
 					.then(tokens.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, capabilities,
-							sourceIp));
-			return tx.transactional(mint).map(token -> ConnectDecision.allow(signed, token, nodeConnection));
+							sourceIp))
+					.flatMap(sessionToken -> recordingTokens
+							.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, sourceIp)
+							.flatMap(recordingToken -> audit
+									.record(callerGatewayId.toString(), identity, DECISION_ACTION, "success", sessionId,
+											node.id(), detail)
+									.thenReturn(ConnectDecision.allow(signed, sessionToken, recordingToken,
+											nodeConnection))));
+			return tx.transactional(allowed);
 		});
 	}
 

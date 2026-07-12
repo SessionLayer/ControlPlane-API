@@ -100,6 +100,22 @@ class WriterRoleIT extends AbstractDataIT {
 	}
 
 	@Test
+	void recordingTokenIsInsertUpdateSelectButNeverDeletable() {
+		// V17 single-use token table: consumed by an UPDATE (used=true), never DELETEd
+		// —
+		// mirrors V15's least-privilege on session_signing_token (F-token-grants-1).
+		java.util.UUID id = Uuids.v7();
+		db.sql("INSERT INTO runtime.recording_token (id, token_hash, gateway_id, session_id, principal, expires_at) "
+				+ "VALUES (:id, :h, :g, :s, 'deploy', now() + interval '2 minutes')").bind("id", id)
+				.bind("h", "hash-" + id).bind("g", Uuids.v7()).bind("s", Uuids.v7()).then().block();
+		// mark-used UPDATE is allowed
+		db.sql("UPDATE runtime.recording_token SET used = true WHERE id = :id").bind("id", id).then().block();
+		// DELETE is refused for the runtime role (least privilege)
+		StepVerifier.create(db.sql("DELETE FROM runtime.recording_token WHERE id = :id").bind("id", id).then())
+				.verifyError();
+	}
+
+	@Test
 	void canInsertAuditAndDoNormalCrud() {
 		var e = audits.save(AuditEvent.create(Instant.now(), "writer-role-ok", null, "login", "success", null, null,
 				null, null, null, null, null, null)).block();

@@ -26,9 +26,9 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allMigrationsAppliedThroughLatest() {
 		Integer maxVersion = db.sql("SELECT max(version::int) AS v FROM flyway_schema_history WHERE success = true")
 				.map(row -> row.get("v", Integer.class)).one().block();
-		// V1..V16. S4 adds V14/V15; S6 adds V16 (auth surface: oidc_login,
-		// device_flow correlation columns, auth_rate_limit, consumed_assertion).
-		assertThat(maxVersion).isEqualTo(16);
+		// V1..V17. S4 adds V14/V15; S6 adds V16 (auth surface); S9 adds V17 (recording:
+		// customer-key config on operator_settings + the recording_token table).
+		assertThat(maxVersion).isEqualTo(17);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
@@ -48,19 +48,20 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allBaseEntityTablesExist() {
 		// Top-level entity tables (excludes the audit_event range partitions). S2 had
 		// 22 (9 config + 13 runtime); S3 adds 8 -> 30; S4 (V14) adds 2 -> 32; S6 (V16)
-		// adds 3 runtime (oidc_login, auth_rate_limit, consumed_assertion) -> 35
-		// (12 config + 23 runtime). A drop fails it.
+		// adds 3 runtime -> 35; S9 (V17) adds 1 runtime (recording_token) -> 36
+		// (12 config + 24 runtime). A drop fails it.
 		Long tables = db
 				.sql("SELECT count(*) AS c FROM information_schema.tables "
 						+ "WHERE table_schema IN ('config','runtime') AND table_type = 'BASE TABLE' "
 						+ "AND NOT (table_schema = 'runtime' AND table_name LIKE 'audit\\_event\\_%')")
 				.map(row -> row.get("c", Long.class)).one().block();
-		assertThat(tables).isEqualTo(35L); // 12 config + 23 runtime
+		assertThat(tables).isEqualTo(36L); // 12 config + 24 runtime
 
 		// spot-check the reserved-name renames and the load-bearing tables actually
 		// landed
 		for (String qualified : new String[]{"runtime.ssh_session", "runtime.access_lock", "runtime.audit_event",
-				"runtime.recording_ref", "runtime.presence", "config.dp_rule", "config.ca_config"}) {
+				"runtime.recording_ref", "runtime.recording_token", "runtime.presence", "config.dp_rule",
+				"config.ca_config"}) {
 			String[] parts = qualified.split("\\.");
 			Long found = db
 					.sql("SELECT count(*) AS c FROM information_schema.tables "
@@ -90,6 +91,25 @@ class MigrationIntegrityIT extends AbstractDataIT {
 						+ "WHERE table_schema = 'runtime' AND column_name = 'origin'")
 				.map(row -> row.get("c", Long.class)).one().block();
 		assertThat(withOrigin).isZero();
+	}
+
+	@Test
+	void recordingCustomerKeyAndTokenSchemaLanded() {
+		// V17: operator_settings gains the customer-key config, and recording_token
+		// (the single-use BeginRecording authority) exists with its binding columns.
+		for (String column : new String[]{"recording_customer_public_key", "recording_key_seal_algorithm",
+				"recording_key_ref", "recording_retention_days", "recording_strict_default"}) {
+			Long found = db.sql("SELECT count(*) AS c FROM information_schema.columns "
+					+ "WHERE table_schema = 'config' AND table_name = 'operator_settings' AND column_name = :col")
+					.bind("col", column).map(row -> row.get("c", Long.class)).one().block();
+			assertThat(found).as("operator_settings.%s exists", column).isEqualTo(1L);
+		}
+		for (String column : new String[]{"token_hash", "gateway_id", "session_id", "node_id", "principal", "used"}) {
+			Long found = db.sql("SELECT count(*) AS c FROM information_schema.columns "
+					+ "WHERE table_schema = 'runtime' AND table_name = 'recording_token' AND column_name = :col")
+					.bind("col", column).map(row -> row.get("c", Long.class)).one().block();
+			assertThat(found).as("recording_token.%s exists", column).isEqualTo(1L);
+		}
 	}
 
 	@Test

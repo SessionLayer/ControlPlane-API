@@ -33,8 +33,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		// Ephemeral mTLS gRPC port: the full production boot (incl. the mTLS server) is
 		// exercised, but on an OS-assigned port so cached test contexts never clash on
-		// :9090.
-		properties = "sessionlayer.mtls.server.port=0")
+		// :9090. The WORM health contributor is disabled here (no MinIO in this smoke
+		// context) so the root /actuator/health reflects the real Postgres wiring, not
+		// an
+		// (expected) unreachable store; the indicator's verdict is unit-tested
+		// (WormHealthIndicatorTest) and the readiness opt-in in WormReadinessIncludeIT.
+		properties = {"sessionlayer.mtls.server.port=0", "management.health.worm.enabled=false"})
 class ControlPlaneSmokeIT {
 
 	@Container

@@ -169,7 +169,8 @@ public class BootstrapService {
 		return new OperatorSettings(s.id(), s.singleton(), s.kekReference(), s.defaultCaBackend(),
 				s.auditRetentionDays(), s.defaultWormMode(), s.otpTtlSeconds(), s.defaultMaxSessionSeconds(),
 				s.defaultIdleTimeoutSeconds(), s.defaultMaxConcurrentSessions(), s.bootstrapAdminSubject(), hash,
-				s.bootstrapCompleted(), s.bootstrapCompletedAt(), s.origin(), s.version(), s.createdAt(),
-				s.updatedAt());
+				s.bootstrapCompleted(), s.bootstrapCompletedAt(), s.recordingCustomerPublicKey(),
+				s.recordingKeySealAlgorithm(), s.recordingKeyRef(), s.recordingRetentionDays(),
+				s.recordingStrictDefault(), s.origin(), s.version(), s.createdAt(), s.updatedAt());
 	}
 }

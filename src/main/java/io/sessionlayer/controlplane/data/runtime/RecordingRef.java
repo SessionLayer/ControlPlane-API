@@ -28,4 +28,32 @@ public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String
 		return new RecordingRef(Uuids.v7(), sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
 				null, false, "recording", "asciicast-v2", null, null, null, null);
 	}
+
+	/**
+	 * Register a recording at {@code BeginRecording}: {@code id} is supplied by the
+	 * caller (it is echoed as the recording id and embedded in {@code objectKey}),
+	 * the WORM mode + retention window are the operator policy, and the integrity
+	 * fields ({@code hashChainHead}/{@code contentDigest}) are filled write-once at
+	 * finalize.
+	 */
+	public static RecordingRef begin(UUID id, UUID sessionId, String objectKey, String encryptionKeyRef,
+			String wormMode, Instant retentionUntil) {
+		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, null, wormMode, null, retentionUntil, false,
+				"recording", "asciicast-v2", null, null, null, null);
+	}
+
+	/**
+	 * Commit the terminal integrity metadata at {@code FinalizeRecording}. The
+	 * write-once provenance columns ({@code hashChainHead}/{@code contentDigest})
+	 * go NULL→value (the DB trigger permits that once, then freezes them);
+	 * {@code status} and {@code sizeBytes} are the mutable lifecycle fields. Null
+	 * arguments leave the corresponding field unchanged (a FAILED recording has no
+	 * object → no digest).
+	 */
+	public RecordingRef finalized(String hashChainHead, String contentDigest, Long sizeBytes, String status) {
+		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef,
+				hashChainHead != null ? hashChainHead : this.hashChainHead, wormMode,
+				sizeBytes != null ? sizeBytes : this.sizeBytes, retentionUntil, legalHold, status, format,
+				contentDigest != null ? contentDigest : this.contentDigest, version, createdAt, updatedAt);
+	}
 }

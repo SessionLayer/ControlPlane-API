@@ -22,12 +22,20 @@ import org.springframework.data.relational.core.mapping.Table;
 public record OperatorSettings(@Id UUID id, boolean singleton, String kekReference, String defaultCaBackend,
 		int auditRetentionDays, String defaultWormMode, int otpTtlSeconds, Integer defaultMaxSessionSeconds,
 		Integer defaultIdleTimeoutSeconds, Integer defaultMaxConcurrentSessions, String bootstrapAdminSubject,
-		String bootstrapCredentialHash, boolean bootstrapCompleted, Instant bootstrapCompletedAt, String origin,
-		@Version Long version, @CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
+		String bootstrapCredentialHash, boolean bootstrapCompleted, Instant bootstrapCompletedAt,
+		byte[] recordingCustomerPublicKey, String recordingKeySealAlgorithm, String recordingKeyRef,
+		int recordingRetentionDays, boolean recordingStrictDefault, String origin, @Version Long version,
+		@CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
 
-	/** Cold-start defaults (FR-AUD-6 retention 365d, governance WORM, local CA). */
+	/**
+	 * Cold-start defaults (FR-AUD-6 retention 365d, governance WORM, local CA). The
+	 * customer recording key ({@code recordingCustomerPublicKey}) is deliberately
+	 * <b>unset</b> — recording is un-provisioned until an operator supplies it, and
+	 * {@code BeginRecording} fails closed rather than store keystrokes in the clear
+	 * (FR-AUD-2, §15).
+	 */
 	public static OperatorSettings defaults() {
 		return new OperatorSettings(Uuids.v7(), true, null, "local", 365, "governance", 120, null, null, null, null,
-				null, false, null, "default", null, null, null);
+				null, false, null, null, "ecies_p256", null, 365, true, "default", null, null, null);
 	}
 }
