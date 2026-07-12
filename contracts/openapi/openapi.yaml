@@ -35,6 +35,8 @@ servers:
 tags:
   - name: meta
     description: Liveness, readiness, and version metadata probes. Public and unauthenticated.
+  - name: locks
+    description: Incident-response lock CRUD (Design §8.3). Platform-RBAC gated and audited.
 # Default security applied to operations that do not override it. The public
 # meta probes below explicitly opt out with `security: []`. Declaring the three
 # first-class schemes here (Design §13, FR-AUTH-17) fixes them in the contract.
@@ -373,6 +375,84 @@ paths:
         '400':
           $ref: '#/components/responses/Problem'
         '429':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/locks:
+    get:
+      operationId: listLocks
+      summary: List active locks (admin).
+      description: |
+        Lists the current unexpired locks. Platform-RBAC gated (`lock:read`) +
+        audited (Design §8.3; FR-LOCK-1). A lock is the incident-response deny
+        primitive; the deny reason is operator-only.
+      tags:
+        - locks
+      responses:
+        '200':
+          description: The active locks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createLock
+      summary: Create a lock (admin).
+      description: |
+        Creates an incident-response lock that blocks new session issuance AND
+        tears down existing matching sessions on every Gateway (Design §8.3,
+        §8.4; FR-LOCK-1/2), pushed over the actively-pushed deny-list. Ingest
+        validation rejects an empty/unrecognised target; a fleet-wide lock
+        requires an explicit `all: true`. Platform-RBAC gated (`lock:write`) +
+        audited.
+      tags:
+        - locks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLockRequest'
+      responses:
+        '201':
+          description: The lock was created and pushed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/locks/{lockId}:
+    delete:
+      operationId: releaseLock
+      summary: Release a lock (admin).
+      description: |
+        Releases (deletes) a lock; the removal is pushed to every Gateway.
+        Releasing a lock only stops future denial — it never resurrects a
+        torn-down session. Platform-RBAC gated (`lock:write`) + audited.
+      tags:
+        - locks
+      parameters:
+        - name: lockId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The lock was released (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
           $ref: '#/components/responses/Problem'
         default:
           $ref: '#/components/responses/Problem'
@@ -786,4 +866,97 @@ components:
         sourceContextMatch:
           type: boolean
           description: Whether the approving browser source correlated with the SSH source (§5.2).
+      additionalProperties: false
+    LockTarget:
+      type: object
+      title: Lock Target
+      description: |
+        What the lock matches (S5 LockMatching facets; OR-matched). At least one
+        facet must be non-empty, OR `all` must be true — a global lock is never
+        implicit (ingest rejects an empty target).
+      properties:
+        identities:
+          type: array
+          items:
+            type: string
+          description: Resolved subject identities to deny.
+        groups:
+          type: array
+          items:
+            type: string
+          description: SSO/OIDC groups to deny (membership match).
+        nodeIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Target node ids to deny.
+        principals:
+          type: array
+          items:
+            type: string
+          description: Linux logins (principals) to deny.
+        nodeLabels:
+          type: array
+          items:
+            type: string
+          description: Node labels ("key=value") to deny.
+        all:
+          type: boolean
+          description: An explicit fleet-wide lock (deny everything). Required for a target with no other facet.
+      additionalProperties: false
+    CreateLockRequest:
+      type: object
+      title: Create Lock Request
+      required:
+        - target
+        - reason
+      properties:
+        target:
+          $ref: '#/components/schemas/LockTarget'
+        reason:
+          type: string
+          description: Operator/audit reason (mandatory). Never disclosed to the SSH user (§7.1).
+        ttlSeconds:
+          type: integer
+          format: int64
+          description: Optional lock lifetime in seconds; omitted or null = no expiry (indefinite until released).
+      additionalProperties: false
+    LockResource:
+      type: object
+      title: Lock
+      required:
+        - id
+        - target
+        - reason
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        target:
+          $ref: '#/components/schemas/LockTarget'
+        reason:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry; absent when the lock has no TTL.
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          description: The admin identity that created the lock.
+      additionalProperties: false
+    LockList:
+      type: object
+      title: Lock List
+      required:
+        - locks
+      properties:
+        locks:
+          type: array
+          items:
+            $ref: '#/components/schemas/LockResource'
       additionalProperties: false
