@@ -154,10 +154,10 @@ class AuthorizeIT extends AbstractMtlsIT {
 		Node node = nodes.findById(nodeId).block();
 		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell", "exec"));
 		// A real host-CA-signed host cert whose principal is the node's enrollment
-		// name.
-		String hostCertLine = signHostCert(node.name());
-		byte[] expectedCertBlob = Base64.getDecoder().decode(hostCertLine.trim().split("\\s+")[1]);
-		seedHostCaAnchor(nodeId, hostCertLine);
+		// name; store its authorized-keys line and assert the CP hands over the exact
+		// cert wire blob decoded from that line (not a re-encode of the same token).
+		OpenSshCertificate hostCert = signHostCert(node.name());
+		seedHostCaAnchor(nodeId, hostCert.certificateLine());
 		EnrolledGateway gateway = enroll("gw-conn-ca-" + unique());
 
 		AuthorizeResponse response = authorize(gateway,
@@ -181,7 +181,7 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(verification.getExpectedHostPrincipalsList()).containsExactly(node.name());
 		assertThat(verification.getPinnedHostKeysList()).isEmpty();
 		assertThat(verification.getHostCertificatesList()).hasSize(1);
-		assertThat(verification.getHostCertificates(0).toByteArray()).isEqualTo(expectedCertBlob);
+		assertThat(verification.getHostCertificates(0).toByteArray()).isEqualTo(hostCert.blob());
 	}
 
 	@Test
@@ -299,14 +299,12 @@ class AuthorizeIT extends AbstractMtlsIT {
 	// Sign a real host certificate off the provisioned host CA, principal = the
 	// node
 	// name (what §9.3 requires the Gateway to match).
-	private String signHostCert(String principal) {
+	private OpenSshCertificate signHostCert(String principal) {
 		SshCertSigner hostCa = caSigner.activeSigner("host").block();
 		KeyPair hostKey = MtlsTestSupport.generateEcKeyPair();
 		CertificateParameters parameters = new CertificateParameters(1L, CertType.HOST, "host-" + principal,
 				List.of(principal), Instant.now().minusSeconds(60), Instant.now().plusSeconds(3600), null, null);
-		OpenSshCertificate cert = hostCa
-				.signCertificate(new CertificateRequest((ECPublicKey) hostKey.getPublic(), parameters));
-		return cert.certificateLine();
+		return hostCa.signCertificate(new CertificateRequest((ECPublicKey) hostKey.getPublic(), parameters));
 	}
 
 	private byte[] seedPinnedHostKey(UUID nodeId) {
