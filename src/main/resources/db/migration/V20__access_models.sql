@@ -102,6 +102,15 @@ ALTER TABLE runtime.breakglass_activation
 COMMENT ON COLUMN runtime.breakglass_activation.identity IS 'FR-ACC-6: the break-glass operator identity that authenticated (IdP-independent).';
 COMMENT ON COLUMN runtime.breakglass_activation.credential_ref IS 'FR-ACC-6: the resolving credential reference (sk-ecdsa fingerprint or offline-code id); legibility for post-hoc review.';
 
+-- 4b. ------------------------------------------------------------------------
+-- jit_request grant-TTL snapshot (FR-ACC-2). The V3 table already snapshots the
+-- approval_chain at submit; snapshot the effective max_ttl too so the grant clock at
+-- approval is deterministic from submit time and cannot be widened by a mid-flight policy
+-- edit — nor fail OPEN to the cluster ceiling if the policy is GC'd before approval.
+ALTER TABLE runtime.jit_request
+    ADD COLUMN policy_max_ttl_seconds integer CHECK (policy_max_ttl_seconds IS NULL OR policy_max_ttl_seconds > 0);
+COMMENT ON COLUMN runtime.jit_request.policy_max_ttl_seconds IS 'FR-ACC-2: snapshot of jit_policy.max_ttl_seconds at submit; the grant clock = min(this, cluster ceiling). Prevents a mid-flight policy edit/delete from widening the grant.';
+
 -- 5. -------------------------------------------------------------------------
 -- Platform permission `breakglass:manage` — gates break-glass credential registration
 -- (FIDO2 key add/revoke) and offline-code issuance (FR-PADM-1, FR-API-5). JIT

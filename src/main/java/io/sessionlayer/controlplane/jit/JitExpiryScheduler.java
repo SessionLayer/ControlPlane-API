@@ -1,11 +1,11 @@
 package io.sessionlayer.controlplane.jit;
 
-import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
 
 /**
  * Drives {@link JitLifecycleService#expireOverdue()} on a periodic schedule so
@@ -18,7 +18,11 @@ import org.springframework.stereotype.Component;
  * <p>
  * Gated by {@code sessionlayer.jit.expiry.enabled} (default on). The default
  * delay is long enough not to fire during a short test (which drive expiry
- * explicitly); failures are logged, not fatal.
+ * explicitly). The sweep occupies a scheduling-pool thread for its whole run
+ * (the pool is sized &ge; 2 in {@code application.properties} so it never
+ * starves the other periodic maintenance), and is NOT wrapped in a timeout — a
+ * large sweep must be allowed to finish rather than be aborted (and
+ * re-attempted) every cycle; failures are logged per-row and are not fatal.
  */
 @Component
 @ConditionalOnProperty(value = "sessionlayer.jit.expiry.enabled", havingValue = "true", matchIfMissing = true)
@@ -41,7 +45,7 @@ public class JitExpiryScheduler {
 		}).onErrorResume(error -> {
 			LOG.warn("jit expiry sweep failed (lazy read-time expiry still protects the grant path): {}",
 					error.toString());
-			return reactor.core.publisher.Mono.empty();
-		}).block(Duration.ofSeconds(30));
+			return Mono.empty();
+		}).block();
 	}
 }
