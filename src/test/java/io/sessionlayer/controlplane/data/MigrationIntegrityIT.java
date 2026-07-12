@@ -26,12 +26,12 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allMigrationsAppliedThroughLatest() {
 		Integer maxVersion = db.sql("SELECT max(version::int) AS v FROM flyway_schema_history WHERE success = true")
 				.map(row -> row.get("v", Integer.class)).one().block();
-		// V1..V18. S4 adds V14/V15; S6 adds V16 (auth surface); S9 adds V17 (recording:
+		// V1..V19. S4 adds V14/V15; S6 adds V16 (auth surface); S9 adds V17 (recording:
 		// customer-key config on operator_settings + the recording_token table); S10
-		// adds
-		// V18 (widen platform_role.permissions CHECK for lock:read/lock:write — no
-		// table).
-		assertThat(maxVersion).isEqualTo(18);
+		// adds V18 (widen platform_role.permissions CHECK for lock:read/lock:write — no
+		// table); S12 adds V19 (agent_identity.prev_fingerprint — the renew-ahead
+		// fingerprint-pin overlap column, mirroring V15's gateway pinning — no table).
+		assertThat(maxVersion).isEqualTo(19);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();

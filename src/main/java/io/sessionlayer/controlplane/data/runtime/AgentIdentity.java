@@ -15,17 +15,21 @@ import org.springframework.data.relational.core.mapping.Table;
  * column is the optimistic-concurrency guard against a renewal race regressing
  * {@code generation} (a DB trigger also rejects a decrease). At most one
  * {@code active} identity per node (partial unique index).
+ * {@code prevFingerprint} (V19) mirrors {@link GatewayIdentity}: renew pins the
+ * presented cert to {current, prev} so a superseded cert stops authenticating
+ * while tolerating the renew-ahead overlap.
  */
 @Table(schema = "runtime", name = "agent_identity")
-public record AgentIdentity(@Id UUID id, UUID nodeId, String mtlsIdentityRef, String fingerprint, long generation,
-		String joinMethod, String status, Instant issuedAt, Instant notAfter, String statusReason,
-		String statusChangedBy, Instant statusChangedAt, @Version Long version, @CreatedDate Instant createdAt,
-		@LastModifiedDate Instant updatedAt) {
+public record AgentIdentity(@Id UUID id, UUID nodeId, String mtlsIdentityRef, String fingerprint,
+		String prevFingerprint, long generation, String joinMethod, String status, Instant issuedAt, Instant notAfter,
+		String statusReason, String statusChangedBy, Instant statusChangedAt, @Version Long version,
+		@CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
 
 	public static AgentIdentity create(UUID nodeId, String mtlsIdentityRef, String fingerprint, long generation,
 			String joinMethod, String status, Instant issuedAt, Instant notAfter) {
-		// status-transition reason/actor (F-DM-15) default null; set on lock/revoke.
-		return new AgentIdentity(Uuids.v7(), nodeId, mtlsIdentityRef, fingerprint, generation, joinMethod, status,
+		// prevFingerprint null (no prior cert); status-transition reason/actor
+		// (F-DM-15) default null, set on lock/revoke.
+		return new AgentIdentity(Uuids.v7(), nodeId, mtlsIdentityRef, fingerprint, null, generation, joinMethod, status,
 				issuedAt, notAfter, null, null, null, null, null, null);
 	}
 }

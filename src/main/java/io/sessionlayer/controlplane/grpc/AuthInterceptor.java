@@ -8,8 +8,10 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
+import io.sessionlayer.controlplane.grpc.v1.AgentIdentityGrpc;
 import io.sessionlayer.controlplane.grpc.v1.GatewayIdentityGrpc;
 import io.sessionlayer.controlplane.grpc.v1.HandshakeGrpc;
+import io.sessionlayer.controlplane.mtls.AgentIdentityUri;
 import io.sessionlayer.controlplane.mtls.GatewayIdentityUri;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
@@ -35,13 +37,15 @@ import org.slf4j.LoggerFactory;
  *
  * <ul>
  * <li><b>Bootstrap tier</b> ({@code Handshake/Negotiate},
- * {@code GatewayIdentity/EnrollGateway}) — reachable without a client cert; the
- * enrollment token authorises Enroll.</li>
+ * {@code GatewayIdentity/EnrollGateway}, {@code AgentIdentity/EnrollAgent}) —
+ * reachable without a client cert; the enrollment token / join proof authorises
+ * Enroll.</li>
  * <li><b>mTLS-required tier</b> ({@code RenewGatewayIdentity},
- * {@code SignSessionCertificate}, and any unknown method) — refused
- * {@code UNAUTHENTICATED} unless a valid client cert chained to the internal CA
- * resolves to a gateway identity. The active/unlocked check + token binding are
- * enforced reactively by the handlers (fail closed).</li>
+ * {@code RenewAgentIdentity}, {@code SignSessionCertificate}, and any unknown
+ * method) — refused {@code UNAUTHENTICATED} unless a valid client cert chained
+ * to the internal CA resolves to a gateway or agent identity. The
+ * active/unlocked check + token binding are enforced reactively by the handlers
+ * (fail closed).</li>
  * </ul>
  */
 public final class AuthInterceptor implements ServerInterceptor {
@@ -53,7 +57,8 @@ public final class AuthInterceptor implements ServerInterceptor {
 
 	/** Methods reachable without a client certificate (the bootstrap exception). */
 	private static final Set<String> BOOTSTRAP_METHODS = Set.of(HandshakeGrpc.getNegotiateMethod().getFullMethodName(),
-			GatewayIdentityGrpc.getEnrollGatewayMethod().getFullMethodName());
+			GatewayIdentityGrpc.getEnrollGatewayMethod().getFullMethodName(),
+			AgentIdentityGrpc.getEnrollAgentMethod().getFullMethodName());
 
 	private final X509TrustManager trustManager;
 
@@ -79,9 +84,11 @@ public final class AuthInterceptor implements ServerInterceptor {
 
 	/**
 	 * Resolve the caller from the TLS session: independently re-validate the client
-	 * chain against the internal CA, check validity, and parse the gateway id from
-	 * the SAN URI. Any absence/failure yields {@link MtlsPeer#NONE} (a bootstrap
-	 * caller); the tier gate above decides whether that is acceptable.
+	 * chain against the internal CA, check validity, and parse the principal id
+	 * from the SAN URI — a gateway URI resolves to a Gateway peer, an agent URI to
+	 * an Agent peer (the two namespaces never overlap). Any absence/failure yields
+	 * {@link MtlsPeer#NONE} (a bootstrap caller); the tier gate above decides
+	 * whether that is acceptable.
 	 */
 	private MtlsPeer resolvePeer(ServerCall<?, ?> call) {
 		SSLSession session = call.getAttributes().get(Grpc.TRANSPORT_ATTR_SSL_SESSION);
@@ -105,13 +112,11 @@ public final class AuthInterceptor implements ServerInterceptor {
 			LOG.debug("client certificate chain rejected on re-validation: {}", invalidChain.toString());
 			return MtlsPeer.NONE;
 		}
-		X509Certificate leaf = chain[0];
-		UUID gatewayId = gatewayIdFromSan(leaf);
-		if (gatewayId == null) {
-			LOG.debug("client certificate has no sessionlayer gateway SAN URI");
-			return MtlsPeer.NONE;
+		MtlsPeer peer = principalFromSan(chain[0]);
+		if (!peer.authenticated()) {
+			LOG.debug("client certificate has no sessionlayer gateway/agent SAN URI");
 		}
-		return new MtlsPeer(gatewayId, leaf);
+		return peer;
 	}
 
 	private static X509Certificate[] toX509(Certificate[] certificates) {
@@ -122,24 +127,28 @@ public final class AuthInterceptor implements ServerInterceptor {
 		return out;
 	}
 
-	private static UUID gatewayIdFromSan(X509Certificate certificate) {
+	private static MtlsPeer principalFromSan(X509Certificate leaf) {
 		try {
-			var sans = certificate.getSubjectAlternativeNames();
+			var sans = leaf.getSubjectAlternativeNames();
 			if (sans == null) {
-				return null;
+				return MtlsPeer.NONE;
 			}
 			for (List<?> san : sans) {
 				if (san.size() >= 2 && san.get(0) instanceof Integer type && type == SAN_URI
 						&& san.get(1) instanceof String uri) {
-					UUID id = GatewayIdentityUri.parse(uri).orElse(null);
-					if (id != null) {
-						return id;
+					UUID gatewayId = GatewayIdentityUri.parse(uri).orElse(null);
+					if (gatewayId != null) {
+						return MtlsPeer.gateway(gatewayId, leaf);
+					}
+					UUID agentId = AgentIdentityUri.parse(uri).orElse(null);
+					if (agentId != null) {
+						return MtlsPeer.agent(agentId, leaf);
 					}
 				}
 			}
-			return null;
+			return MtlsPeer.NONE;
 		} catch (Exception malformed) {
-			return null;
+			return MtlsPeer.NONE;
 		}
 	}
 }
