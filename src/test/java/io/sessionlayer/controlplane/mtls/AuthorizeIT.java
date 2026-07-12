@@ -2,14 +2,28 @@ package io.sessionlayer.controlplane.mtls;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.grpc.ManagedChannel;
 import io.netty.handler.ssl.SslContext;
+import io.sessionlayer.controlplane.authz.ConnectAuthorizationService;
 import io.sessionlayer.controlplane.authz.DecisionContextVerifier;
+import io.sessionlayer.controlplane.ca.CaRotationService;
+import io.sessionlayer.controlplane.ca.CaSignerService;
+import io.sessionlayer.controlplane.ca.CertificateRequest;
+import io.sessionlayer.controlplane.ca.OpenSshCertificate;
+import io.sessionlayer.controlplane.ca.SshCertSigner;
+import io.sessionlayer.controlplane.ca.cert.CertType;
+import io.sessionlayer.controlplane.ca.cert.CertificateParameters;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.Node;
+import io.sessionlayer.controlplane.data.runtime.NodeHostKey;
+import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
@@ -17,14 +31,20 @@ import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeRequest;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeResponse;
 import io.sessionlayer.controlplane.grpc.v1.Capability;
+import io.sessionlayer.controlplane.grpc.v1.ConnectorKind;
 import io.sessionlayer.controlplane.grpc.v1.Decision;
 import io.sessionlayer.controlplane.grpc.v1.DecisionContext;
+import io.sessionlayer.controlplane.grpc.v1.HostVerification;
+import io.sessionlayer.controlplane.grpc.v1.NodeConnection;
 import io.sessionlayer.controlplane.grpc.v1.SignSessionCertificateResponse;
 import java.security.KeyPair;
 import java.security.interfaces.ECPublicKey;
+import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
@@ -42,6 +62,12 @@ class AuthorizeIT extends AbstractMtlsIT {
 
 	@Autowired
 	private NodeRepository nodes;
+	@Autowired
+	private NodeHostKeyRepository hostKeys;
+	@Autowired
+	private CaRotationService caRotation;
+	@Autowired
+	private CaSignerService caSigner;
 	@Autowired
 	private DpRuleRepository dpRules;
 	@Autowired
@@ -118,6 +144,107 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(response.getSessionToken()).isEmpty();
 	}
 
+	// ----- Part E: node connection + host-identity lookup (Design §9;
+	// FR-CONN-1/2/5/7) -----
+
+	@Test
+	void allowReturnsAgentlessNodeConnectionWithHostCaVerificationMaterial() {
+		String identity = "alice-" + unique();
+		UUID nodeId = seedAgentlessNode("10.0.0.5"); // no port → dial gets :22 appended
+		Node node = nodes.findById(nodeId).block();
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell", "exec"));
+		// A real host-CA-signed host cert whose principal is the node's enrollment
+		// name; store its authorized-keys line and assert the CP hands over the exact
+		// cert wire blob decoded from that line (not a re-encode of the same token).
+		OpenSshCertificate hostCert = signHostCert(node.name());
+		seedHostCaAnchor(nodeId, hostCert.certificateLine());
+		EnrolledGateway gateway = enroll("gw-conn-ca-" + unique());
+
+		AuthorizeResponse response = authorize(gateway,
+				request(identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID()));
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(response.hasNodeConnection()).isTrue();
+		NodeConnection connection = response.getNodeConnection();
+		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_AGENTLESS);
+		assertThat(connection.getDialAddress()).isEqualTo("10.0.0.5:22");
+
+		// host-CA path is the complete triple: trusted CA set (wire-decoded from the
+		// same authorized-keys lines), the node name as expected principal, and the
+		// enrollment host cert the Gateway verifies against them.
+		HostVerification verification = connection.getHostVerification();
+		List<String> expectedCaBlobs = caRotation.trustedCaKeys("host").block().stream()
+				.map(line -> line.trim().split("\\s+")[1]).toList();
+		List<String> actualCaBlobs = verification.getHostCaKeysList().stream()
+				.map(bytes -> Base64.getEncoder().encodeToString(bytes.toByteArray())).toList();
+		assertThat(actualCaBlobs).isNotEmpty().containsExactlyElementsOf(expectedCaBlobs);
+		assertThat(verification.getExpectedHostPrincipalsList()).containsExactly(node.name());
+		assertThat(verification.getPinnedHostKeysList()).isEmpty();
+		assertThat(verification.getHostCertificatesList()).hasSize(1);
+		assertThat(verification.getHostCertificates(0).toByteArray()).isEqualTo(hostCert.blob());
+	}
+
+	@Test
+	void allowReturnsAgentlessNodeConnectionWithPinnedHostKey() {
+		String identity = "bob-" + unique();
+		UUID nodeId = seedAgentlessNode("10.0.0.6:2222"); // explicit port → dial unchanged
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		byte[] pinnedBlob = seedPinnedHostKey(nodeId);
+		EnrolledGateway gateway = enroll("gw-conn-pin-" + unique());
+
+		AuthorizeResponse response = authorize(gateway,
+				request(identity, nodeId, "deploy", "10.0.0.6", UUID.randomUUID()));
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		NodeConnection connection = response.getNodeConnection();
+		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_AGENTLESS);
+		assertThat(connection.getDialAddress()).isEqualTo("10.0.0.6:2222");
+
+		HostVerification verification = connection.getHostVerification();
+		assertThat(verification.getHostCaKeysList()).isEmpty();
+		assertThat(verification.getExpectedHostPrincipalsList()).isEmpty();
+		assertThat(verification.getHostCertificatesList()).isEmpty();
+		assertThat(verification.getPinnedHostKeysList()).hasSize(1);
+		assertThat(verification.getPinnedHostKeys(0).toByteArray()).isEqualTo(pinnedBlob);
+	}
+
+	@Test
+	void allowOnAgentlessNodeWithNoHostKeysStillAllowsButEmptyVerificationAndWarns() {
+		Logger logger = (Logger) LoggerFactory.getLogger(ConnectAuthorizationService.class);
+		ListAppender<ILoggingEvent> appender = new ListAppender<>();
+		appender.start();
+		logger.addAppender(appender);
+		try {
+			String identity = "carol-" + unique();
+			UUID nodeId = seedAgentlessNode("10.0.0.7");
+			seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+			EnrolledGateway gateway = enroll("gw-conn-empty-" + unique());
+
+			AuthorizeResponse response = authorize(gateway,
+					request(identity, nodeId, "deploy", "10.0.0.7", UUID.randomUUID()));
+
+			// A misconfigured node still ALLOWs (the Gateway fails closed on empty
+			// verification, no TOFU) — the CP never synthesizes trust.
+			assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+			NodeConnection connection = response.getNodeConnection();
+			assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_AGENTLESS);
+			assertThat(connection.getDialAddress()).isEqualTo("10.0.0.7:22");
+			HostVerification verification = connection.getHostVerification();
+			assertThat(verification.getHostCaKeysList()).isEmpty();
+			assertThat(verification.getPinnedHostKeysList()).isEmpty();
+			assertThat(verification.getExpectedHostPrincipalsList()).isEmpty();
+			assertThat(verification.getHostCertificatesList()).isEmpty();
+
+			assertThat(appender.list).anySatisfy(event -> {
+				assertThat(event.getLevel()).isEqualTo(Level.WARN);
+				assertThat(event.getFormattedMessage()).contains("no host-verification material")
+						.contains(nodeId.toString());
+			});
+		} finally {
+			logger.detachAppender(appender);
+		}
+	}
+
 	private AuthorizeResponse authorize(EnrolledGateway gateway, AuthorizeRequest request) {
 		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), gateway.certificate(),
 				gateway.keyPair().getPrivate());
@@ -148,6 +275,45 @@ class AuthorizeIT extends AbstractMtlsIT {
 		labelSelector.set("env", JSON.objectNode().put("op", "eq").put("value", "prod"));
 		dpRules.save(DpRule.create("rule-" + unique(), identitySelector, labelSelector, null, principals, 3600,
 				capabilities, "allow", "api")).block();
+	}
+
+	private UUID seedAgentlessNode(String address) {
+		ObjectNode labels = JSON.objectNode().put("env", "prod");
+		return nodes
+				.save(Node.create("node-" + unique(), null, labels, "agentless", "active", "healthy", null, address))
+				.map(Node::id).block();
+	}
+
+	// A host_ca anchor: public_key holds the node's plain host key (public
+	// material,
+	// not read for this path); host_cert_ref holds the enrollment host CERTIFICATE
+	// line the CP hands to the Gateway.
+	private void seedHostCaAnchor(UUID nodeId, String hostCertLine) {
+		byte[] blob = MtlsTestSupport
+				.opensshPublicKeyBlob((ECPublicKey) MtlsTestSupport.generateEcKeyPair().getPublic());
+		String hostKeyLine = "ecdsa-sha2-nistp256 " + Base64.getEncoder().encodeToString(blob);
+		hostKeys.save(NodeHostKey.create(nodeId, "ecdsa-sha2-nistp256", hostKeyLine, "SHA256:ca-" + unique(),
+				hostCertLine, "host_ca", Instant.now())).block();
+	}
+
+	// Sign a real host certificate off the provisioned host CA, principal = the
+	// node
+	// name (what §9.3 requires the Gateway to match).
+	private OpenSshCertificate signHostCert(String principal) {
+		SshCertSigner hostCa = caSigner.activeSigner("host").block();
+		KeyPair hostKey = MtlsTestSupport.generateEcKeyPair();
+		CertificateParameters parameters = new CertificateParameters(1L, CertType.HOST, "host-" + principal,
+				List.of(principal), Instant.now().minusSeconds(60), Instant.now().plusSeconds(3600), null, null);
+		return hostCa.signCertificate(new CertificateRequest((ECPublicKey) hostKey.getPublic(), parameters));
+	}
+
+	private byte[] seedPinnedHostKey(UUID nodeId) {
+		byte[] blob = MtlsTestSupport
+				.opensshPublicKeyBlob((ECPublicKey) MtlsTestSupport.generateEcKeyPair().getPublic());
+		String line = "ecdsa-sha2-nistp256 " + Base64.getEncoder().encodeToString(blob) + " host@" + unique();
+		hostKeys.save(NodeHostKey.create(nodeId, "ecdsa-sha2-nistp256", line, "SHA256:pin-" + unique(), null,
+				"pinned_key", Instant.now())).block();
+		return blob;
 	}
 
 	private static String unique() {

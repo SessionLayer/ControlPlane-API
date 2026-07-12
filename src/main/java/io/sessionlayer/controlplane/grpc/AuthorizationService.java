@@ -4,11 +4,15 @@ import com.google.protobuf.ByteString;
 import io.grpc.stub.StreamObserver;
 import io.sessionlayer.controlplane.authz.ConnectAuthorizationService;
 import io.sessionlayer.controlplane.authz.ConnectDecision;
+import io.sessionlayer.controlplane.authz.NodeConnectionInfo;
 import io.sessionlayer.controlplane.authz.SignedDecisionContext;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeRequest;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeResponse;
+import io.sessionlayer.controlplane.grpc.v1.ConnectorKind;
 import io.sessionlayer.controlplane.grpc.v1.Decision;
+import io.sessionlayer.controlplane.grpc.v1.HostVerification;
+import io.sessionlayer.controlplane.grpc.v1.NodeConnection;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
 import io.sessionlayer.controlplane.mtls.MtlsProperties;
@@ -60,7 +64,28 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 				.setSignerCertificate(ByteString.copyFrom(signed.signerCertificateDer()))
 				.setSessionToken(decision.sessionToken());
 		signed.caChainDer().forEach(der -> builder.addSignerCaChain(ByteString.copyFrom(der)));
+		if (decision.nodeConnection() != null) {
+			builder.setNodeConnection(toNodeConnection(decision.nodeConnection()));
+		}
 		return builder.build();
+	}
+
+	private static NodeConnection toNodeConnection(NodeConnectionInfo info) {
+		HostVerification.Builder verification = HostVerification.newBuilder();
+		info.hostCaKeys().forEach(key -> verification.addHostCaKeys(ByteString.copyFrom(key)));
+		info.expectedPrincipals().forEach(verification::addExpectedHostPrincipals);
+		info.pinnedHostKeys().forEach(key -> verification.addPinnedHostKeys(ByteString.copyFrom(key)));
+		info.hostCertificates().forEach(cert -> verification.addHostCertificates(ByteString.copyFrom(cert)));
+		return NodeConnection.newBuilder().setConnectorKind(connectorKind(info.connectorKind()))
+				.setDialAddress(info.dialAddress()).setHostVerification(verification.build()).build();
+	}
+
+	private static ConnectorKind connectorKind(NodeConnectionInfo.ConnectorModel model) {
+		return switch (model) {
+			case AGENTLESS -> ConnectorKind.CONNECTOR_KIND_AGENTLESS;
+			case OUTBOUND_AGENT -> ConnectorKind.CONNECTOR_KIND_OUTBOUND_AGENT;
+			case UNSPECIFIED -> ConnectorKind.CONNECTOR_KIND_UNSPECIFIED;
+		};
 	}
 
 	private static UUID parseUuid(String value) {
