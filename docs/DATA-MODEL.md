@@ -545,3 +545,17 @@ decision-context signer.
   the auth-code+PKCE RP.
 - `runtime.audit_event` — every auth decision (login/otp/device/token/pin) and every admin
   mutation is recorded (FR-AUD-7): generic outcome, specific reason in the log.
+
+## 17. Sessions Seven & Eight — **no schema change**
+
+Neither the outer leg (S7) nor the inner leg (S8) adds a migration; the next free
+version stays **V17**.
+
+- **S7 (outer-leg auth)** implemented `OuterLegAuth` over the existing S6 tables
+  (`otp`/`pin`/`service_account_credential`/`device_flow`/`oidc_login`).
+- **S8 (inner leg)** added the `NodeConnection` field to `AuthorizeResponse`
+  (additive proto, protocol stays 1.1) and *reads* existing inventory to fill it —
+  `runtime.node` (`connector_kind`, `address` → dial address) and
+  `runtime.node_host_key` (`source`, `public_key`, `host_cert_ref`) for the
+  host-identity anchors (Design §9.3, FR-CONN-5/7), plus `CaRotationService`'s
+  `host`-kind trusted CA keys. Public material only; no new tables/columns.

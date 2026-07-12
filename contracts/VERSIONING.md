@@ -133,6 +133,20 @@ only (resolve credential → `{identity, principals}`); the Gateway still calls
 failure is **generic** (`resolved = false`, no reason) so the outer-leg auth
 surface discloses no existence (§7.1). Source IP is a deny-only reducer throughout.
 
+**Session Eight added one message field, not a service — `NodeConnection`** on
+`AuthorizeResponse` (field 8, plus the `ConnectorKind` enum and the
+`NodeConnection`/`HostVerification` messages). It tells the Gateway how to reach
+the fixed node (connector kind + dial address) and how to verify the node's host
+identity — host-CA trust keys + expected principals + the enrollment host cert(s),
+or pinned host keys (Design §9; FR-CONN-1/2/5/7). Adding a field + messages + an
+enum is additive and `buf breaking`-clean; it stays within **1.1** (a new field
+within an already-bumped minor does not move the number): the advertised range
+stays `[1.0, 1.1]`, `protocol_min` stays 1.0. `NodeConnection` is returned
+**UNSIGNED** on the ALLOW path (unlike the signed decision context): it travels
+over the authenticated, integrity-protected mTLS channel from the trusted CP, and
+forging it requires compromising the CP itself (which already holds the
+decision-context signing key), so a separate signature would add no security.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
