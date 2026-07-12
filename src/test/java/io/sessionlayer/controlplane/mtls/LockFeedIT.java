@@ -93,6 +93,32 @@ class LockFeedIT extends AbstractMtlsIT {
 	}
 
 	@Test
+	void aLockPushedAfterAllGatewaysDisconnectStillReachesAReconnectedGateway() {
+		// The zero-subscriber fail-open guard: the hub MUST survive an all-disconnected
+		// blip (autoCancel=false). On the old autoCancel=true sink the hub terminated
+		// the
+		// instant subscribers hit 0, and a reconnecting Gateway then saw only snapshot
+		// +
+		// heartbeats — never a live delta — while looking healthy (a silent fail-open).
+		EnrolledGateway gateway = enroll("gw-blip-" + unique());
+		try (LockStream first = openStream(gateway)) {
+			first.awaitSnapshot();
+			awaitSubscribers(1);
+		}
+		awaitSubscribers(0); // the window that killed an autoCancel=true hub
+
+		// A NEW connection, then a lock created AFTER its snapshot: it can only arrive
+		// as
+		// a LIVE added delta through the (surviving) hub — never via that snapshot.
+		try (LockStream second = openStream(gateway)) {
+			second.awaitSnapshot();
+			AccessLock afterBlip = publishLock(identityTarget("post-blip-" + unique()), "created-after-blip");
+			LockEvent added = second.awaitAdded(afterBlip.id());
+			assertThat(added.getAdded().getLockId()).isEqualTo(afterBlip.id().toString());
+		}
+	}
+
+	@Test
 	void aLockCreatedAroundSubscribeTimeIsNeverLost() {
 		EnrolledGateway gateway = enroll("gw-race-" + unique());
 		try (LockStream stream = openStream(gateway)) {
@@ -116,6 +142,22 @@ class LockFeedIT extends AbstractMtlsIT {
 	private void removeLock(UUID id) {
 		accessLocks.deleteById(id).block();
 		lockFeedHub.publishRemoved(id);
+	}
+
+	// Server-side stream cancellation propagates asynchronously after a client
+	// channel
+	// closes; poll the hub's connected-stream gauge until it settles (bounded).
+	private void awaitSubscribers(int expected) {
+		long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+		while (System.nanoTime() < deadline && lockFeedHub.currentSubscribers() != expected) {
+			try {
+				Thread.sleep(20);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				break;
+			}
+		}
+		assertThat(lockFeedHub.currentSubscribers()).isEqualTo(expected);
 	}
 
 	private static ObjectNode identityTarget(String identity) {

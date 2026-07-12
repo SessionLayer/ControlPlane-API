@@ -60,7 +60,15 @@ public class LockFeedService extends LockFeedGrpc.LockFeedImplBase {
 			// deny.
 			Sinks.Many<LockEvent> buffer = Sinks.many().unicast()
 					.onBackpressureBuffer(Queues.<LockEvent>get(properties.getStreamBufferCapacity()).get());
-			Disposable pump = hub.liveEvents().subscribe(event -> bufferEmit(buffer, event), buffer::tryEmitError);
+			// Fail the client stream if the shared hub ever terminates — on error OR on
+			// an unexpected onComplete. Coasting on heartbeats after the delta source died
+			// would look healthy while silently missing every new lock (fail OPEN); instead
+			// we break the stream so the Gateway reconnects and does a full snapshot RESYNC
+			// (fail CLOSED). Normal per-connection teardown disposes the pump (a cancel,
+			// not
+			// a completion), so this never fires on a routine disconnect.
+			Disposable pump = hub.liveEvents().subscribe(event -> bufferEmit(buffer, event), buffer::tryEmitError,
+					() -> buffer.tryEmitError(new IllegalStateException("lock feed source terminated")));
 			Flux<LockEvent> heartbeats = Flux.interval(properties.getHeartbeatInterval()).map(tick -> heartbeat());
 			return hub.snapshotEvent().concatWith(Flux.merge(buffer.asFlux(), heartbeats))
 					.doFinally(signal -> pump.dispose());

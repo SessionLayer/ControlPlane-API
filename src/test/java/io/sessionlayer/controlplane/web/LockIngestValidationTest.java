@@ -67,6 +67,38 @@ class LockIngestValidationTest {
 	}
 
 	@Test
+	void anOversizeFacetIsRejected() {
+		List<String> tooMany = java.util.stream.IntStream.rangeClosed(1, 257).mapToObj(i -> "id" + i).toList();
+		assertThatThrownBy(() -> LockIngestValidation.toSelector(new LockTarget().identities(tooMany)))
+				.isInstanceOf(LockValidationException.class).hasMessageContaining("too many");
+	}
+
+	@Test
+	void anOversizeFacetValueIsRejected() {
+		String huge = "x".repeat(513);
+		assertThatThrownBy(() -> LockIngestValidation.toSelector(new LockTarget().identities(List.of(huge))))
+				.isInstanceOf(LockValidationException.class).hasMessageContaining("too long");
+	}
+
+	@Test
+	void tooManyTotalEntriesAcrossFacetsIsRejected() {
+		List<String> full = java.util.stream.IntStream.rangeClosed(1, 256).mapToObj(i -> "v" + i).toList();
+		LockTarget target = new LockTarget().identities(full).groups(full).principals(full)
+				.nodeLabels(full.stream().map(v -> "k=" + v).toList()).nodeIds(List.of(UUID.randomUUID()));
+		assertThatThrownBy(() -> LockIngestValidation.toSelector(target)).isInstanceOf(LockValidationException.class)
+				.hasMessageContaining("too many entries");
+	}
+
+	@Test
+	void reasonMustBePresentAndBounded() {
+		LockIngestValidation.checkReason("incident-123"); // ok
+		assertThatThrownBy(() -> LockIngestValidation.checkReason(null)).isInstanceOf(LockValidationException.class);
+		assertThatThrownBy(() -> LockIngestValidation.checkReason("  ")).isInstanceOf(LockValidationException.class);
+		assertThatThrownBy(() -> LockIngestValidation.checkReason("x".repeat(4097)))
+				.isInstanceOf(LockValidationException.class).hasMessageContaining("at most");
+	}
+
+	@Test
 	void summarizeListsFacetsWithoutSecrets() {
 		ObjectNode selector = LockIngestValidation.toSelector(new LockTarget().identities(List.of("a", "b")).all(true));
 		assertThat(LockIngestValidation.summarize(selector)).contains("identities:2").contains("all");

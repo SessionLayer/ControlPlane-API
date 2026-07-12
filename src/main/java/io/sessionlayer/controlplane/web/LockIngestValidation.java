@@ -29,7 +29,24 @@ final class LockIngestValidation {
 
 	private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
 
+	// Bounds so an oversize lock can't inflate the fleet-wide snapshot past a
+	// Gateway's gRPC inbound cap and break resync (a self-DoS on the deny channel).
+	private static final int MAX_FACET_ENTRIES = 256;
+	private static final int MAX_TOTAL_ENTRIES = 1024;
+	private static final int MAX_VALUE_LENGTH = 512;
+	private static final int MAX_REASON_LENGTH = 4096;
+
 	private LockIngestValidation() {
+	}
+
+	/** The mandatory operator reason, bounded (never disclosed to the SSH user). */
+	static void checkReason(String reason) {
+		if (reason == null || reason.isBlank()) {
+			throw invalid("a lock reason is required");
+		}
+		if (reason.length() > MAX_REASON_LENGTH) {
+			throw invalid("reason must be at most " + MAX_REASON_LENGTH + " characters");
+		}
 	}
 
 	static ObjectNode toSelector(LockTarget target) {
@@ -51,7 +68,20 @@ final class LockIngestValidation {
 			throw invalid("a lock target must name at least one facet, or set all:true for an intentional "
 					+ "fleet-wide lock");
 		}
+		if (totalEntries(selector) > MAX_TOTAL_ENTRIES) {
+			throw invalid("a lock target has too many entries (max " + MAX_TOTAL_ENTRIES + " across all facets)");
+		}
 		return selector;
+	}
+
+	private static int totalEntries(ObjectNode selector) {
+		int total = 0;
+		for (var entry : selector.properties()) {
+			if (entry.getValue().isArray()) {
+				total += entry.getValue().size();
+			}
+		}
+		return total;
 	}
 
 	static Integer normalizeTtl(Long ttlSeconds) {
@@ -75,10 +105,14 @@ final class LockIngestValidation {
 		if (values == null || values.isEmpty()) {
 			return false;
 		}
+		checkFacetSize(values.size(), facet);
 		ArrayNode array = JSON.arrayNode();
 		for (String value : values) {
 			if (value == null || value.isBlank()) {
 				throw invalid("a " + facet + " entry must not be blank");
+			}
+			if (value.length() > MAX_VALUE_LENGTH) {
+				throw invalid("a " + facet + " entry is too long (max " + MAX_VALUE_LENGTH + " characters)");
 			}
 			array.add(value.trim());
 		}
@@ -90,10 +124,14 @@ final class LockIngestValidation {
 		if (labels == null || labels.isEmpty()) {
 			return false;
 		}
+		checkFacetSize(labels.size(), "nodeLabels");
 		ArrayNode array = JSON.arrayNode();
 		for (String label : labels) {
 			if (label == null || label.isBlank()) {
 				throw invalid("a nodeLabels entry must not be blank");
+			}
+			if (label.length() > MAX_VALUE_LENGTH) {
+				throw invalid("a nodeLabels entry is too long (max " + MAX_VALUE_LENGTH + " characters)");
 			}
 			int eq = label.indexOf('=');
 			if (eq <= 0) {
@@ -109,6 +147,7 @@ final class LockIngestValidation {
 		if (nodeIds == null || nodeIds.isEmpty()) {
 			return false;
 		}
+		checkFacetSize(nodeIds.size(), "nodeIds");
 		ArrayNode array = JSON.arrayNode();
 		for (UUID nodeId : nodeIds) {
 			if (nodeId == null) {
@@ -118,6 +157,12 @@ final class LockIngestValidation {
 		}
 		selector.set("node_ids", array);
 		return true;
+	}
+
+	private static void checkFacetSize(int size, String facet) {
+		if (size > MAX_FACET_ENTRIES) {
+			throw invalid("the " + facet + " facet has too many entries (max " + MAX_FACET_ENTRIES + ")");
+		}
 	}
 
 	private static LockValidationException invalid(String message) {

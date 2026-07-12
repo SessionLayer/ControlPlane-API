@@ -64,8 +64,9 @@ public class LockController implements LocksApi {
 	public Mono<ResponseEntity<LockResource>> createLock(Mono<CreateLockRequest> createLockRequest,
 			ServerWebExchange exchange) {
 		return createLockRequest.flatMap(req -> withPermission(PlatformPermissions.LOCK_WRITE, subject -> {
-			// Validate before touching the datastore; an invalid target/TTL is a 400
-			// (LockExceptionHandler), never a persisted or pushed lock.
+			// Validate before touching the datastore; an invalid target/TTL/reason is a
+			// 400 (LockExceptionHandler), never a persisted or pushed lock.
+			LockIngestValidation.checkReason(req.getReason());
 			var selector = LockIngestValidation.toSelector(req.getTarget());
 			Integer ttlSeconds = LockIngestValidation.normalizeTtl(req.getTtlSeconds());
 			Instant now = Instant.now();
