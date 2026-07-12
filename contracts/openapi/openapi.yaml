@@ -37,6 +37,12 @@ tags:
     description: Liveness, readiness, and version metadata probes. Public and unauthenticated.
   - name: locks
     description: Incident-response lock CRUD (Design §8.3). Platform-RBAC gated and audited.
+  - name: join-tokens
+    description: >-
+      Agent join-token issuance & CRUD (Design §8.1; FR-JOIN-2). Single-use,
+      self-destruct, short-TTL, node-scoped. Platform-RBAC gated (`node:enroll`)
+      and audited, so an autoscaler/config-mgmt re-provisions an agent without a
+      human (the GitHub-Actions-runner pattern).
 # Default security applied to operations that do not override it. The public
 # meta probes below explicitly opt out with `security: []`. Declaring the three
 # first-class schemes here (Design §13, FR-AUTH-17) fixes them in the contract.
@@ -450,6 +456,87 @@ paths:
       responses:
         '204':
           description: The lock was released (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/join-tokens:
+    get:
+      operationId: listJoinTokens
+      summary: List active join tokens (admin).
+      description: |
+        Lists the current unconsumed, unexpired join tokens. The raw token value
+        is NEVER returned (only its metadata) — it is shown exactly once at
+        issuance. Platform-RBAC gated (`node:enroll`) + audited (Design §8.1;
+        FR-JOIN-2).
+      tags:
+        - join-tokens
+      responses:
+        '200':
+          description: The active join tokens (metadata only, never the raw token).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinTokenList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: issueJoinToken
+      summary: Issue an agent join token (admin).
+      description: |
+        Issues a short-lived, single-use, self-destruct join token bound to a
+        stable node identity/scope (Design §8.1; FR-JOIN-2/6). The raw token is
+        returned exactly ONCE (for out-of-band delivery to the joining Agent);
+        only its SHA-256 hash is stored. Because issuance is a pure API
+        operation, an autoscaler/config-mgmt re-provisions a token-join agent
+        after a full lapse without a human. Platform-RBAC gated (`node:enroll`)
+        + audited.
+      tags:
+        - join-tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueJoinTokenRequest'
+      responses:
+        '201':
+          description: A join token was issued (raw value returned once).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedJoinToken'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/join-tokens/{joinTokenId}:
+    delete:
+      operationId: revokeJoinToken
+      summary: Revoke a join token (admin).
+      description: |
+        Revokes (deletes) an unconsumed join token so it can never be used.
+        Idempotent. Revoking an already-consumed token has no effect on the
+        identity it produced (revocation of an issued identity is a Lock, §8.1).
+        Platform-RBAC gated (`node:enroll`) + audited.
+      tags:
+        - join-tokens
+      parameters:
+        - name: joinTokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The join token was revoked (idempotent).
         '403':
           $ref: '#/components/responses/Problem'
         '404':
@@ -959,4 +1046,103 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LockResource'
+      additionalProperties: false
+    IssueJoinTokenRequest:
+      type: object
+      title: Issue Join Token Request
+      description: Request to mint a single-use agent join token bound to a node.
+      required:
+        - nodeName
+      properties:
+        nodeName:
+          type: string
+          minLength: 1
+          maxLength: 253
+          description: >-
+            The stable node identity the token authorizes an agent to join as
+            (FR-JOIN-6). The token is scoped to exactly this node.
+        ttlSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >-
+            Optional TTL override (seconds). Omitted uses the configured default;
+            the value is clamped to the configured maximum. Join tokens are
+            short-lived by design.
+      additionalProperties: false
+    IssuedJoinToken:
+      type: object
+      title: Issued Join Token
+      description: >-
+        A freshly issued join token. The `token` field is the raw single-use
+        bearer value and is returned exactly ONCE; only its hash is stored.
+      required:
+        - id
+        - token
+        - nodeName
+        - joinMethod
+        - singleUse
+        - expiresAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        token:
+          type: string
+          description: The raw single-use join token. Shown once; never retrievable again.
+        nodeName:
+          type: string
+        joinMethod:
+          type: string
+          enum:
+            - token
+        singleUse:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    JoinTokenResource:
+      type: object
+      title: Join Token
+      description: Join-token metadata (never the raw token).
+      required:
+        - id
+        - nodeName
+        - joinMethod
+        - singleUse
+        - expiresAt
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        nodeName:
+          type: string
+        joinMethod:
+          type: string
+          enum:
+            - token
+        singleUse:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          description: The admin identity that issued the token.
+      additionalProperties: false
+    JoinTokenList:
+      type: object
+      title: Join Token List
+      required:
+        - joinTokens
+      properties:
+        joinTokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/JoinTokenResource'
       additionalProperties: false

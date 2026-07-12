@@ -184,6 +184,24 @@ keeps denying on every Gateway even under total datastore loss (the
 asymmetric-degradation invariant). Lock CRUD is added as REST (`/v1/locks`,
 platform-RBAC gated) — the **push** is gRPC; the **CRUD** is REST.
 
+**Session Twelve added one additive service — `AgentIdentity`** (`EnrollAgent`,
+`RenewAgentIdentity`, Design §8; FR-JOIN-1/3/4/6) — the CP↔Agent bootstrap +
+renewable-mTLS-identity plane, plus the REST join-token API (`/v1/join-tokens`,
+platform-RBAC `node:enroll`, FR-JOIN-2). It mirrors Session Four's
+`GatewayIdentity`: the durable credential is ALWAYS a renewable internal mTLS
+X.509 identity carrying a generation counter (§8.2), regardless of which
+JoinMethod (`TokenJoinProof`/`OidcJoinProof`/`MtlsJoinProof`) bootstrapped it —
+the deferred `BoundKeypairJoin` and further delegated methods (§17) drop in as
+new `proof` oneof variants without a breaking change. Adding a service + messages
+is additive and `buf breaking`-clean; it stays within **1.1** (a new RPC within
+an already-bumped minor does not move the number): the advertised range stays
+`[1.0, 1.1]`, `protocol_min` stays 1.0. `EnrollAgent` is on the bootstrap tier
+(the join proof is the credential — the documented bootstrap exception, like
+`EnrollGateway`); `RenewAgentIdentity` is on the mTLS-required (agent-identity)
+tier. Revocation for every join method is via lock + generation counter (no join
+method is a standing bypass). Join-token **issuance/CRUD is REST**; the
+enroll/renew plane is **gRPC**.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
