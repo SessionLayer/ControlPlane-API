@@ -150,10 +150,13 @@ public class OuterLegAuthService extends OuterLegAuthGrpc.OuterLegAuthImplBase {
 	@Override
 	public void resolveBreakglassKey(ResolveBreakglassKeyRequest request,
 			StreamObserver<ResolveBreakglassKeyResponse> observer) {
-		// The AUTHENTICATED caller is the mTLS peer (AuthInterceptor), never a field;
-		// the
-		// minted token binds to it so a break-glass Authorize can only come from this
-		// GW.
+		// FIDO2 proof-of-possession (the sk-auth challenge/signature + any user
+		// verification) is proven UPSTREAM by the Gateway's SSH handshake before this
+		// RPC; the CP resolves identity from the PUBLIC key blob only, symmetric with
+		// ResolvePin. The AUTHENTICATED caller is the mTLS peer (AuthInterceptor),
+		// never a
+		// field; the minted token binds to it so a break-glass Authorize can only come
+		// from this GW.
 		UUID caller = callerGatewayId();
 		Mono<ResolveBreakglassKeyResponse> result = breakglassResolution
 				.resolveKey(request.getSkPublicKeyBlob().toByteArray(), blankToNull(request.getSourceIp()),

@@ -2,7 +2,6 @@ package io.sessionlayer.controlplane.authz;
 
 import io.sessionlayer.controlplane.audit.AuditWriter;
 import io.sessionlayer.controlplane.breakglass.BreakglassProperties;
-import io.sessionlayer.controlplane.breakglass.BreakglassSecurityAlerts;
 import io.sessionlayer.controlplane.breakglass.BreakglassTokenService;
 import io.sessionlayer.controlplane.ca.CaRotationService;
 import io.sessionlayer.controlplane.data.config.BreakglassPolicy;
@@ -100,7 +99,6 @@ public class ConnectAuthorizationService {
 	private final BreakglassTokenService breakglassTokens;
 	private final BreakglassActivationRepository breakglassActivations;
 	private final BreakglassPolicyRepository breakglassPolicies;
-	private final BreakglassSecurityAlerts breakglassAlerts;
 	private final BreakglassProperties breakglassProperties;
 	private final AuditWriter audit;
 	private final AuthzProperties properties;
@@ -113,9 +111,8 @@ public class ConnectAuthorizationService {
 			SshSessionRepository sshSessions, PolicyEngine engine, DecisionContextSigner signer,
 			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, JitLifecycleService jit,
 			BreakglassTokenService breakglassTokens, BreakglassActivationRepository breakglassActivations,
-			BreakglassPolicyRepository breakglassPolicies, BreakglassSecurityAlerts breakglassAlerts,
-			BreakglassProperties breakglassProperties, AuditWriter audit, AuthzProperties properties,
-			ObjectMapper objectMapper, TransactionalOperator tx) {
+			BreakglassPolicyRepository breakglassPolicies, BreakglassProperties breakglassProperties, AuditWriter audit,
+			AuthzProperties properties, ObjectMapper objectMapper, TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -132,7 +129,6 @@ public class ConnectAuthorizationService {
 		this.breakglassTokens = breakglassTokens;
 		this.breakglassActivations = breakglassActivations;
 		this.breakglassPolicies = breakglassPolicies;
-		this.breakglassAlerts = breakglassAlerts;
 		this.breakglassProperties = breakglassProperties;
 		this.audit = audit;
 		this.properties = properties;
@@ -283,9 +279,11 @@ public class ConnectAuthorizationService {
 									.record(request.identity(), request.requestedPrincipal(), "breakglass.activation",
 											"success", sessionId, node.id(), activationDetail(saved))
 									.thenReturn(saved)));
-			return persisted.flatMap(saved -> breakglassAlerts.activated(saved).thenReturn(saved))
-					.flatMap(saved -> decideBreakglass(callerGatewayId, node, gatewayName, request, sessionId, token,
-							saved, locks, epoch, now));
+			// The high-priority alert already fired at authentication (ResolveBreakglass*),
+			// so this path does NOT re-alert; the persisted activation is the durable,
+			// mandatory-review compensating control.
+			return persisted.flatMap(saved -> decideBreakglass(callerGatewayId, node, gatewayName, request, sessionId,
+					token, saved, locks, epoch, now));
 		});
 	}
 

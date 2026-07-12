@@ -1,6 +1,8 @@
 package io.sessionlayer.controlplane.breakglass;
 
 import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.auth.AuthProperties;
+import io.sessionlayer.controlplane.auth.RateLimiter;
 import io.sessionlayer.controlplane.auth.Secrets;
 import io.sessionlayer.controlplane.data.runtime.BreakglassCredentialRepository;
 import java.time.Instant;
@@ -23,12 +25,15 @@ import tools.jackson.databind.ObjectMapper;
  * presents to {@code Authorize}.
  *
  * <p>
- * AUTHENTICATION ONLY (symmetric with the other Resolve* RPCs): the alert, the
- * {@code breakglass_activation} record, and the Lock-checked authorization all
- * happen at {@code Authorize} (on actual use). Any failure — unknown/expired/
- * revoked credential, wrong node scope, bad source, or replayed code — is the
- * single generic non-resolution (fail closed). The offline code is a SECRET and
- * is NEVER logged; it is consumed atomically (single-use) like an OTP.
+ * A successful resolution fires the high-priority alert HERE, at authentication
+ * — so a break-glass credential use ALWAYS alerts even if no session follows (a
+ * resolve-without-Authorize, or a downstream deny). The
+ * {@code breakglass_activation} record and the Lock-checked authorization still
+ * happen at {@code Authorize} (on actual use). Any failure —
+ * unknown/expired/revoked credential, wrong node scope, bad source, rate limit,
+ * or replayed code — is the single generic non-resolution (fail closed). The
+ * offline code is a SECRET and is NEVER logged; it is consumed atomically
+ * (single-use) like an OTP.
  */
 @Service
 public class BreakglassResolutionService {
@@ -47,14 +52,21 @@ public class BreakglassResolutionService {
 
 	private final BreakglassCredentialRepository credentials;
 	private final BreakglassTokenService tokens;
+	private final BreakglassSecurityAlerts alerts;
+	private final RateLimiter rateLimiter;
+	private final AuthProperties authProperties;
 	private final AuditWriter audit;
 	private final DatabaseClient db;
 	private final ObjectMapper objectMapper;
 
 	public BreakglassResolutionService(BreakglassCredentialRepository credentials, BreakglassTokenService tokens,
-			AuditWriter audit, DatabaseClient db, ObjectMapper objectMapper) {
+			BreakglassSecurityAlerts alerts, RateLimiter rateLimiter, AuthProperties authProperties, AuditWriter audit,
+			DatabaseClient db, ObjectMapper objectMapper) {
 		this.credentials = credentials;
 		this.tokens = tokens;
+		this.alerts = alerts;
+		this.rateLimiter = rateLimiter;
+		this.authProperties = authProperties;
 		this.audit = audit;
 		this.db = db;
 		this.objectMapper = objectMapper;
@@ -70,6 +82,14 @@ public class BreakglassResolutionService {
 	 * Resolve an offered {@code sk-ecdsa} PUBLIC key to a registered break-glass
 	 * credential and mint a token. Source-agnostic (a hardware token travels); only
 	 * an active, unrevoked, node-scope-permitted credential resolves.
+	 *
+	 * <p>
+	 * FIDO2 proof-of-possession (the sk-auth challenge/signature + optional user
+	 * verification) is proven UPSTREAM by the Gateway's SSH handshake before this
+	 * RPC; the CP resolves identity from the PUBLIC key only, symmetric with
+	 * {@code ResolvePin}. This path is therefore NOT rate-limited (public material,
+	 * bounded by the Gateway's per-connection auth-attempt cap; a normal sk-ecdsa
+	 * user must not be locked out) — unlike the guessable offline-code path.
 	 */
 	public Mono<Resolution> resolveKey(byte[] skBlob, String sourceIp, UUID nodeId, UUID callerGatewayId) {
 		String fingerprint;
@@ -89,25 +109,33 @@ public class BreakglassResolutionService {
 
 	/**
 	 * Resolve a presented offline code by atomically consuming it (single-use) and
-	 * mint a token. The code is source-bound and NEVER logged.
+	 * mint a token. The code is source-bound and NEVER logged, and — unlike the key
+	 * path — the RESOLVE is per-source rate-limited (a guessable secret, so it
+	 * mirrors the OTP-verify limiter).
 	 */
 	public Mono<Resolution> resolveCode(String code, String sourceIp, UUID nodeId, UUID callerGatewayId) {
 		String ip = sourceIp == null ? "" : sourceIp;
-		String hash = Secrets.sha256Hex(code == null ? "" : code);
-		return db.sql(CONSUME_CODE).bind("hash", hash).bind("sourceIp", ip)
-				.map((row, meta) -> new ConsumedCode(row.get("identity", String.class),
-						listOf(row.get("allowed_principals", String[].class)), row.get("node_selector", String.class)))
-				.one().flatMap(consumed -> {
-					// The code is spent (atomic); a wrong node scope now fails closed but the
-					// single-use code is not reusable — an emergency operator targets the node.
-					if (!BreakglassNodeScope.permits(parse(consumed.nodeSelector()), nodeId)) {
-						return denied("node_scope", ip);
-					}
-					return mint(consumed.identity(), consumed.principals(), nodeId, ip, callerGatewayId,
-							"offline_code");
-				}).switchIfEmpty(denied("invalid_or_used", ip))
-				// A malformed source (bad ::inet) or any DB error → fail closed.
-				.onErrorResume(err -> denied("evaluation_error", ip));
+		return rateLimiter.tryAcquire("breakglass:code:" + ip, authProperties.getOtpVerify()).flatMap(allowed -> {
+			if (!allowed) {
+				return denied("rate_limited", ip);
+			}
+			String hash = Secrets.sha256Hex(code == null ? "" : code);
+			return db.sql(CONSUME_CODE).bind("hash", hash).bind("sourceIp", ip)
+					.map((row, meta) -> new ConsumedCode(row.get("identity", String.class),
+							listOf(row.get("allowed_principals", String[].class)),
+							row.get("node_selector", String.class)))
+					.one().flatMap(consumed -> {
+						// The code is spent (atomic); a wrong node scope now fails closed but the
+						// single-use code is not reusable — an emergency operator targets the node.
+						if (!BreakglassNodeScope.permits(parse(consumed.nodeSelector()), nodeId)) {
+							return denied("node_scope", ip);
+						}
+						return mint(consumed.identity(), consumed.principals(), nodeId, ip, callerGatewayId,
+								"offline_code");
+					}).switchIfEmpty(denied("invalid_or_used", ip))
+					// A malformed source (bad ::inet) or any DB error → fail closed.
+					.onErrorResume(err -> denied("evaluation_error", ip));
+		});
 	}
 
 	private record ConsumedCode(String identity, List<String> principals, String nodeSelector) {
@@ -116,10 +144,14 @@ public class BreakglassResolutionService {
 	private Mono<Resolution> mint(String identity, List<String> principals, UUID nodeId, String sourceIp,
 			UUID callerGatewayId, String method) {
 		String source = (sourceIp == null || sourceIp.isBlank()) ? null : sourceIp;
-		return tokens.mint(callerGatewayId, identity, nodeId, principals, source).flatMap(token -> audit
-				.record(identity, null, "breakglass.resolve", "success", null, nodeId,
-						Map.of("method", method, "gateway_id", String.valueOf(callerGatewayId)))
-				.thenReturn(new Resolution(identity, principals == null ? List.of() : principals, token)));
+		// Fire the high-priority alert AT AUTHENTICATION so a break-glass use always
+		// alerts even if no session follows (FR-ACC-6); the activation at Authorize is
+		// the durable review record and does not re-alert.
+		return tokens.mint(callerGatewayId, identity, nodeId, principals, source)
+				.flatMap(token -> alerts.authenticated(identity, nodeId, source, method)
+						.then(audit.record(identity, null, "breakglass.resolve", "success", null, nodeId,
+								Map.of("method", method, "gateway_id", String.valueOf(callerGatewayId))))
+						.thenReturn(new Resolution(identity, principals == null ? List.of() : principals, token)));
 	}
 
 	private Mono<Resolution> denied(String reason, String sourceIp) {
