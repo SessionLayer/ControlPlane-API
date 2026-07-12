@@ -62,7 +62,7 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 				.setContext(signed.context()).setSignedContext(ByteString.copyFrom(signed.signedContext()))
 				.setSignature(ByteString.copyFrom(signed.signature()))
 				.setSignerCertificate(ByteString.copyFrom(signed.signerCertificateDer()))
-				.setSessionToken(decision.sessionToken());
+				.setSessionToken(decision.sessionToken()).setRecordingToken(decision.recordingToken());
 		signed.caChainDer().forEach(der -> builder.addSignerCaChain(ByteString.copyFrom(der)));
 		if (decision.nodeConnection() != null) {
 			builder.setNodeConnection(toNodeConnection(decision.nodeConnection()));

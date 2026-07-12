@@ -559,3 +559,82 @@ version stays **V17**.
   `runtime.node_host_key` (`source`, `public_key`, `host_cert_ref`) for the
   host-identity anchors (Design §9.3, FR-CONN-5/7), plus `CaRotationService`'s
   `host`-kind trusted CA keys. Public material only; no new tables/columns.
+
+## 18. Session Nine (session recorder & WORM) additions — `V17`
+
+Session Nine populates the reserved recording columns and adds the recording
+metadata/policy surface (Design §12/§12A/§15; FR-AUD-1/2/3/6/9, FR-DATA-2). One
+migration, `V17`; the next free version is **V18**.
+
+### 18.1 Customer-key config on `config.operator_settings` (`V17`)
+
+`operator_settings` gains the operator-configured **customer encryption key** and
+recording policy. The CP holds the **public half only** (crown-jewels invariant,
+§15) — a platform operator can never decrypt a recording:
+
+- `recording_customer_public_key bytea` — DER SubjectPublicKeyInfo of the customer
+  EC-P256 (ECIES) or RSA (RSA-OAEP) public key. **Nullable**; when NULL recording is
+  un-provisioned and `BeginRecording` **fails closed** (keystroke capture is always
+  on ⇒ encryption is mandatory, FR-AUD-2). Binary DER, so no reference/PEM guard.
+- `recording_key_seal_algorithm text NOT NULL DEFAULT 'ecies_p256'` (CHECK
+  `ecies_p256 | rsa_oaep_sha256`) — how the per-recording AES-256-GCM data key is
+  sealed to the customer key. ECIES P-256 is the portable default.
+- `recording_key_ref text` — the operator's opaque reference to the key, persisted
+  into `recording_ref.encryption_key_ref` (never key material; the existing PEM
+  content guard applies). Defaults to `customer-recording-key` at the service when
+  unset so the NOT-NULL `encryption_key_ref` is always satisfiable.
+- `recording_retention_days int NOT NULL DEFAULT 365` (`>= 0`) — the object-lock
+  retain-until window + `recording_ref.retention_until` (FR-AUD-6).
+- `recording_strict_default boolean NOT NULL DEFAULT true` — reserved operator knob
+  for future per-node recording-required policy; recording is mandatory + fail-closed
+  in S9 regardless.
+
+Adding columns to an existing table preserves its grants, so no re-grant is needed.
+
+### 18.2 `runtime.recording_token` (`V17`) — the BeginRecording authority
+
+The **second** single-use, session-bound token (mirroring `session_signing_token`),
+minted at `Authorize` ALLOW alongside the signing token and bound to the same
+`{gateway_id, session_id, node_id, principal, exp}`. It authorises exactly one
+`Recording.BeginRecording` call, so a Gateway can never register a recording for a
+session it does not broker (§15). Stores the token **hash** only; atomic single-use
+via `used` under the `@Version` optimistic lock (replay loses the race). A **dedicated
+table** (not a `purpose` column on `session_signing_token`) keeps the change additive
+and isolated from the S5 signing-token entity/service. `V17` grants `cp_runtime`
+SELECT/INSERT/UPDATE and REVOKEs DELETE (single-use ⇒ consumed by UPDATE, never
+DELETEd — mirrors `V15`'s least-privilege on the token tables).
+
+### 18.3 Recording columns now populated (write-once, `V3`/`V4`/`V8`)
+
+`recording_ref` (the 1:1-with-session table) is now written by the CP:
+`BeginRecording` inserts `object_key` / `encryption_key_ref` (customer-key ref) /
+`worm_mode` / `retention_until` (status `recording`); `FinalizeRecording` fills
+`hash_chain_head` / `content_digest` / `size_bytes` / `status`
+(`finalized|truncated|failed`) — a NULL→value transition the `V4`/`V8` **write-once**
+trigger permits once and then freezes (evidence tamper-evidence, §15). Ownership for
+finalize is `recording_ref → ssh_session.gateway_id == caller` (no `gateway_id` column
+added to `recording_ref`).
+
+### 18.4 `audit_event` hash chain now populated (`V3` `seq`, S9 fills `prev_hash`/`record_hash`)
+
+`AuditWriter` now links every audit write into the tamper-evidence chain:
+`record_hash = SHA-256(prev_hash ‖ canonical(event))`, `prev_hash` = the previous
+chained row's `record_hash` in `seq` order (`AuditRecordHash.GENESIS` for the first).
+Because R2DBC inserts are concurrent (and HA runs multiple writers), each write
+**serializes on a transaction-scoped advisory lock** (`pg_advisory_xact_lock`) inside
+the audit transaction: take the lock, read the chain head, compute, insert (which
+assigns the next `seq`). `canonical(event)` is a deterministic, length-framed encoding
+of the semantic fields with `jsonb` keys sorted (invariant to Postgres key reordering)
+and `occurred_at` truncated to microseconds (matching `timestamptz` resolution).
+`AuditChainVerifier` recomputes the chain; a mutated or removed row breaks it (proven
+against the append-only table which cannot itself prove content-integrity).
+
+### 18.5 Recording bytes never touch the CP (Design §12.2)
+
+The CP issues a short-lived (default 120s), single-object **presigned PUT** (AWS SDK v2
+`S3Presigner`) to a WORM bucket created with **object-lock enabled**; the object-lock
+mode + retain-until are baked into the **signature**, surfaced as `required_headers`
+the Gateway must replay verbatim, so the uploader cannot strip the lock. The Gateway
+uploads the **encrypted** bytes directly. WORM store config is
+`sessionlayer.recording.worm.*` (not in the DB); the customer key + retention/mode are
+operator settings above.

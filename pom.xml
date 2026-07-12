@@ -68,6 +68,17 @@
 		<jqwik.version>1.9.1</jqwik.version>
 
 		<!--
+		  AWS SDK for Java v2 (Apache-2.0, GPL-3.0-compatible; not managed by the
+		  Spring Boot BOM). Session Nine's WORM object store: an S3-compatible client
+		  (MinIO/S3) + the S3Presigner that issues the short-lived, single-object
+		  presigned PUT the Gateway uploads the encrypted recording with — bytes never
+		  proxy through the CP (Design §12.2). The `s3` module carries both the client
+		  and the presigner. Version pinned via the awssdk BOM (imported below); CVE
+		  management is Dependabot's (the OWASP plugin was retired in #2).
+		-->
+		<awssdk.version>2.47.5</awssdk.version>
+
+		<!--
 		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
 		  42.7.11 is affected by CVE-2026-54291 (GHSA-j92g-9f8w-j867, channel-binding
 		  downgrade), fixed in 42.7.12. This is the Flyway-only JDBC driver; the
@@ -76,6 +87,19 @@
 		<postgresql.version>42.7.13</postgresql.version>
 
 	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<!-- Pin the whole AWS SDK v2 dependency tree to one release (the BOM). -->
+			<dependency>
+				<groupId>software.amazon.awssdk</groupId>
+				<artifactId>bom</artifactId>
+				<version>${awssdk.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 
 	<dependencies>
 		<!-- ================= Web (reactive, fully non-blocking) ================= -->
@@ -224,6 +248,20 @@
 			<groupId>com.google.re2j</groupId>
 			<artifactId>re2j</artifactId>
 			<version>${re2j.version}</version>
+		</dependency>
+
+		<!-- ============ WORM object store (S3/MinIO) — AWS SDK v2 ============= -->
+		<!--
+		  Session Nine's recording WORM store: an S3-compatible async client + the
+		  S3Presigner. The CP creates the bucket with object-lock enabled and issues a
+		  short-lived, single-object presigned PUT (object-lock mode + retain-until baked
+		  into the signature so the uploader cannot strip the WORM lock). The Gateway
+		  uploads the encrypted bytes directly — never through the CP (Design §12.2). The
+		  `s3` artifact bundles the client and the presigner; version from the BOM above.
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>s3</artifactId>
 		</dependency>
 
 		<!-- ============================ Tooling =============================== -->
