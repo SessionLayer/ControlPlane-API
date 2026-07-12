@@ -35,4 +35,13 @@ public record AuditEvent(@Id UUID id, Instant occurredAt, String actor, String s
 		return new AuditEvent(Uuids.v7(), occurredAt, actor, subject, action, outcome, correlationId, sessionId, nodeId,
 				nodeLabels, sourceIp, accessModel, capabilities, detail, null, null, null, null);
 	}
+
+	/**
+	 * Stamp the S9 hash-chain columns just before insert (the writer computes
+	 * them).
+	 */
+	public AuditEvent withChain(String prevHash, String recordHash) {
+		return new AuditEvent(id, occurredAt, actor, subject, action, outcome, correlationId, sessionId, nodeId,
+				nodeLabels, sourceIp, accessModel, capabilities, detail, prevHash, recordHash, version, createdAt);
+	}
 }
