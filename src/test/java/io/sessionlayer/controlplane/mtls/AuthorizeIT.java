@@ -11,6 +11,12 @@ import io.netty.handler.ssl.SslContext;
 import io.sessionlayer.controlplane.authz.ConnectAuthorizationService;
 import io.sessionlayer.controlplane.authz.DecisionContextVerifier;
 import io.sessionlayer.controlplane.ca.CaRotationService;
+import io.sessionlayer.controlplane.ca.CaSignerService;
+import io.sessionlayer.controlplane.ca.CertificateRequest;
+import io.sessionlayer.controlplane.ca.OpenSshCertificate;
+import io.sessionlayer.controlplane.ca.SshCertSigner;
+import io.sessionlayer.controlplane.ca.cert.CertType;
+import io.sessionlayer.controlplane.ca.cert.CertificateParameters;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
@@ -60,6 +66,8 @@ class AuthorizeIT extends AbstractMtlsIT {
 	private NodeHostKeyRepository hostKeys;
 	@Autowired
 	private CaRotationService caRotation;
+	@Autowired
+	private CaSignerService caSigner;
 	@Autowired
 	private DpRuleRepository dpRules;
 	@Autowired
@@ -145,7 +153,11 @@ class AuthorizeIT extends AbstractMtlsIT {
 		UUID nodeId = seedAgentlessNode("10.0.0.5"); // no port → dial gets :22 appended
 		Node node = nodes.findById(nodeId).block();
 		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell", "exec"));
-		seedHostKey(nodeId, "host_ca");
+		// A real host-CA-signed host cert whose principal is the node's enrollment
+		// name.
+		String hostCertLine = signHostCert(node.name());
+		byte[] expectedCertBlob = Base64.getDecoder().decode(hostCertLine.trim().split("\\s+")[1]);
+		seedHostCaAnchor(nodeId, hostCertLine);
 		EnrolledGateway gateway = enroll("gw-conn-ca-" + unique());
 
 		AuthorizeResponse response = authorize(gateway,
@@ -157,8 +169,9 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_AGENTLESS);
 		assertThat(connection.getDialAddress()).isEqualTo("10.0.0.5:22");
 
-		// host_ca_keys are the CP's trusted host-CA set, wire-decoded from the same
-		// authorized-keys lines; expected principals = the node's enrollment name.
+		// host-CA path is the complete triple: trusted CA set (wire-decoded from the
+		// same authorized-keys lines), the node name as expected principal, and the
+		// enrollment host cert the Gateway verifies against them.
 		HostVerification verification = connection.getHostVerification();
 		List<String> expectedCaBlobs = caRotation.trustedCaKeys("host").block().stream()
 				.map(line -> line.trim().split("\\s+")[1]).toList();
@@ -167,6 +180,8 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(actualCaBlobs).isNotEmpty().containsExactlyElementsOf(expectedCaBlobs);
 		assertThat(verification.getExpectedHostPrincipalsList()).containsExactly(node.name());
 		assertThat(verification.getPinnedHostKeysList()).isEmpty();
+		assertThat(verification.getHostCertificatesList()).hasSize(1);
+		assertThat(verification.getHostCertificates(0).toByteArray()).isEqualTo(expectedCertBlob);
 	}
 
 	@Test
@@ -188,6 +203,7 @@ class AuthorizeIT extends AbstractMtlsIT {
 		HostVerification verification = connection.getHostVerification();
 		assertThat(verification.getHostCaKeysList()).isEmpty();
 		assertThat(verification.getExpectedHostPrincipalsList()).isEmpty();
+		assertThat(verification.getHostCertificatesList()).isEmpty();
 		assertThat(verification.getPinnedHostKeysList()).hasSize(1);
 		assertThat(verification.getPinnedHostKeys(0).toByteArray()).isEqualTo(pinnedBlob);
 	}
@@ -217,6 +233,7 @@ class AuthorizeIT extends AbstractMtlsIT {
 			assertThat(verification.getHostCaKeysList()).isEmpty();
 			assertThat(verification.getPinnedHostKeysList()).isEmpty();
 			assertThat(verification.getExpectedHostPrincipalsList()).isEmpty();
+			assertThat(verification.getHostCertificatesList()).isEmpty();
 
 			assertThat(appender.list).anySatisfy(event -> {
 				assertThat(event.getLevel()).isEqualTo(Level.WARN);
@@ -267,16 +284,29 @@ class AuthorizeIT extends AbstractMtlsIT {
 				.map(Node::id).block();
 	}
 
-	// A host_ca anchor: the code keys off source='host_ca' and pulls the trusted
-	// host
-	// CA set; public_key holds the node's own host key (public material) but is not
-	// read for this path.
-	private void seedHostKey(UUID nodeId, String source) {
+	// A host_ca anchor: public_key holds the node's plain host key (public
+	// material,
+	// not read for this path); host_cert_ref holds the enrollment host CERTIFICATE
+	// line the CP hands to the Gateway.
+	private void seedHostCaAnchor(UUID nodeId, String hostCertLine) {
 		byte[] blob = MtlsTestSupport
 				.opensshPublicKeyBlob((ECPublicKey) MtlsTestSupport.generateEcKeyPair().getPublic());
-		String line = "ecdsa-sha2-nistp256 " + Base64.getEncoder().encodeToString(blob);
-		hostKeys.save(NodeHostKey.create(nodeId, "ecdsa-sha2-nistp256", line, "SHA256:ca-" + unique(),
-				"host-cert:" + unique(), source, Instant.now())).block();
+		String hostKeyLine = "ecdsa-sha2-nistp256 " + Base64.getEncoder().encodeToString(blob);
+		hostKeys.save(NodeHostKey.create(nodeId, "ecdsa-sha2-nistp256", hostKeyLine, "SHA256:ca-" + unique(),
+				hostCertLine, "host_ca", Instant.now())).block();
+	}
+
+	// Sign a real host certificate off the provisioned host CA, principal = the
+	// node
+	// name (what §9.3 requires the Gateway to match).
+	private String signHostCert(String principal) {
+		SshCertSigner hostCa = caSigner.activeSigner("host").block();
+		KeyPair hostKey = MtlsTestSupport.generateEcKeyPair();
+		CertificateParameters parameters = new CertificateParameters(1L, CertType.HOST, "host-" + principal,
+				List.of(principal), Instant.now().minusSeconds(60), Instant.now().plusSeconds(3600), null, null);
+		OpenSshCertificate cert = hostCa
+				.signCertificate(new CertificateRequest((ECPublicKey) hostKey.getPublic(), parameters));
+		return cert.certificateLine();
 	}
 
 	private byte[] seedPinnedHostKey(UUID nodeId) {

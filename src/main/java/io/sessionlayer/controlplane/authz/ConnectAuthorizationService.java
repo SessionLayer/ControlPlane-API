@@ -168,24 +168,32 @@ public class ConnectAuthorizationService {
 		return hostKeys.findByNodeId(node.id()).collectList().flatMap(rows -> {
 			List<byte[]> pinned = rows.stream().filter(row -> "pinned_key".equals(row.source()))
 					.map(row -> wireBlob(row.publicKey())).filter(Objects::nonNull).toList();
-			boolean anchoredToHostCa = rows.stream().anyMatch(row -> "host_ca".equals(row.source()));
-			if (!anchoredToHostCa) {
-				return Mono.just(nodeConnection(node, model, dial, List.of(), List.of(), pinned));
+			// The node's enrollment host cert(s): russh negotiates only the plain host key
+			// at KEX (never the live cert), so the CP hands over the stored cert to verify.
+			List<byte[]> hostCerts = rows.stream().filter(row -> "host_ca".equals(row.source()))
+					.map(row -> wireBlob(row.hostCertRef())).filter(Objects::nonNull).toList();
+			if (hostCerts.isEmpty()) {
+				return Mono.just(nodeConnection(node, model, dial, List.of(), List.of(), pinned, List.of()));
 			}
 			return caRotation.trustedCaKeys("host").map(caLines -> {
 				List<byte[]> caKeys = caLines.stream().map(ConnectAuthorizationService::wireBlob)
 						.filter(Objects::nonNull).toList();
-				// A host cert's expected principals are meaningful only alongside a trusted
-				// host CA; without an active host CA there is nothing to verify a cert against.
-				List<String> principals = caKeys.isEmpty() ? List.of() : List.of(node.name());
-				return nodeConnection(node, model, dial, caKeys, principals, pinned);
+				// Advertise the host-CA path only as a complete triple — trusted CA key(s) to
+				// check the signature, the cert, and the expected principal. Missing any leg
+				// the Gateway can't verify (no TOFU), so emit none and let pinned / the
+				// empty-warn handle it (upholds the proto invariant: host_certificates
+				// non-empty whenever host_ca_keys is set).
+				if (caKeys.isEmpty()) {
+					return nodeConnection(node, model, dial, List.of(), List.of(), pinned, List.of());
+				}
+				return nodeConnection(node, model, dial, caKeys, List.of(node.name()), pinned, hostCerts);
 			});
 		});
 	}
 
 	private NodeConnectionInfo nodeConnection(Node node, NodeConnectionInfo.ConnectorModel model, String dial,
-			List<byte[]> caKeys, List<String> principals, List<byte[]> pinned) {
-		NodeConnectionInfo info = new NodeConnectionInfo(model, dial, caKeys, principals, pinned);
+			List<byte[]> caKeys, List<String> principals, List<byte[]> pinned, List<byte[]> hostCerts) {
+		NodeConnectionInfo info = new NodeConnectionInfo(model, dial, caKeys, principals, pinned, hostCerts);
 		// FR-CONN-5/7 (§9.3): an agentless node with no host-CA anchor and no pinned
 		// key has no enrollment-anchored trust — the Gateway aborts (no TOFU). The
 		// decision still ALLOWs; warn so the operator repairs the enrollment.

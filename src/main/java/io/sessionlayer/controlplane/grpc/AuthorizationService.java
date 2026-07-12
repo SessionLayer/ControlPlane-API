@@ -75,6 +75,7 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		info.hostCaKeys().forEach(key -> verification.addHostCaKeys(ByteString.copyFrom(key)));
 		info.expectedPrincipals().forEach(verification::addExpectedHostPrincipals);
 		info.pinnedHostKeys().forEach(key -> verification.addPinnedHostKeys(ByteString.copyFrom(key)));
+		info.hostCertificates().forEach(cert -> verification.addHostCertificates(ByteString.copyFrom(cert)));
 		return NodeConnection.newBuilder().setConnectorKind(connectorKind(info.connectorKind()))
 				.setDialAddress(info.dialAddress()).setHostVerification(verification.build()).build();
 	}
