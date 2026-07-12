@@ -25,10 +25,11 @@ public final class PlatformPermissions {
 	public static final String SETTINGS_WRITE = "settings:write";
 	public static final String LOCK_READ = "lock:read";
 	public static final String LOCK_WRITE = "lock:write";
+	public static final String BREAKGLASS_MANAGE = "breakglass:manage";
 
 	public static final Set<String> ALL = Set.of(RBAC_READ, RBAC_WRITE, NODE_ENROLL, NODE_QUARANTINE, NODE_REMOVE,
 			CA_MANAGE, CA_ROTATE, REQUEST_APPROVE, RECORDING_REPLAY, RECORDING_EXPORT, AUDIT_READ, USER_MANAGE,
-			SETTINGS_WRITE, LOCK_READ, LOCK_WRITE);
+			SETTINGS_WRITE, LOCK_READ, LOCK_WRITE, BREAKGLASS_MANAGE);
 
 	public static final Set<String> SCOPABLE = Set.of(RECORDING_REPLAY, RECORDING_EXPORT);
 

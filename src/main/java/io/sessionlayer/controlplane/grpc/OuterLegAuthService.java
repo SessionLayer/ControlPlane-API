@@ -2,13 +2,19 @@ package io.sessionlayer.controlplane.grpc;
 
 import io.grpc.stub.StreamObserver;
 import io.sessionlayer.controlplane.auth.Secrets;
+import io.sessionlayer.controlplane.breakglass.BreakglassResolutionService;
 import io.sessionlayer.controlplane.device.DeviceFlowService;
 import io.sessionlayer.controlplane.grpc.v1.BeginDeviceFlowRequest;
 import io.sessionlayer.controlplane.grpc.v1.BeginDeviceFlowResponse;
+import io.sessionlayer.controlplane.grpc.v1.BreakglassResolution;
 import io.sessionlayer.controlplane.grpc.v1.DeviceFlowStatus;
 import io.sessionlayer.controlplane.grpc.v1.OuterLegAuthGrpc;
 import io.sessionlayer.controlplane.grpc.v1.PollDeviceFlowRequest;
 import io.sessionlayer.controlplane.grpc.v1.PollDeviceFlowResponse;
+import io.sessionlayer.controlplane.grpc.v1.ResolveBreakglassCodeRequest;
+import io.sessionlayer.controlplane.grpc.v1.ResolveBreakglassCodeResponse;
+import io.sessionlayer.controlplane.grpc.v1.ResolveBreakglassKeyRequest;
+import io.sessionlayer.controlplane.grpc.v1.ResolveBreakglassKeyResponse;
 import io.sessionlayer.controlplane.grpc.v1.ResolveOtpRequest;
 import io.sessionlayer.controlplane.grpc.v1.ResolveOtpResponse;
 import io.sessionlayer.controlplane.grpc.v1.ResolvePinRequest;
@@ -16,12 +22,15 @@ import io.sessionlayer.controlplane.grpc.v1.ResolvePinResponse;
 import io.sessionlayer.controlplane.grpc.v1.ResolveUserCertRequest;
 import io.sessionlayer.controlplane.grpc.v1.ResolveUserCertResponse;
 import io.sessionlayer.controlplane.grpc.v1.ResolvedIdentity;
+import io.sessionlayer.controlplane.mtls.MtlsContext;
+import io.sessionlayer.controlplane.mtls.MtlsPeer;
 import io.sessionlayer.controlplane.mtls.MtlsProperties;
 import io.sessionlayer.controlplane.oidc.OidcProperties;
 import io.sessionlayer.controlplane.otp.OtpService;
 import io.sessionlayer.controlplane.pin.PinService;
 import io.sessionlayer.controlplane.usercert.UserCertResolver;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -48,15 +57,18 @@ public class OuterLegAuthService extends OuterLegAuthGrpc.OuterLegAuthImplBase {
 	private final PinService pinService;
 	private final OtpService otpService;
 	private final DeviceFlowService deviceFlowService;
+	private final BreakglassResolutionService breakglassResolution;
 	private final OidcProperties oidcProperties;
 	private final MtlsProperties properties;
 
 	public OuterLegAuthService(UserCertResolver userCertResolver, PinService pinService, OtpService otpService,
-			DeviceFlowService deviceFlowService, OidcProperties oidcProperties, MtlsProperties properties) {
+			DeviceFlowService deviceFlowService, BreakglassResolutionService breakglassResolution,
+			OidcProperties oidcProperties, MtlsProperties properties) {
 		this.userCertResolver = userCertResolver;
 		this.pinService = pinService;
 		this.otpService = otpService;
 		this.deviceFlowService = deviceFlowService;
+		this.breakglassResolution = breakglassResolution;
 		this.oidcProperties = oidcProperties;
 		this.properties = properties;
 	}
@@ -133,6 +145,64 @@ public class OuterLegAuthService extends OuterLegAuthGrpc.OuterLegAuthImplBase {
 		// would require persisting the OIDC groups captured at the verification page.
 		ResolvedIdentity identity = approved ? resolved(status.identity(), List.of(), List.of()) : unresolved();
 		return PollDeviceFlowResponse.newBuilder().setStatus(wire).setIdentity(identity).build();
+	}
+
+	@Override
+	public void resolveBreakglassKey(ResolveBreakglassKeyRequest request,
+			StreamObserver<ResolveBreakglassKeyResponse> observer) {
+		// The AUTHENTICATED caller is the mTLS peer (AuthInterceptor), never a field;
+		// the
+		// minted token binds to it so a break-glass Authorize can only come from this
+		// GW.
+		UUID caller = callerGatewayId();
+		Mono<ResolveBreakglassKeyResponse> result = breakglassResolution
+				.resolveKey(request.getSkPublicKeyBlob().toByteArray(), blankToNull(request.getSourceIp()),
+						parseUuid(request.getNodeId()), caller)
+				.map(r -> ResolveBreakglassKeyResponse.newBuilder().setResolution(toResolution(r)).build())
+				.defaultIfEmpty(
+						ResolveBreakglassKeyResponse.newBuilder().setResolution(unresolvedBreakglass()).build());
+		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "ResolveBreakglassKey");
+	}
+
+	@Override
+	public void resolveBreakglassCode(ResolveBreakglassCodeRequest request,
+			StreamObserver<ResolveBreakglassCodeResponse> observer) {
+		// request.getCode() is a SECRET (keyboard-interactive, echo off) — NEVER
+		// logged.
+		UUID caller = callerGatewayId();
+		Mono<ResolveBreakglassCodeResponse> result = breakglassResolution
+				.resolveCode(request.getCode(), blankToNull(request.getSourceIp()), parseUuid(request.getNodeId()),
+						caller)
+				.map(r -> ResolveBreakglassCodeResponse.newBuilder().setResolution(toResolution(r)).build())
+				.defaultIfEmpty(
+						ResolveBreakglassCodeResponse.newBuilder().setResolution(unresolvedBreakglass()).build());
+		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "ResolveBreakglassCode");
+	}
+
+	private static UUID callerGatewayId() {
+		MtlsPeer peer = MtlsContext.peer();
+		return peer == null ? null : peer.gatewayId();
+	}
+
+	private static BreakglassResolution toResolution(BreakglassResolutionService.Resolution resolution) {
+		return BreakglassResolution.newBuilder()
+				.setIdentity(resolved(resolution.identity(), resolution.principals(), List.of()))
+				.setBreakglassToken(resolution.token()).build();
+	}
+
+	private static BreakglassResolution unresolvedBreakglass() {
+		return BreakglassResolution.newBuilder().setIdentity(unresolved()).build();
+	}
+
+	private static UUID parseUuid(String value) {
+		if (value == null || value.isBlank()) {
+			return null; // an empty node id is tolerated (a fleet-scoped credential)
+		}
+		try {
+			return UUID.fromString(value);
+		} catch (IllegalArgumentException notAUuid) {
+			return null;
+		}
 	}
 
 	private static ResolvedIdentity resolved(String identity, List<String> principals, List<String> groups) {

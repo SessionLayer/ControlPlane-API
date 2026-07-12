@@ -106,6 +106,14 @@ public class RecordingRegistrationService {
 			byte[] publicKey, String keyRef, String algorithm, String wormMode, Instant retentionUntil) {
 		return recordingTokens.consume(recordingToken, caller, context).flatMap(token -> sshSessions
 				.findById(token.sessionId()).switchIfEmpty(Mono.error(notProvisioned())).flatMap(session -> {
+					// Break-glass recording is MANDATORY strict and not configurable-off (FR-ACC-6,
+					// §7): the CP has no best-effort recording path at all — every recording is
+					// sealed to the customer key or the session never starts (fail-closed above),
+					// so a break-glass session (access_model=breakglass) is strict by construction.
+					// (The Gateway also forces strict locally from the signed access model.)
+					if ("breakglass".equals(session.accessModel()) && (publicKey == null || publicKey.length == 0)) {
+						return Mono.error(notProvisioned());
+					}
 					UUID recordingId = Uuids.v7();
 					String objectKey = objectKey(session.id(), recordingId);
 					RecordingRef ref = RecordingRef.begin(recordingId, session.id(), objectKey, keyRef, wormMode,
