@@ -49,9 +49,10 @@ class GenerationCounterIT extends AbstractDataIT {
 	private ObjectMapper objectMapper;
 
 	private AgentIdentity withGeneration(AgentIdentity src, long generation) {
-		return new AgentIdentity(src.id(), src.nodeId(), src.mtlsIdentityRef(), src.fingerprint(), generation,
-				src.joinMethod(), src.status(), src.issuedAt(), src.notAfter(), src.statusReason(),
-				src.statusChangedBy(), src.statusChangedAt(), src.version(), src.createdAt(), src.updatedAt());
+		return new AgentIdentity(src.id(), src.nodeId(), src.mtlsIdentityRef(), src.fingerprint(),
+				src.prevFingerprint(), generation, src.joinMethod(), src.status(), src.issuedAt(), src.notAfter(),
+				src.statusReason(), src.statusChangedBy(), src.statusChangedAt(), src.version(), src.createdAt(),
+				src.updatedAt());
 	}
 
 	@Test
