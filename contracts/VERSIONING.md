@@ -148,8 +148,11 @@ forging it requires compromising the CP itself (which already holds the
 decision-context signing key), so a separate signature would add no security.
 
 **Session Nine added one additive service — `Recording`** (`BeginRecording`,
-`FinalizeRecording`) — plus one field, `recording_token` (field 9), on
-`AuthorizeResponse`. The service registers/finalizes a session recording and
+`RequestUpload`, `FinalizeRecording`) — plus one field, `recording_token`
+(field 9), on `AuthorizeResponse`. `RequestUpload` issues the short-lived,
+single-object WORM upload credential at upload time (session end) rather than at
+`BeginRecording`, so the credential's TTL need only cover the PUT — never the
+whole session (§12.2; no long-lived upload creds). The service registers/finalizes a session recording and
 issues short-lived, single-object WORM upload credentials (Design §12; FR-AUD-1/
 2/3/9). `recording_token` is a second single-use token minted on ALLOW, bound to
 the same `{gateway_id, session_id, node, principal, exp}` as `session_token`, that
