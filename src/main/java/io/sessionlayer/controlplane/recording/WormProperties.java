@@ -46,14 +46,6 @@ public class WormProperties {
 	 */
 	private Duration credentialTtl = Duration.ofSeconds(120);
 
-	/**
-	 * Gate CP readiness on WORM reachability (default on). Recording is mandatory,
-	 * so a down store trips readiness; set false to decouple the whole CP's
-	 * availability from the recording store (the WORM health indicator then always
-	 * reads UP and BeginRecording/RequestUpload still fail loudly on their own).
-	 */
-	private boolean readinessGate = true;
-
 	public String getEndpoint() {
 		return endpoint;
 	}
@@ -108,13 +100,5 @@ public class WormProperties {
 
 	public void setCredentialTtl(Duration credentialTtl) {
 		this.credentialTtl = credentialTtl;
-	}
-
-	public boolean isReadinessGate() {
-		return readinessGate;
-	}
-
-	public void setReadinessGate(boolean readinessGate) {
-		this.readinessGate = readinessGate;
 	}
 }
