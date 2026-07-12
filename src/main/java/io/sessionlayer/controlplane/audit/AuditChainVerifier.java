@@ -13,11 +13,21 @@ import java.util.List;
  * recording/audit trail").
  *
  * <p>
- * For each row it checks (1) {@code prev_hash} equals the predecessor's
+ * For each row it checks (1) {@code seq} is strictly increasing (the presented
+ * order is the true chain order; note {@code seq} is monotonic but NOT gapless
+ * — the IDENTITY sequence legitimately skips values on a rolled-back insert, so
+ * a gap is not tampering), (2) {@code prev_hash} equals the predecessor's
  * {@code record_hash} ({@link AuditRecordHash#GENESIS} for the first row) — a
- * removed/reordered row snaps this link — and (2) {@code record_hash} equals
+ * removed/reordered row snaps this link — and (3) {@code record_hash} equals
  * {@code SHA-256(prev_hash ‖ canonical(event))} — a mutated field changes the
  * recomputed digest.
+ *
+ * <p>
+ * <b>Scope.</b> This detects any content mutation or interior removal/reorder.
+ * Resistance to <i>tail truncation</i> (a DB superuser deleting the most recent
+ * rows, which leaves a still-consistent shorter chain) is the SPEC-DEFERRED
+ * externally-anchored Merkle root (FR-AUD-10 / Design D34) — hash-chain + WORM
+ * is the documented baseline; the anchor is the clean next seam, not a gap.
  */
 public final class AuditChainVerifier {
 
@@ -43,9 +53,16 @@ public final class AuditChainVerifier {
 	 */
 	public static Result verify(List<AuditEvent> chainInSeqOrder) {
 		String expectedPrev = AuditRecordHash.GENESIS;
+		long prevSeq = Long.MIN_VALUE;
 		for (AuditEvent event : chainInSeqOrder) {
 			if (event.recordHash() == null || event.prevHash() == null) {
 				return Result.broken("unchained row in chain: " + event.id());
+			}
+			if (event.seq() != null) {
+				if (event.seq() <= prevSeq) {
+					return Result.broken("seq not strictly increasing at " + event.id());
+				}
+				prevSeq = event.seq();
 			}
 			if (!expectedPrev.equals(event.prevHash())) {
 				return Result.broken("prev_hash link broken at " + event.id());

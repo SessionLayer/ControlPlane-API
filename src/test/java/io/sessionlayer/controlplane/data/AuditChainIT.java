@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The {@code audit_event} tamper-evidence hash chain (Design §12.2 baseline,
@@ -60,11 +62,38 @@ class AuditChainIT extends AbstractDataIT {
 		AuditEvent v = tampered.get(tampered.size() - 1);
 		AuditEvent mutated = new AuditEvent(v.id(), v.occurredAt(), "TAMPERED", v.subject(), v.action(), v.outcome(),
 				v.correlationId(), v.sessionId(), v.nodeId(), v.nodeLabels(), v.sourceIp(), v.accessModel(),
-				v.capabilities(), v.detail(), v.prevHash(), v.recordHash(), v.version(), v.createdAt());
+				v.capabilities(), v.detail(), v.prevHash(), v.recordHash(), v.version(), v.createdAt(), v.seq());
 		tampered.set(tampered.size() - 1, mutated);
 		AuditChainVerifier.Result result = AuditChainVerifier.verify(tampered);
 		assertThat(result.valid()).isFalse();
 		assertThat(result.failure()).contains("record_hash mismatch");
+	}
+
+	@Test
+	void concurrentWritesSerializeWithoutForkingTheChain() {
+		// Fire many writes in parallel: if the advisory lock did NOT serialize
+		// read+insert
+		// on one connection, two writers would read the same chain head and fork it
+		// (two
+		// rows sharing a prev_hash). The advisory lock + READ COMMITTED (each write
+		// reads
+		// the latest committed head under the lock) prevent that. NOTE: fork-safety
+		// here
+		// relies on READ COMMITTED (the default) so the post-lock head-read sees prior
+		// writers' committed rows.
+		int concurrency = 32;
+		UUID session = UUID.randomUUID();
+		Flux.range(0, concurrency)
+				.flatMap(i -> audit.record("racer@corp", "node", "chain.concurrent", "success", session, null,
+						Map.of("i", Integer.toString(i))).subscribeOn(Schedulers.parallel()), concurrency)
+				.then().block();
+
+		List<AuditEvent> chain = audits.findChainOrdered().collectList().block();
+		assertThat(chain.size()).isGreaterThanOrEqualTo(concurrency);
+		AuditChainVerifier.Result result = AuditChainVerifier.verify(chain);
+		assertThat(result.valid()).as("recomputed chain: %s", result.failure()).isTrue();
+		// A fork would show up as two chained rows committing to the same predecessor.
+		assertThat(chain.stream().map(AuditEvent::prevHash).toList()).doesNotHaveDuplicates();
 	}
 
 	@Test
