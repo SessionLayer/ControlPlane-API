@@ -89,9 +89,10 @@ class BreakglassAuthorizeIT extends AbstractMtlsIT {
 		assertThat(activation.targetNodeId()).isEqualTo(nodeId);
 		assertThat(activation.sourceIp()).isEqualTo(SOURCE_IP);
 
-		// The high-priority alert fired (default audit-event sink).
+		// The high-priority alert fired at AUTHENTICATION (resolve), not at Authorize —
+		// so a break-glass credential use always alerts even if no session follows.
 		List<AuditEvent> alerts = auditEvents.findByActor("system:break-glass").collectList().block();
-		assertThat(alerts).anySatisfy(e -> assertThat(e.action()).isEqualTo("breakglass.activated"));
+		assertThat(alerts).anySatisfy(e -> assertThat(e.action()).isEqualTo("breakglass.authenticated"));
 
 		// The token is single-use: a replay is denied.
 		AuthorizeResponse replay = authorize(gateway, identity, nodeId, "root", UUID.randomUUID(),

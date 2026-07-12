@@ -3,6 +3,7 @@ package io.sessionlayer.controlplane.jit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
+import io.sessionlayer.controlplane.authz.LockMatching;
 import io.sessionlayer.controlplane.data.config.JitPolicy;
 import io.sessionlayer.controlplane.data.config.JitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
@@ -15,6 +16,8 @@ import io.sessionlayer.controlplane.support.AbstractAuthIT;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -133,11 +136,30 @@ class JitLifecycleIT extends AbstractAuthIT {
 		UUID node = seedNode(zone);
 		JitRequest overdue = requests
 				.save(JitRequest.create("frank-" + unique(), node, "node", null, "deploy", List.of("shell"), "late",
-						JitRequest.PENDING_APPROVAL, UUID.randomUUID(), "p", mapper.createArrayNode(),
+						JitRequest.PENDING_APPROVAL, UUID.randomUUID(), "p", 3600, mapper.createArrayNode(),
 						mapper.createArrayNode(), Instant.now().minus(1, ChronoUnit.MINUTES), null, Instant.now()))
 				.block();
 
 		assertThat(jit.expireOverdue().block()).isGreaterThanOrEqualTo(1L);
+		assertThat(requests.findById(overdue.id()).block().state()).isEqualTo(JitRequest.EXPIRED);
+	}
+
+	@Test
+	void anApprovalAfterTheWindowIsRejectedAndTheRequestExpires() {
+		String zone = unique();
+		UUID node = seedNode(zone);
+		ArrayNode chain = mapper.createArrayNode();
+		chain.add(level("email", "boss@corp"));
+		// A pending request whose approval window already elapsed (seeded directly).
+		JitRequest overdue = requests.save(JitRequest.create("late-" + unique(), node, "node", null, "deploy",
+				List.of("shell"), "x", JitRequest.PENDING_APPROVAL, UUID.randomUUID(), "p", 3600, chain,
+				mapper.createArrayNode(), Instant.now().minus(1, ChronoUnit.MINUTES), null, Instant.now())).block();
+
+		// The approval lands after the window: rejected, and the request is EXPIRED (no
+		// fresh grant TTL) — not left PENDING for the next sweep to catch.
+		JitException tooLate = catchThrowableOfType(JitException.class,
+				() -> jit.approve(overdue.id(), "boss@corp", List.of(), "ok").block());
+		assertThat(tooLate.reason()).isEqualTo(JitException.Reason.NOT_PENDING);
 		assertThat(requests.findById(overdue.id()).block().state()).isEqualTo(JitRequest.EXPIRED);
 	}
 
@@ -147,9 +169,9 @@ class JitLifecycleIT extends AbstractAuthIT {
 		UUID node = seedNode(zone);
 		String requester = "gina-" + unique();
 		JitRequest stale = requests.save(JitRequest.create(requester, node, "node", null, "deploy", List.of("shell"),
-				"old", JitRequest.APPROVED, UUID.randomUUID(), "p", mapper.createArrayNode(), mapper.createArrayNode(),
-				Instant.now().minus(2, ChronoUnit.HOURS), Instant.now().minus(1, ChronoUnit.MINUTES), Instant.now()))
-				.block();
+				"old", JitRequest.APPROVED, UUID.randomUUID(), "p", 3600, mapper.createArrayNode(),
+				mapper.createArrayNode(), Instant.now().minus(2, ChronoUnit.HOURS),
+				Instant.now().minus(1, ChronoUnit.MINUTES), Instant.now())).block();
 
 		// Never serve an overdue grant (lazy expiry on read).
 		assertThat(jit.findUsableGrant(requester, node, "deploy", Instant.now()).blockOptional()).isEmpty();
@@ -158,7 +180,7 @@ class JitLifecycleIT extends AbstractAuthIT {
 	}
 
 	@Test
-	void revokeWritesAStrictLockOnIdentityAndNode() {
+	void revokeWritesABoundedIdentityScopedLockThatDoesNotBlockOtherUsers() {
 		String zone = unique();
 		UUID node = seedNode(zone);
 		seedPolicy(zone, 3600);
@@ -167,12 +189,25 @@ class JitLifecycleIT extends AbstractAuthIT {
 
 		assertThat(jit.revoke(approved.id(), "admin@corp", "incident").block().state()).isEqualTo(JitRequest.REVOKED);
 
-		List<AccessLock> all = locks.findAll().collectList().block();
-		assertThat(all).anySatisfy(lock -> {
-			assertThat(lock.mode()).isEqualTo("strict");
-			assertThat(lock.targetSelector().get("identities").get(0).stringValue()).isEqualTo(requester);
-			assertThat(lock.targetSelector().get("node_ids").get(0).stringValue()).isEqualTo(node.toString());
-		});
+		AccessLock lock = locks.findAll().collectList().block().stream()
+				.filter(l -> l.targetSelector().has("identities")
+						&& requester.equals(l.targetSelector().get("identities").get(0).stringValue()))
+				.findFirst().orElseThrow();
+		// H1: identity-scoped ONLY (a node facet would strict-lock every user on the
+		// node) and BOUNDED (it exists only to tear down the live session, then
+		// clears).
+		assertThat(lock.mode()).isEqualTo("strict");
+		assertThat(lock.targetSelector().has("node_ids")).isFalse();
+		assertThat(lock.expiresAt()).isNotNull().isAfter(Instant.now());
+
+		// It denies the revoked identity (any node) but NOT a different user on the
+		// node.
+		LockMatching.LockSubject revokedUser = new LockMatching.LockSubject(requester, node.toString(), Map.of(),
+				Set.of("deploy"), "deploy", Set.of());
+		LockMatching.LockSubject otherUser = new LockMatching.LockSubject("someone-else@corp", node.toString(),
+				Map.of(), Set.of("deploy"), "deploy", Set.of());
+		assertThat(LockMatching.matches(lock.targetSelector(), revokedUser)).isTrue();
+		assertThat(LockMatching.matches(lock.targetSelector(), otherUser)).isFalse();
 	}
 
 	@Test
