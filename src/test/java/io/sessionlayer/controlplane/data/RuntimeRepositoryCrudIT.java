@@ -159,10 +159,11 @@ class RuntimeRepositoryCrudIT extends AbstractDataIT {
 
 	@Test
 	void breakglassActivationCrud() {
-		var bg = breakglass.save(BreakglassActivation.create("root@corp", "prod outage", "alert://1", null,
-				"bg-default", "pending", Instant.now())).block();
+		var bg = breakglass.save(BreakglassActivation.activate("root@corp", "root", "prod outage", "alert://1", null,
+				"bg-default", "203.0.113.9", null, "SHA256:cred", Instant.now())).block();
 		assertThat(bg).isNotNull();
 		assertThat(bg.breakglassPolicyName()).isEqualTo("bg-default"); // NAME snapshot
+		assertThat(bg.reviewStatus()).isEqualTo("pending");
 		assertThat(breakglass.findByReviewStatus("pending").collectList().block()).isNotEmpty();
 
 		// a break-glass session links back to its activation (symmetric with

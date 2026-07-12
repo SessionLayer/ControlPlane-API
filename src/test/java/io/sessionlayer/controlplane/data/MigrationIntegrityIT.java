@@ -26,12 +26,14 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allMigrationsAppliedThroughLatest() {
 		Integer maxVersion = db.sql("SELECT max(version::int) AS v FROM flyway_schema_history WHERE success = true")
 				.map(row -> row.get("v", Integer.class)).one().block();
-		// V1..V19. S4 adds V14/V15; S6 adds V16 (auth surface); S9 adds V17 (recording:
+		// V1..V20. S4 adds V14/V15; S6 adds V16 (auth surface); S9 adds V17 (recording:
 		// customer-key config on operator_settings + the recording_token table); S10
 		// adds V18 (widen platform_role.permissions CHECK for lock:read/lock:write — no
 		// table); S12 adds V19 (agent_identity.prev_fingerprint — the renew-ahead
-		// fingerprint-pin overlap column, mirroring V15's gateway pinning — no table).
-		assertThat(maxVersion).isEqualTo(19);
+		// fingerprint-pin overlap column, mirroring V15's gateway pinning — no table);
+		// S13 adds V20 (access models: the 3 break-glass stores + the activation
+		// enrichment columns + the breakglass:manage permission).
+		assertThat(maxVersion).isEqualTo(20);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
@@ -51,20 +53,22 @@ class MigrationIntegrityIT extends AbstractDataIT {
 	void allBaseEntityTablesExist() {
 		// Top-level entity tables (excludes the audit_event range partitions). S2 had
 		// 22 (9 config + 13 runtime); S3 adds 8 -> 30; S4 (V14) adds 2 -> 32; S6 (V16)
-		// adds 3 runtime -> 35; S9 (V17) adds 1 runtime (recording_token) -> 36
-		// (12 config + 24 runtime). A drop fails it.
+		// adds 3 runtime -> 35; S9 (V17) adds 1 runtime (recording_token) -> 36; S13
+		// (V20) adds 3 runtime (breakglass_credential, breakglass_offline_code,
+		// breakglass_token) -> 39 (12 config + 27 runtime). A drop fails it.
 		Long tables = db
 				.sql("SELECT count(*) AS c FROM information_schema.tables "
 						+ "WHERE table_schema IN ('config','runtime') AND table_type = 'BASE TABLE' "
 						+ "AND NOT (table_schema = 'runtime' AND table_name LIKE 'audit\\_event\\_%')")
 				.map(row -> row.get("c", Long.class)).one().block();
-		assertThat(tables).isEqualTo(36L); // 12 config + 24 runtime
+		assertThat(tables).isEqualTo(39L); // 12 config + 27 runtime
 
 		// spot-check the reserved-name renames and the load-bearing tables actually
 		// landed
 		for (String qualified : new String[]{"runtime.ssh_session", "runtime.access_lock", "runtime.audit_event",
 				"runtime.recording_ref", "runtime.recording_token", "runtime.presence", "config.dp_rule",
-				"config.ca_config"}) {
+				"config.ca_config", "runtime.breakglass_credential", "runtime.breakglass_offline_code",
+				"runtime.breakglass_token", "runtime.jit_request", "runtime.breakglass_activation"}) {
 			String[] parts = qualified.split("\\.");
 			Long found = db
 					.sql("SELECT count(*) AS c FROM information_schema.tables "
