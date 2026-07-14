@@ -13,9 +13,17 @@ import java.util.List;
  * misconfigured node that the Gateway aborts (fail closed, §9.3). The host-CA
  * path is emitted only as a complete triple (CA key + cert + principal), so
  * {@code hostCertificates} is non-empty whenever {@code hostCaKeys} is.
+ *
+ * <p>
+ * {@code nodeName} is the node's stable enrollment name. For
+ * {@link ConnectorModel#OUTBOUND_AGENT} it is the join key between a session
+ * and the agent that owns the node: the Gateway matches it against the dNSName
+ * SAN of the agent's mTLS certificate — which the CP itself stamped from
+ * {@code node.name} at enrollment/renewal (S14).
  */
-public record NodeConnectionInfo(ConnectorModel connectorKind, String dialAddress, List<byte[]> hostCaKeys,
-		List<String> expectedPrincipals, List<byte[]> pinnedHostKeys, List<byte[]> hostCertificates) {
+public record NodeConnectionInfo(ConnectorModel connectorKind, String nodeName, String dialAddress,
+		List<byte[]> hostCaKeys, List<String> expectedPrincipals, List<byte[]> pinnedHostKeys,
+		List<byte[]> hostCertificates) {
 
 	/**
 	 * The connectivity model resolved from inventory {@code node.connector_kind}.

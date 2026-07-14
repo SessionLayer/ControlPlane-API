@@ -193,6 +193,8 @@ class AuthorizeIT extends AbstractMtlsIT {
 		NodeConnection connection = response.getNodeConnection();
 		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_AGENTLESS);
 		assertThat(connection.getDialAddress()).isEqualTo("10.0.0.5:22");
+		// The node name is carried for EVERY connector kind, not just OUTBOUND_AGENT.
+		assertThat(connection.getNodeName()).isEqualTo(node.name());
 
 		// host-CA path is the complete triple: trusted CA set (wire-decoded from the
 		// same authorized-keys lines), the node name as expected principal, and the
@@ -268,6 +270,32 @@ class AuthorizeIT extends AbstractMtlsIT {
 		} finally {
 			logger.detachAppender(appender);
 		}
+	}
+
+	@Test
+	void allowOnOutboundAgentNodeReturnsTheNodeNameJoinKey() {
+		String identity = "dave-" + unique();
+		UUID nodeId = seedProdNode(); // connector_kind = agent
+		Node node = nodes.findById(nodeId).block();
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-conn-agent-" + unique());
+
+		AuthorizeResponse response = authorize(gateway,
+				request(identity, nodeId, "deploy", "10.0.0.8", UUID.randomUUID()));
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(response.hasNodeConnection()).isTrue();
+		NodeConnection connection = response.getNodeConnection();
+		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_OUTBOUND_AGENT);
+
+		// S14: the join key between this session and the agent that owns the node. The
+		// Gateway matches it against the dNSName SAN of the agent's mTLS certificate —
+		// which the CP itself stamped from node.name — to find the agent's control
+		// channel. Empty here would make the Gateway fail closed to "node offline".
+		assertThat(connection.getNodeName()).isNotBlank().isEqualTo(node.name());
+
+		// An outbound agent dials out; there is nothing for the Gateway to dial.
+		assertThat(connection.getDialAddress()).isEmpty();
 	}
 
 	private AuthorizeResponse authorize(EnrolledGateway gateway, AuthorizeRequest request) {

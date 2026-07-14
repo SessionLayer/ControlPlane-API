@@ -427,7 +427,8 @@ public class ConnectAuthorizationService {
 
 	private NodeConnectionInfo nodeConnection(Node node, NodeConnectionInfo.ConnectorModel model, String dial,
 			List<byte[]> caKeys, List<String> principals, List<byte[]> pinned, List<byte[]> hostCerts) {
-		NodeConnectionInfo info = new NodeConnectionInfo(model, dial, caKeys, principals, pinned, hostCerts);
+		NodeConnectionInfo info = new NodeConnectionInfo(model, node.name(), dial, caKeys, principals, pinned,
+				hostCerts);
 		// FR-CONN-5/7 (§9.3): an agentless node with no host-CA anchor and no pinned
 		// key has no enrollment-anchored trust — the Gateway aborts (no TOFU). The
 		// decision still ALLOWs; warn so the operator repairs the enrollment.
