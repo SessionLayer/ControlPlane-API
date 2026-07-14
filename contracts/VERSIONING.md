@@ -233,6 +233,37 @@ move the number): the advertised range stays `[1.0, 1.1]`, `protocol_min` stays 
    (`/v1/jit-requests` + approve/deny/revoke, `/v1/breakglass/*`); only the break-glass
    **auth resolution** and the JIT/break-glass **grant flow-through** are gRPC.
 
+**Session Fourteen froze the Agent ↔ Gateway wire protocol at 1.0** and added two
+additive CP changes, both `buf breaking`-clean and staying within **1.1** (the
+advertised gRPC range stays `[1.0, 1.1]`, `protocol_min` stays 1.0).
+
+1. **The wire protocol itself** (`wire/agent-gateway-v1.md` + the messages-only
+   `proto/sessionlayer/agent/v1/wire.proto`) is a **separate contract with its own
+   version line**, negotiated in its own connection preface (§2 of this document
+   already tracks it). The CP is **not a party** to it: it is Agent↔Gateway only,
+   and lives here because `contracts/` is the canonical cross-repo home. Its
+   baseline is **1.0** (`protocol_min = protocol_max = 1.0`), so the N-1 window is
+   trivially satisfied today and becomes load-bearing at 1.1. Adding message types
+   is additive; **type numbers are stable and never reused** (the field-number rule).
+2. **`NodeConnection` gained `node_name` (field 4)** — the join key between an
+   authorized session and the Agent that owns the node. The Gateway identifies a
+   connected Agent from its mTLS certificate, whose dNSName SAN **the CP itself
+   stamps from `node.name`**, so the CP must name the node in its connectivity
+   answer. Required (non-empty) for `OUTBOUND_AGENT`; the Gateway fails closed to
+   "node offline" without it. An older (N-1) Gateway ignores the field and simply
+   has no agent path.
+3. **`GatewayIdentity` gained `IssueGatewayServerCertificate`** — a **serverAuth**
+   leaf for the Gateway's agent-facing TLS listener. The Enroll/Renew identity leaf
+   is `clientAuth` (exactly one EKU per leaf, by design), so it cannot serve TLS: an
+   Agent validating it as a server certificate would correctly reject it. Agents
+   must verify a Gateway against an anchor they already hold — the same internal
+   mTLS CA — rather than trust it on first use, so the Gateway needs a real
+   serverAuth leaf. **The CP, not the caller, chooses the SANs** (stamped from the
+   `gateway_identity` row), so a compromised Gateway cannot obtain a certificate for
+   a name it does not own. It carries **no generation counter** — it is not an
+   identity, it is a TLS credential derived from one; revocation is by locking the
+   `gateway_identity` (the CP then refuses to reissue and the leaf expires).
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
