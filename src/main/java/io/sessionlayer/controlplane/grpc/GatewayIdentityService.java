@@ -4,10 +4,14 @@ import com.google.protobuf.ByteString;
 import io.grpc.stub.StreamObserver;
 import io.sessionlayer.controlplane.gateway.GatewayEnrollmentService;
 import io.sessionlayer.controlplane.gateway.GatewayRenewalService;
+import io.sessionlayer.controlplane.gateway.GatewayServerCertificateService;
 import io.sessionlayer.controlplane.gateway.IssuedIdentity;
+import io.sessionlayer.controlplane.gateway.IssuedServerCertificate;
 import io.sessionlayer.controlplane.grpc.v1.EnrollGatewayRequest;
 import io.sessionlayer.controlplane.grpc.v1.EnrollGatewayResponse;
 import io.sessionlayer.controlplane.grpc.v1.GatewayIdentityGrpc;
+import io.sessionlayer.controlplane.grpc.v1.IssueGatewayServerCertificateRequest;
+import io.sessionlayer.controlplane.grpc.v1.IssueGatewayServerCertificateResponse;
 import io.sessionlayer.controlplane.grpc.v1.RenewGatewayIdentityRequest;
 import io.sessionlayer.controlplane.grpc.v1.RenewGatewayIdentityResponse;
 import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
@@ -18,23 +22,28 @@ import org.springframework.stereotype.Service;
 
 /**
  * gRPC server for {@code GatewayIdentity} (Part B): {@code EnrollGateway}
- * (bootstrap-tier, token-authenticated) and {@code RenewGatewayIdentity}
- * (mTLS-required; the caller is resolved by the {@link AuthInterceptor} into
- * the gRPC context). Both bridge the reactive services to the callback API
- * without blocking: the reactive chain runs off the gRPC thread and completes
- * the observer on its terminal signal.
+ * (bootstrap-tier, token-authenticated), {@code RenewGatewayIdentity} and
+ * {@code IssueGatewayServerCertificate} (both mTLS-required; the caller is
+ * resolved by the {@link AuthInterceptor} into the gRPC context — a call with
+ * no valid client certificate never reaches the handler, and an Agent peer
+ * resolves to a null {@code gatewayId} the service refuses). All three bridge
+ * the reactive services to the callback API without blocking: the reactive
+ * chain runs off the gRPC thread and completes the observer on its terminal
+ * signal.
  */
 @Service
 public class GatewayIdentityService extends GatewayIdentityGrpc.GatewayIdentityImplBase {
 
 	private final GatewayEnrollmentService enrollment;
 	private final GatewayRenewalService renewal;
+	private final GatewayServerCertificateService serverCertificates;
 	private final MtlsProperties properties;
 
 	public GatewayIdentityService(GatewayEnrollmentService enrollment, GatewayRenewalService renewal,
-			MtlsProperties properties) {
+			GatewayServerCertificateService serverCertificates, MtlsProperties properties) {
 		this.enrollment = enrollment;
 		this.renewal = renewal;
+		this.serverCertificates = serverCertificates;
 		this.properties = properties;
 	}
 
@@ -57,6 +66,24 @@ public class GatewayIdentityService extends GatewayIdentityGrpc.GatewayIdentityI
 				renewal.renew(peer.gatewayId(), presentedFingerprint, request.getPkcs10Csr().toByteArray(),
 						request.getCurrentGeneration()).map(GatewayIdentityService::toRenewResponse),
 				observer, properties.getRpcTimeout(), "RenewGatewayIdentity");
+	}
+
+	@Override
+	public void issueGatewayServerCertificate(IssueGatewayServerCertificateRequest request,
+			StreamObserver<IssueGatewayServerCertificateResponse> observer) {
+		MtlsPeer peer = MtlsContext.peer();
+		ReactiveBridge.forward(
+				serverCertificates.issue(peer.gatewayId(), request.getPkcs10Csr().toByteArray())
+						.map(GatewayIdentityService::toServerCertResponse),
+				observer, properties.getRpcTimeout(), "IssueGatewayServerCertificate");
+	}
+
+	private static IssueGatewayServerCertificateResponse toServerCertResponse(IssuedServerCertificate issued) {
+		return IssueGatewayServerCertificateResponse.newBuilder()
+				.setCertificate(ByteString.copyFrom(issued.certificate()))
+				.addAllCaChain(issued.caChain().stream().map(ByteString::copyFrom).toList())
+				.setGatewayName(issued.gatewayName()).setNotBeforeEpochSeconds(issued.notBeforeEpochSeconds())
+				.setNotAfterEpochSeconds(issued.notAfterEpochSeconds()).build();
 	}
 
 	private static EnrollGatewayResponse toEnrollResponse(IssuedIdentity issued) {
