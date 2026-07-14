@@ -102,6 +102,22 @@ Immediately after the TLS handshake, before any other frame, on **both** roles:
    its own range and closes — **fail closed** (FR-HA-9). The Agent MUST NOT
    retry with a guessed version.
 
+**Bounds on the negotiated parameters.** Both values in `HELLO_ACK` are
+normatively bounded, and **both peers MUST enforce the same range**:
+
+| Parameter | Range | Rationale |
+|---|---|---|
+| `heartbeat_interval_secs` | **1 – 300** | below 1 is a self-inflicted DoS; above 300 a dead peer goes undetected for too long |
+| `max_frame_bytes` | **4096 – 1048576** | must exceed the Gateway's inner-leg max packet (32 KiB default) with headroom, and bound per-connection memory |
+
+An Agent MUST refuse a `HELLO_ACK` proposing a value outside these ranges (a
+Gateway is not trusted to be correctly configured), and a Gateway MUST reject
+such a value **at startup** rather than at connect. The two checks are the same
+range seen from both ends: a Gateway that accepted an out-of-range value at
+startup would come up healthy and then be refused by every Agent in the fleet —
+a misconfiguration that fails to a silent fleet-wide outage instead of failing
+loudly at boot.
+
 The preface frames are sent with `VER = protocol_max.major` of the sender; every
 subsequent frame carries the **negotiated** major.
 
@@ -176,12 +192,24 @@ its reserved form.
      |<---------------- 0x32 STREAM_CLOSE ------------------->|
 ```
 
+**`DIAL_BACK_RESULT` is not sequenced.** The diagram above draws it early for
+readability; that is **not** normative ordering. The Agent sends exactly **one**
+result per `request_id`, **whenever the outcome becomes known** — which may be
+before it dials (`REFUSED`), or after `DIAL_BACK_ACCEPT` (`LOCAL_DIAL_FAILED`,
+which cannot be known any earlier). It is a **fast-fail hint, never a readiness
+signal**: readiness is proven only by `STREAM_OPEN` arriving on the dial-back
+connection. A Gateway MUST NOT block the dial-back path waiting for a result
+(the two connections are independent), and MUST NOT treat `accepted: true` as
+readiness. A result that arrives after the token is already consumed is a no-op.
+
 **Timeouts, all fail-closed.** If the dial-back does not reach `STREAM_OPEN`
 within `dial_back_timeout` (Gateway config), the Gateway abandons the pending
 entry, drops the token, and the connector fails → the user sees the §7.1
 post-authorization outcome **"target node is offline / unreachable"** (FR-SESS-5)
 — exactly what an agentless dial to a dead node yields. A node with no registered
-control channel fails the same way, immediately.
+control channel fails the same way, immediately. A failure the Agent reports
+early (or a `STREAM_CLOSE` where `STREAM_OPEN` was expected) MUST fail the
+connector **immediately**, without waiting out the timeout.
 
 **The splice target is not on the wire.** The Agent connects to its own
 locally-configured loopback address (`127.0.0.1:22` by default), which it
