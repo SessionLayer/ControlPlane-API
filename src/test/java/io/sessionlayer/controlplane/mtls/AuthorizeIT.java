@@ -169,6 +169,99 @@ class AuthorizeIT extends AbstractMtlsIT {
 				response.getSignedContext().toByteArray(), response.getSignature().toByteArray())).isTrue();
 	}
 
+	// ----- S16 Part A: name→id resolution (server-authoritative, §2.6/§11) -----
+
+	@Test
+	void resolvesTheNodeByNameAndAllows() throws Exception {
+		String identity = "alice-" + unique();
+		UUID nodeId = seedProdNode();
+		Node node = nodes.findById(nodeId).block();
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-byname-" + unique());
+		UUID sessionId = UUID.randomUUID();
+
+		AuthorizeResponse response = authorize(gateway,
+				requestByName(identity, node.name(), "deploy", "10.0.0.5", sessionId));
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		DecisionContext parsed = DecisionContext.parseFrom(response.getSignedContext());
+		assertThat(parsed.getNodeId()).isEqualTo(nodeId.toString());
+		assertThat(parsed.getNodeName()).isEqualTo(node.name());
+	}
+
+	@Test
+	void anUnknownNodeNameDeniesGenericallyWithoutDisclosure() {
+		String identity = "alice-" + unique();
+		EnrolledGateway gateway = enroll("gw-unkname-" + unique());
+
+		AuthorizeResponse response = authorize(gateway,
+				requestByName(identity, "no-such-node-" + unique(), "deploy", "10.0.0.5", UUID.randomUUID()));
+
+		// The SAME generic deny as any no-match — no existence disclosure (§7.1).
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_DENY);
+		assertThat(response.getSessionToken()).isEmpty();
+		assertThat(response.hasContext()).isFalse();
+	}
+
+	@Test
+	void theNodeNameWinsOverAConflictingNodeId() throws Exception {
+		String identity = "alice-" + unique();
+		UUID namedNodeId = seedProdNode();
+		UUID otherNodeId = seedProdNode(); // a different, also-prod node
+		Node named = nodes.findById(namedNodeId).block();
+		// The allow matches identity + env=prod; BOTH nodes are prod, so the outcome
+		// hinges purely on which node is resolved — the name must win over the id.
+		seedAllow(identity, namedNodeId, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-namewins-" + unique());
+		UUID sessionId = UUID.randomUUID();
+
+		AuthorizeRequest request = AuthorizeRequest.newBuilder().setIdentity(identity).setNodeName(named.name())
+				.setNodeId(otherNodeId.toString()).setRequestedPrincipal("deploy").setSourceIp("10.0.0.5")
+				.setSessionId(sessionId.toString()).build();
+		AuthorizeResponse response = authorize(gateway, request);
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		DecisionContext parsed = DecisionContext.parseFrom(response.getSignedContext());
+		// The resolved node is the NAMED one — the smuggled id was ignored.
+		assertThat(parsed.getNodeId()).isEqualTo(namedNodeId.toString());
+		assertThat(parsed.getNodeId()).isNotEqualTo(otherNodeId.toString());
+	}
+
+	// ----- S16 Part D: unavailable nodes are excluded from targeting (FR-NODE-3)
+	// -----
+
+	@Test
+	void aQuarantinedNodeDeniesGenerically() {
+		assertUnavailableNodeDenies("quarantined");
+	}
+
+	@Test
+	void aRemovedNodeDeniesGenerically() {
+		assertUnavailableNodeDenies("removed");
+	}
+
+	@Test
+	void aPendingNodeDeniesGenerically() {
+		assertUnavailableNodeDenies("pending");
+	}
+
+	private void assertUnavailableNodeDenies(String status) {
+		String identity = "alice-" + unique();
+		UUID nodeId = seedNodeWithStatus(status);
+		// A standing allow exists — only the node's status suppresses it (the status
+		// gate precedes rule evaluation), so this proves the exclusion, not a missing
+		// rule.
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-" + status + "-" + unique());
+
+		AuthorizeResponse response = authorize(gateway,
+				request(identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID()));
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_DENY);
+		assertThat(response.getSessionToken()).isEmpty();
+		assertThat(response.hasContext()).isFalse();
+	}
+
 	// ----- Part E: node connection + host-identity lookup (Design §9;
 	// FR-CONN-1/2/5/7) -----
 
@@ -313,6 +406,18 @@ class AuthorizeIT extends AbstractMtlsIT {
 			UUID sessionId) {
 		return AuthorizeRequest.newBuilder().setIdentity(identity).setNodeId(nodeId.toString())
 				.setRequestedPrincipal(principal).setSourceIp(sourceIp).setSessionId(sessionId.toString()).build();
+	}
+
+	private static AuthorizeRequest requestByName(String identity, String nodeName, String principal, String sourceIp,
+			UUID sessionId) {
+		return AuthorizeRequest.newBuilder().setIdentity(identity).setNodeName(nodeName)
+				.setRequestedPrincipal(principal).setSourceIp(sourceIp).setSessionId(sessionId.toString()).build();
+	}
+
+	private UUID seedNodeWithStatus(String status) {
+		ObjectNode labels = JSON.objectNode().put("env", "prod");
+		return nodes.save(Node.create("node-" + unique(), null, labels, "agent", status, "unknown", null, null))
+				.map(Node::id).block();
 	}
 
 	private UUID seedProdNode() {

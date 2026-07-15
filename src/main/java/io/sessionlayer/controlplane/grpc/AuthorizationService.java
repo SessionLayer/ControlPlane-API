@@ -51,10 +51,14 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		// allow
 		// subject to the Lock. The AUTHENTICATED caller is the mTLS peer, never a
 		// field.
-		Mono<AuthorizeResponse> result = authorization.authorize(caller, request.getIdentity(),
-				request.getIdentityGroupsList(), parseUuid(request.getNodeId()),
-				blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
-				parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()))
+		// node_name (field 9) is server-side authoritative when set: the CP resolves it
+		// via findByName and ignores node_id (§2.6/§11; closes
+		// F-ha-connect-nodename-1).
+		Mono<AuthorizeResponse> result = authorization
+				.authorize(caller, request.getIdentity(), request.getIdentityGroupsList(),
+						parseUuid(request.getNodeId()), blankToNull(request.getNodeName()),
+						blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
+						parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()))
 				.map(AuthorizationService::toResponse);
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "Authorize");
 	}

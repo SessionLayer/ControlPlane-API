@@ -144,15 +144,24 @@ public class ConnectAuthorizationService {
 	}
 
 	public Mono<ConnectDecision> authorize(UUID callerGatewayId, String identity, List<String> groups, UUID nodeId,
-			String requestedPrincipal, String sourceIp, UUID sessionId, String breakglassToken) {
-		// The connect decision requires a concrete authenticated caller, target node,
-		// session, resolved identity, and requested login — a blank one of any of these
-		// is meaningless and fails closed (never allow/mint on a subject-less probe).
-		if (callerGatewayId == null || nodeId == null || sessionId == null || isBlank(identity)
-				|| isBlank(requestedPrincipal)) {
+			String nodeName, String requestedPrincipal, String sourceIp, UUID sessionId, String breakglassToken) {
+		boolean hasName = !isBlank(nodeName);
+		// The connect decision requires a concrete authenticated caller, target,
+		// session, resolved identity, and requested login — the target is resolvable by
+		// NAME or by id. A blank one of these is meaningless and fails closed (never
+		// allow/mint on a subject-less probe).
+		if (callerGatewayId == null || sessionId == null || isBlank(identity) || isBlank(requestedPrincipal)
+				|| (!hasName && nodeId == null)) {
 			return denyMissingInput(callerGatewayId, identity, nodeId, sourceIp);
 		}
-		return nodes.findById(nodeId)
+		// §2.6/§11 (FR-ADDR-1): name resolution is server-side AUTHORITATIVE — when a
+		// name is present the CP resolves it via findByName and IGNORES any
+		// client-asserted node_id, so a client can never smuggle an id past the
+		// resolved
+		// name. An unknown name yields the SAME generic node_unknown deny as any other
+		// no-match (no existence disclosure, §7.1).
+		Mono<Node> resolved = hasName ? nodes.findByName(nodeName) : nodes.findById(nodeId);
+		return resolved
 				.flatMap(node -> decide(callerGatewayId, identity, groups, node, requestedPrincipal, sourceIp,
 						sessionId, breakglassToken))
 				.switchIfEmpty(auditDeny(callerGatewayId, identity, nodeId, sourceIp,
@@ -167,6 +176,18 @@ public class ConnectAuthorizationService {
 
 	private Mono<ConnectDecision> decide(UUID callerGatewayId, String identity, List<String> groups, Node node,
 			String requestedPrincipal, String sourceIp, UUID sessionId, String breakglassToken) {
+		// Part D (FR-NODE-3): only an ACTIVE node is a valid target. A pending /
+		// quarantined / removed node is denied with the SAME generic deny as an unknown
+		// node (non-disclosure, §7.1); the specific status is recorded server-side.
+		// This
+		// gate precedes the break-glass path too — a non-active node is unreachable
+		// even
+		// via break-glass (belt; a quarantine Lock is the suspenders).
+		if (!"active".equals(node.status())) {
+			return auditDeny(callerGatewayId, identity, node.id(), sourceIp,
+					DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null),
+					"node_" + node.status()).thenReturn(ConnectDecision.denied());
+		}
 		Mono<Long> epochMono = policyEpochs.findSingleton().map(e -> e.epoch()).defaultIfEmpty(0L);
 		Mono<String> gwNameMono = gatewayIdentities.findById(callerGatewayId).map(g -> g.name())
 				.defaultIfEmpty("unknown");
