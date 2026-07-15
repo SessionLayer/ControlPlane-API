@@ -155,27 +155,30 @@ abstract class AbstractMtlsIT {
 		}
 	}
 
-	/** {@code Presence.Heartbeat} as {@code gateway} (owner = the mTLS peer). */
-	protected PresenceHeartbeatResponse presenceHeartbeat(EnrolledGateway gateway, UUID nodeId, String gatewayAddr) {
+	/**
+	 * {@code Presence.Heartbeat} as {@code gateway}, addressing the node by name.
+	 */
+	protected PresenceHeartbeatResponse presenceHeartbeat(EnrolledGateway gateway, String nodeName,
+			String gatewayAddr) {
 		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), gateway.certificate(),
 				gateway.keyPair().getPrivate());
 		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
 		try {
-			return PresenceGrpc.newBlockingStub(channel).heartbeat(PresenceHeartbeatRequest.newBuilder()
-					.setNodeId(nodeId.toString()).setGatewayAddr(gatewayAddr).build());
+			return PresenceGrpc.newBlockingStub(channel).heartbeat(
+					PresenceHeartbeatRequest.newBuilder().setNodeName(nodeName).setGatewayAddr(gatewayAddr).build());
 		} finally {
 			shutdown(channel);
 		}
 	}
 
-	/** {@code Presence.Release} as {@code gateway}. */
-	protected PresenceReleaseResponse presenceRelease(EnrolledGateway gateway, UUID nodeId) {
+	/** {@code Presence.Release} as {@code gateway}, addressing the node by name. */
+	protected PresenceReleaseResponse presenceRelease(EnrolledGateway gateway, String nodeName) {
 		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), gateway.certificate(),
 				gateway.keyPair().getPrivate());
 		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
 		try {
 			return PresenceGrpc.newBlockingStub(channel)
-					.release(PresenceReleaseRequest.newBuilder().setNodeId(nodeId.toString()).build());
+					.release(PresenceReleaseRequest.newBuilder().setNodeName(nodeName).build());
 		} finally {
 			shutdown(channel);
 		}

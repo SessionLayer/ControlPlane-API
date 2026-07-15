@@ -33,11 +33,14 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The HA ownership WRITE path over the real mTLS gRPC surface (Design
- * §10.2/§10.3; FR-HA-2/5). Each test seeds its own node (presence is keyed by
- * node_id) so the shared Postgres never cross-contaminates. The owner is always
- * the authenticated mTLS peer's {@code gateway_identity.name} — the request
- * carries only node_id + gateway_addr, never an owner — and the monotonic nonce
- * fences a superseded owner out.
+ * §10.2/§10.3; FR-HA-2/5). The Gateway addresses the node by its enrollment
+ * NAME (it has no DB — it knows nodes only by the dNSName SAN of each agent's
+ * cert); the CP resolves that to the UUID that keys runtime.presence. Tests use
+ * REAL human names ("web-...") so a regression to UUID-only parsing is caught.
+ * The owner is always the authenticated mTLS peer's
+ * {@code gateway_identity.name} — the request carries only node_name +
+ * gateway_addr, never an owner — and the monotonic nonce fences a superseded
+ * owner out.
  */
 class PresenceServiceIT extends AbstractMtlsIT {
 
@@ -51,12 +54,12 @@ class PresenceServiceIT extends AbstractMtlsIT {
 	private PresenceRepository presences;
 
 	@Test
-	void heartbeatOnAnEmptyRowClaimsWithTheAuthenticatedPeerAsOwner() {
+	void heartbeatByNameClaimsAndWritesARowKeyedByTheNodeUuid() {
 		String nameA = "gw-pres-a-" + unique();
 		EnrolledGateway gwA = enroll(nameA);
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, nodeId, ADDR_A);
+		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, node.name(), ADDR_A);
 
 		// The owner is derived from the AUTHENTICATED peer (its gateway_identity.name),
 		// never anything in the request (which carries no owner at all).
@@ -66,16 +69,24 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		assertThat(claim.getNonce()).isEqualTo(1L);
 		assertThat(claim.getNonceId()).isNotBlank();
 		assertThat(claim.getLastSeenEpochMs()).isPositive();
+
+		// The heartbeat-by-NAME resolved to the node's UUID and wrote the presence row
+		// there (the FK is intact) — this is the regression guard for the name-vs-UUID
+		// routing bug: a UUID-only parse would have written nothing.
+		Presence row = presences.findById(node.id()).block();
+		assertThat(row).isNotNull();
+		assertThat(row.owningGateway()).isEqualTo(nameA);
+		assertThat(row.nonceId().toString()).isEqualTo(claim.getNonceId());
 	}
 
 	@Test
 	void ownerRefreshKeepsTheSameNonceAndNonceId() {
 		String nameA = "gw-pres-ref-" + unique();
 		EnrolledGateway gwA = enroll(nameA);
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, nodeId, ADDR_A);
-		PresenceHeartbeatResponse refresh = presenceHeartbeat(gwA, nodeId, ADDR_A);
+		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, node.name(), ADDR_A);
+		PresenceHeartbeatResponse refresh = presenceHeartbeat(gwA, node.name(), ADDR_A);
 
 		assertThat(refresh.getIsSelfOwner()).isTrue();
 		assertThat(refresh.getOwningGatewayId()).isEqualTo(nameA);
@@ -89,10 +100,10 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		String nameA = "gw-pres-own-" + unique();
 		EnrolledGateway gwA = enroll(nameA);
 		EnrolledGateway gwB = enroll("gw-pres-sby-" + unique());
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, nodeId, ADDR_A);
-		PresenceHeartbeatResponse standby = presenceHeartbeat(gwB, nodeId, ADDR_B);
+		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, node.name(), ADDR_A);
+		PresenceHeartbeatResponse standby = presenceHeartbeat(gwB, node.name(), ADDR_B);
 
 		// gwA is still fresh, so gwB is a warm standby: no write, authoritative owner
 		// returned unchanged (same nonce/nonce_id/addr), is_self_owner=false.
@@ -108,11 +119,11 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		EnrolledGateway gwA = enroll("gw-pres-stale-a-" + unique());
 		String nameB = "gw-pres-stale-b-" + unique();
 		EnrolledGateway gwB = enroll(nameB);
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, nodeId, ADDR_A);
-		ageOwnerStale(nodeId);
-		PresenceHeartbeatResponse takeover = presenceHeartbeat(gwB, nodeId, ADDR_B);
+		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, node.name(), ADDR_A);
+		ageOwnerStale(node.id());
+		PresenceHeartbeatResponse takeover = presenceHeartbeat(gwB, node.name(), ADDR_B);
 
 		assertThat(takeover.getIsSelfOwner()).isTrue();
 		assertThat(takeover.getOwningGatewayId()).isEqualTo(nameB);
@@ -127,16 +138,16 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		EnrolledGateway gwA = enroll(nameA);
 		String nameB = "gw-pres-fence-b-" + unique();
 		EnrolledGateway gwB = enroll(nameB);
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		presenceHeartbeat(gwA, nodeId, ADDR_A);
-		ageOwnerStale(nodeId);
-		PresenceHeartbeatResponse takeover = presenceHeartbeat(gwB, nodeId, ADDR_B);
+		presenceHeartbeat(gwA, node.name(), ADDR_A);
+		ageOwnerStale(node.id());
+		PresenceHeartbeatResponse takeover = presenceHeartbeat(gwB, node.name(), ADDR_B);
 
 		// The partitioned old owner returns and heartbeats: the row now names gwB at a
 		// higher nonce and gwB is fresh, so gwA is fenced out (standby) — it can never
 		// reclaim with its stale view, and it learns the advanced nonce (FR-HA-5).
-		PresenceHeartbeatResponse fenced = presenceHeartbeat(gwA, nodeId, ADDR_A);
+		PresenceHeartbeatResponse fenced = presenceHeartbeat(gwA, node.name(), ADDR_A);
 		assertThat(fenced.getIsSelfOwner()).isFalse();
 		assertThat(fenced.getOwningGatewayId()).isEqualTo(nameB);
 		assertThat(fenced.getNonce()).isEqualTo(takeover.getNonce());
@@ -145,42 +156,53 @@ class PresenceServiceIT extends AbstractMtlsIT {
 	@Test
 	void theMonotonicTriggerRejectsALowerNonceWrite() {
 		EnrolledGateway gwA = enroll("gw-pres-mono-" + unique());
-		UUID nodeId = seedAgentNode();
-		presenceHeartbeat(gwA, nodeId, ADDR_A); // nonce = 1
+		Node node = seedAgentNode();
+		presenceHeartbeat(gwA, node.name(), ADDR_A); // nonce = 1
 
 		// The fencing token the service relies on: any write that LOWERS the nonce is
 		// refused at the DB (a stale/duplicated re-claim can never rewind ownership).
-		assertThatThrownBy(() -> db.sql("UPDATE runtime.presence SET nonce = 0 WHERE node_id = :id").bind("id", nodeId)
-				.fetch().rowsUpdated().block()).isInstanceOf(Exception.class);
+		assertThatThrownBy(() -> db.sql("UPDATE runtime.presence SET nonce = 0 WHERE node_id = :id")
+				.bind("id", node.id()).fetch().rowsUpdated().block()).isInstanceOf(Exception.class);
+	}
+
+	@Test
+	void anUnknownNodeNameFailsClosed() {
+		EnrolledGateway gwA = enroll("gw-pres-unknown-" + unique());
+
+		// The Gateway can only own a node the CP knows: an unregistered/deleted name
+		// resolves to nothing → fail closed, no presence row (never TOFU a node).
+		StatusRuntimeException refused = catchThrowableOfType(StatusRuntimeException.class,
+				() -> presenceHeartbeat(gwA, "no-such-node-" + unique(), ADDR_A));
+		assertThat(refused.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
 	}
 
 	@Test
 	void anAgentAuthenticatedPeerCannotClaimOwnership() {
 		// The interceptor authenticates an agent cert (it is a valid principal), but a
 		// non-Gateway peer must not own a node — the handler fails closed (FR-HA-2).
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 		KeyPair agentKey = MtlsTestSupport.generateEcKeyPair();
 		X509Certificate agentCert = agentClientCert(agentKey.getPublic(), UUID.randomUUID());
 
 		StatusRuntimeException refused = catchThrowableOfType(StatusRuntimeException.class,
-				() -> heartbeatWithCert(agentCert, agentKey.getPrivate(), nodeId, ADDR_A));
+				() -> heartbeatWithCert(agentCert, agentKey.getPrivate(), node.name(), ADDR_A));
 		assertThat(refused.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
 		// No ownership was recorded (the write never ran).
-		assertThat(presences.findById(nodeId).block()).isNull();
+		assertThat(presences.findById(node.id()).block()).isNull();
 	}
 
 	@Test
 	void aLockedGatewayCannotClaimOwnership() {
 		EnrolledGateway gwA = enroll("gw-pres-locked-" + unique());
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 		lockGateway(gwA);
 
 		// A locked Gateway is a non-active principal: it may not acquire ownership
 		// (same gate SignSessionCertificate / RenewGatewayIdentity apply).
 		StatusRuntimeException refused = catchThrowableOfType(StatusRuntimeException.class,
-				() -> presenceHeartbeat(gwA, nodeId, ADDR_A));
+				() -> presenceHeartbeat(gwA, node.name(), ADDR_A));
 		assertThat(refused.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
-		assertThat(presences.findById(nodeId).block()).isNull();
+		assertThat(presences.findById(node.id()).block()).isNull();
 	}
 
 	@Test
@@ -188,15 +210,15 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		EnrolledGateway gwA = enroll("gw-pres-rel-a-" + unique());
 		String nameB = "gw-pres-rel-b-" + unique();
 		EnrolledGateway gwB = enroll(nameB);
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, nodeId, ADDR_A);
-		PresenceReleaseResponse release = presenceRelease(gwA, nodeId);
+		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, node.name(), ADDR_A);
+		PresenceReleaseResponse release = presenceRelease(gwA, node.name());
 		assertThat(release.getReleased()).isTrue();
 
 		// gwA relinquished, so gwB claims on its very next heartbeat even though gwA
 		// was fresh a moment ago (the planned-drain failover window is closed).
-		PresenceHeartbeatResponse takeover = presenceHeartbeat(gwB, nodeId, ADDR_B);
+		PresenceHeartbeatResponse takeover = presenceHeartbeat(gwB, node.name(), ADDR_B);
 		assertThat(takeover.getIsSelfOwner()).isTrue();
 		assertThat(takeover.getOwningGatewayId()).isEqualTo(nameB);
 		assertThat(takeover.getNonce()).isEqualTo(claim.getNonce() + 1);
@@ -207,14 +229,14 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		String nameA = "gw-pres-noop-a-" + unique();
 		EnrolledGateway gwA = enroll(nameA);
 		EnrolledGateway gwB = enroll("gw-pres-noop-b-" + unique());
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		presenceHeartbeat(gwA, nodeId, ADDR_A);
-		PresenceReleaseResponse release = presenceRelease(gwB, nodeId);
+		presenceHeartbeat(gwA, node.name(), ADDR_A);
+		PresenceReleaseResponse release = presenceRelease(gwB, node.name());
 		assertThat(release.getReleased()).isFalse();
 
 		// gwA still owns (its refresh keeps the same nonce; the row was untouched).
-		PresenceHeartbeatResponse refresh = presenceHeartbeat(gwA, nodeId, ADDR_A);
+		PresenceHeartbeatResponse refresh = presenceHeartbeat(gwA, node.name(), ADDR_A);
 		assertThat(refresh.getIsSelfOwner()).isTrue();
 		assertThat(refresh.getOwningGatewayId()).isEqualTo(nameA);
 		assertThat(refresh.getNonce()).isEqualTo(1L);
@@ -224,13 +246,13 @@ class PresenceServiceIT extends AbstractMtlsIT {
 	void presenceIsDurableInPostgresAcrossACpRestart() {
 		String nameA = "gw-pres-durable-" + unique();
 		EnrolledGateway gwA = enroll(nameA);
-		UUID nodeId = seedAgentNode();
+		Node node = seedAgentNode();
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, nodeId, ADDR_A);
+		PresenceHeartbeatResponse claim = presenceHeartbeat(gwA, node.name(), ADDR_A);
 
 		// Presence lives in Postgres, not in-process memory: a freshly (re)started CP
 		// reads the exact same authoritative row. Read it back straight from the store.
-		Presence persisted = presences.findById(nodeId).block();
+		Presence persisted = presences.findById(node.id()).block();
 		assertThat(persisted).isNotNull();
 		assertThat(persisted.owningGateway()).isEqualTo(nameA);
 		assertThat(persisted.gatewayAddr()).isEqualTo(ADDR_A);
@@ -260,22 +282,22 @@ class PresenceServiceIT extends AbstractMtlsIT {
 						Instant.now().plusSeconds(3600)));
 	}
 
-	private PresenceHeartbeatResponse heartbeatWithCert(X509Certificate clientCert, PrivateKey clientKey, UUID nodeId,
-			String gatewayAddr) {
+	private PresenceHeartbeatResponse heartbeatWithCert(X509Certificate clientCert, PrivateKey clientKey,
+			String nodeName, String gatewayAddr) {
 		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), clientCert, clientKey);
 		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
 		try {
-			return PresenceGrpc.newBlockingStub(channel).heartbeat(PresenceHeartbeatRequest.newBuilder()
-					.setNodeId(nodeId.toString()).setGatewayAddr(gatewayAddr).build());
+			return PresenceGrpc.newBlockingStub(channel).heartbeat(
+					PresenceHeartbeatRequest.newBuilder().setNodeName(nodeName).setGatewayAddr(gatewayAddr).build());
 		} finally {
 			shutdown(channel);
 		}
 	}
 
-	private UUID seedAgentNode() {
+	private Node seedAgentNode() {
 		ObjectNode labels = JSON.objectNode().put("env", "prod");
-		return nodes.save(Node.create("node-" + unique(), null, labels, "agent", "active", "healthy", null, null))
-				.map(Node::id).block();
+		return nodes.save(Node.create("web-" + unique(), null, labels, "agent", "active", "healthy", null, null))
+				.block();
 	}
 
 	private static String unique() {

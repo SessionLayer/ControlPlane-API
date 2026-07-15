@@ -27,7 +27,9 @@ import tools.jackson.databind.node.ObjectNode;
  * FR-HA-2/4/5): the ALLOW {@code NodeConnection} carries the presence owner
  * ONLY for an outbound-agent node with a FRESH owner. A stale/absent owner, or
  * an agentless node, leaves the owner fields empty so the ingress Gateway fails
- * closed to "node offline" (the anti-stale + no-TOFU-of-liveness posture).
+ * closed to "node offline" (the anti-stale + no-TOFU-of-liveness posture). The
+ * owner is written by a heartbeat addressing the node by NAME; the read still
+ * keys presence by the node UUID that Authorize resolves.
  */
 class AuthorizeOwnerRoutingIT extends AbstractMtlsIT {
 
@@ -41,15 +43,15 @@ class AuthorizeOwnerRoutingIT extends AbstractMtlsIT {
 	@Test
 	void agentNodeWithAFreshOwnerCarriesTheOwnerFields() {
 		String identity = "alice-" + unique();
-		UUID nodeId = seedAgentNode();
-		seedAllow(identity, nodeId);
+		Node node = seedAgentNode();
+		seedAllow(identity, node.id());
 		String ownerName = "gw-owner-" + unique();
 		EnrolledGateway owner = enroll(ownerName);
 		EnrolledGateway ingress = enroll("gw-ingress-" + unique());
 
-		PresenceHeartbeatResponse claim = presenceHeartbeat(owner, nodeId, "10.9.5.5:7000");
+		PresenceHeartbeatResponse claim = presenceHeartbeat(owner, node.name(), "10.9.5.5:7000");
 
-		NodeConnection connection = authorizeConnection(ingress, identity, nodeId);
+		NodeConnection connection = authorizeConnection(ingress, identity, node.id());
 		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_OUTBOUND_AGENT);
 		// The routing answer mirrors the fresh presence owner (the WRITE path above):
 		// the owner's gateway_identity.name is the HA routing key the ingress compares.
@@ -62,15 +64,15 @@ class AuthorizeOwnerRoutingIT extends AbstractMtlsIT {
 	@Test
 	void agentNodeWithAStaleOwnerLeavesTheOwnerFieldsEmpty() {
 		String identity = "bob-" + unique();
-		UUID nodeId = seedAgentNode();
-		seedAllow(identity, nodeId);
+		Node node = seedAgentNode();
+		seedAllow(identity, node.id());
 		EnrolledGateway owner = enroll("gw-stale-owner-" + unique());
 		EnrolledGateway ingress = enroll("gw-stale-ingress-" + unique());
 
-		presenceHeartbeat(owner, nodeId, "10.9.6.6:7000");
-		ageOwnerStale(nodeId);
+		presenceHeartbeat(owner, node.name(), "10.9.6.6:7000");
+		ageOwnerStale(node.id());
 
-		NodeConnection connection = authorizeConnection(ingress, identity, nodeId);
+		NodeConnection connection = authorizeConnection(ingress, identity, node.id());
 		// A stale owner reads as "no live Gateway holds the agent channel" → empty.
 		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_OUTBOUND_AGENT);
 		assertThat(connection.getOwningGatewayId()).isEmpty();
@@ -82,11 +84,11 @@ class AuthorizeOwnerRoutingIT extends AbstractMtlsIT {
 	@Test
 	void agentNodeWithNoPresenceRowLeavesTheOwnerFieldsEmpty() {
 		String identity = "carol-" + unique();
-		UUID nodeId = seedAgentNode();
-		seedAllow(identity, nodeId);
+		Node node = seedAgentNode();
+		seedAllow(identity, node.id());
 		EnrolledGateway ingress = enroll("gw-noowner-" + unique());
 
-		NodeConnection connection = authorizeConnection(ingress, identity, nodeId);
+		NodeConnection connection = authorizeConnection(ingress, identity, node.id());
 		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_OUTBOUND_AGENT);
 		assertThat(connection.getOwningGatewayId()).isEmpty();
 		assertThat(connection.getOwnerNonce()).isZero();
@@ -95,17 +97,17 @@ class AuthorizeOwnerRoutingIT extends AbstractMtlsIT {
 	@Test
 	void agentlessNodeNeverCarriesOwnerFieldsEvenWithAPresenceRow() {
 		String identity = "dave-" + unique();
-		UUID nodeId = seedAgentlessNode("10.0.0.5");
-		seedAllow(identity, nodeId);
+		Node node = seedAgentlessNode("10.0.0.5");
+		seedAllow(identity, node.id());
 		EnrolledGateway owner = enroll("gw-agentless-owner-" + unique());
 		EnrolledGateway ingress = enroll("gw-agentless-ingress-" + unique());
 
 		// Even if a presence row exists, an agentless node has no ownership routing —
 		// any Gateway dials it directly (S8 path unchanged), so owner fields stay
 		// empty.
-		presenceHeartbeat(owner, nodeId, "10.9.7.7:7000");
+		presenceHeartbeat(owner, node.name(), "10.9.7.7:7000");
 
-		NodeConnection connection = authorizeConnection(ingress, identity, nodeId);
+		NodeConnection connection = authorizeConnection(ingress, identity, node.id());
 		assertThat(connection.getConnectorKind()).isEqualTo(ConnectorKind.CONNECTOR_KIND_AGENTLESS);
 		assertThat(connection.getOwningGatewayId()).isEmpty();
 		assertThat(connection.getOwnerNonce()).isZero();
@@ -133,17 +135,17 @@ class AuthorizeOwnerRoutingIT extends AbstractMtlsIT {
 		assertThat(updated).isEqualTo(1L);
 	}
 
-	private UUID seedAgentNode() {
+	private Node seedAgentNode() {
 		ObjectNode labels = JSON.objectNode().put("env", "prod");
-		return nodes.save(Node.create("node-" + unique(), null, labels, "agent", "active", "healthy", null, null))
-				.map(Node::id).block();
+		return nodes.save(Node.create("web-" + unique(), null, labels, "agent", "active", "healthy", null, null))
+				.block();
 	}
 
-	private UUID seedAgentlessNode(String address) {
+	private Node seedAgentlessNode(String address) {
 		ObjectNode labels = JSON.objectNode().put("env", "prod");
 		return nodes
-				.save(Node.create("node-" + unique(), null, labels, "agentless", "active", "healthy", null, address))
-				.map(Node::id).block();
+				.save(Node.create("host-" + unique(), null, labels, "agentless", "active", "healthy", null, address))
+				.block();
 	}
 
 	private void seedAllow(String identity, UUID nodeId) {

@@ -2,6 +2,8 @@ package io.sessionlayer.controlplane.grpc;
 
 import io.grpc.stub.StreamObserver;
 import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
+import io.sessionlayer.controlplane.data.runtime.Node;
+import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.Presence;
 import io.sessionlayer.controlplane.data.runtime.PresenceRepository;
 import io.sessionlayer.controlplane.gateway.GatewayRequestException;
@@ -31,6 +33,13 @@ import reactor.core.publisher.Mono;
  * {@code GrpcMtlsServer}.
  *
  * <p>
+ * The request addresses the node by its stable enrollment <b>name</b>, not its
+ * id: the Gateway has no database and knows its owned nodes only by the name it
+ * reads from each agent certificate's dNSName SAN. The CP resolves the name to
+ * the {@code runtime.node} id that keys {@code runtime.presence} (the FK is
+ * intact — presence stays UUID-keyed); an unknown name fails closed.
+ *
+ * <p>
  * Ownership is recorded and returned as the owner's
  * {@code gateway_identity.name}, resolved from the authenticated
  * {@code gatewayId}. The name — not the id — is the routing/relay key the rest
@@ -52,14 +61,17 @@ import reactor.core.publisher.Mono;
 public class PresenceService extends PresenceGrpc.PresenceImplBase {
 
 	private final PresenceRepository presence;
+	private final NodeRepository nodes;
 	private final GatewayIdentityRepository gatewayIdentities;
 	private final HaProperties haProperties;
 	private final MtlsProperties mtlsProperties;
 	private final TransactionalOperator tx;
 
-	public PresenceService(PresenceRepository presence, GatewayIdentityRepository gatewayIdentities,
-			HaProperties haProperties, MtlsProperties mtlsProperties, TransactionalOperator tx) {
+	public PresenceService(PresenceRepository presence, NodeRepository nodes,
+			GatewayIdentityRepository gatewayIdentities, HaProperties haProperties, MtlsProperties mtlsProperties,
+			TransactionalOperator tx) {
 		this.presence = presence;
+		this.nodes = nodes;
 		this.gatewayIdentities = gatewayIdentities;
 		this.haProperties = haProperties;
 		this.mtlsProperties = mtlsProperties;
@@ -71,35 +83,34 @@ public class PresenceService extends PresenceGrpc.PresenceImplBase {
 		// Read the authenticated peer on the gRPC handler thread (the Context is not
 		// carried onto the reactive schedulers), exactly as AuthorizationService does.
 		UUID caller = MtlsContext.peer().gatewayId();
-		Mono<PresenceHeartbeatResponse> result = heartbeat(caller, request.getNodeId(), request.getGatewayAddr());
+		Mono<PresenceHeartbeatResponse> result = heartbeat(caller, request.getNodeName(), request.getGatewayAddr());
 		ReactiveBridge.forward(result, observer, mtlsProperties.getRpcTimeout(), "Presence.Heartbeat");
 	}
 
 	@Override
 	public void release(PresenceReleaseRequest request, StreamObserver<PresenceReleaseResponse> observer) {
 		UUID caller = MtlsContext.peer().gatewayId();
-		Mono<PresenceReleaseResponse> result = release(caller, request.getNodeId());
+		Mono<PresenceReleaseResponse> result = release(caller, request.getNodeName());
 		ReactiveBridge.forward(result, observer, mtlsProperties.getRpcTimeout(), "Presence.Release");
 	}
 
-	private Mono<PresenceHeartbeatResponse> heartbeat(UUID caller, String nodeIdField, String gatewayAddr) {
+	private Mono<PresenceHeartbeatResponse> heartbeat(UUID caller, String nodeName, String gatewayAddr) {
 		if (caller == null) {
 			// A non-Gateway (e.g. agent) mTLS peer cannot own a node — fail closed.
 			return Mono.error(new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED,
 					"gateway identity required"));
 		}
-		UUID nodeId = parseUuid(nodeIdField);
-		if (nodeId == null) {
+		if (isBlank(nodeName)) {
 			return Mono.error(
-					new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT, "invalid node id"));
+					new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT, "node name required"));
 		}
-		if (gatewayAddr == null || gatewayAddr.isBlank()) {
+		if (isBlank(gatewayAddr)) {
 			// gateway_addr is NOT NULL and is what a peer ingress is told to expect the
 			// relay dial-back from; a claim without one is meaningless.
 			return Mono.error(new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT,
 					"gateway address required"));
 		}
-		return ownerName(caller).flatMap(owner -> {
+		return ownerName(caller).flatMap(owner -> resolveNodeId(nodeName).flatMap(nodeId -> {
 			Instant now = Instant.now();
 			Instant staleBefore = now.minus(haProperties.getPresenceStaleness());
 
@@ -121,20 +132,19 @@ public class PresenceService extends PresenceGrpc.PresenceImplBase {
 					// owner"). Never retry a lower-nonce write (FR-HA-5).
 					.onErrorMap(PresenceService::isContention, contended -> contention())
 					.map(state -> toResponse(state, owner));
-		});
+		}));
 	}
 
-	private Mono<PresenceReleaseResponse> release(UUID caller, String nodeIdField) {
+	private Mono<PresenceReleaseResponse> release(UUID caller, String nodeName) {
 		if (caller == null) {
 			return Mono.error(new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED,
 					"gateway identity required"));
 		}
-		UUID nodeId = parseUuid(nodeIdField);
-		if (nodeId == null) {
+		if (isBlank(nodeName)) {
 			return Mono.error(
-					new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT, "invalid node id"));
+					new GatewayRequestException(GatewayRequestException.Reason.INVALID_ARGUMENT, "node name required"));
 		}
-		return ownerName(caller).flatMap(owner -> {
+		return ownerName(caller).flatMap(owner -> resolveNodeId(nodeName).flatMap(nodeId -> {
 			Mono<Boolean> released = presence.findById(nodeId).flatMap(existing -> {
 				if (!owner.equals(existing.owningGateway())) {
 					return Mono.just(false); // idempotent no-op: caller is not the recorded owner
@@ -156,7 +166,19 @@ public class PresenceService extends PresenceGrpc.PresenceImplBase {
 					// owns it), so report not-released — fail-safe and truthful.
 					.onErrorResume(PresenceService::isContention, contended -> Mono.just(false))
 					.map(done -> PresenceReleaseResponse.newBuilder().setReleased(done).build());
-		});
+		}));
+	}
+
+	// The Gateway addresses a node by its stable enrollment NAME (it holds the
+	// agent
+	// channel keyed by the name it read from that agent cert's dNSName SAN; it has
+	// no
+	// DB). Resolve it to the runtime.node id that keys runtime.presence. An unknown
+	// name fails closed — no such node, so no ownership is written (never TOFU a
+	// node).
+	private Mono<UUID> resolveNodeId(String nodeName) {
+		return nodes.findByName(nodeName).map(Node::id).switchIfEmpty(Mono
+				.error(new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED, "unknown node")));
 	}
 
 	// The owner is the AUTHENTICATED peer's gateway_identity.name (the HA routing
@@ -210,14 +232,7 @@ public class PresenceService extends PresenceGrpc.PresenceImplBase {
 		return error instanceof OptimisticLockingFailureException || error instanceof DataIntegrityViolationException;
 	}
 
-	private static UUID parseUuid(String value) {
-		if (value == null || value.isBlank()) {
-			return null;
-		}
-		try {
-			return UUID.fromString(value);
-		} catch (IllegalArgumentException notAUuid) {
-			return null;
-		}
+	private static boolean isBlank(String value) {
+		return value == null || value.isBlank();
 	}
 }
