@@ -82,9 +82,17 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		info.expectedPrincipals().forEach(verification::addExpectedHostPrincipals);
 		info.pinnedHostKeys().forEach(key -> verification.addPinnedHostKeys(ByteString.copyFrom(key)));
 		info.hostCertificates().forEach(cert -> verification.addHostCertificates(ByteString.copyFrom(cert)));
-		return NodeConnection.newBuilder().setConnectorKind(connectorKind(info.connectorKind()))
-				.setNodeName(info.nodeName()).setDialAddress(info.dialAddress())
-				.setHostVerification(verification.build()).build();
+		NodeConnection.Builder builder = NodeConnection.newBuilder()
+				.setConnectorKind(connectorKind(info.connectorKind())).setNodeName(info.nodeName())
+				.setDialAddress(info.dialAddress()).setHostVerification(verification.build());
+		// HA owner fields ride only when a fresh presence owner exists (agent nodes);
+		// empty otherwise so the ingress Gateway fails closed to "node offline"
+		// (§10.2).
+		if (info.hasOwner()) {
+			builder.setOwningGatewayId(info.owningGatewayId()).setOwningGatewayAddr(info.owningGatewayAddr())
+					.setOwnerNonce(info.ownerNonce()).setOwnerNonceId(info.ownerNonceId());
+		}
+		return builder.build();
 	}
 
 	private static ConnectorKind connectorKind(NodeConnectionInfo.ConnectorModel model) {
