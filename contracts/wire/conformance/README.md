@@ -57,3 +57,33 @@ oversized case is rejected **at the length header, without buffering the body**.
 
 A reference consumer test (portable Rust, drop into each repo's `tests/`) lives
 in [`consumer-test.rs.txt`](./consumer-test.rs.txt).
+
+## How the cross-repo wire tests run (the two tiers)
+
+The wire is proven at two tiers, split so the cheap deterministic checks live in
+every repo's own CI and the expensive real-binary run stays out of it:
+
+**Tier 1 — per-repo conformance (this directory).** `frames.json` +
+`negotiation-vectors.md` are vendored into the Gateway and Agent repos (via each
+`scripts/sync-contracts.sh`, alongside the protos) and run in each repo's `gate`
+job as `tests/wire_conformance.rs` (from `consumer-test.rs.txt`). No peer binary,
+no network, no Docker — a repo catches its **own** wire/codec drift (the S14
+`F-wireversion-1` class) before it ever reaches a cross-repo run. Same golden
+bytes on both sides is the mechanically-enforced contract.
+
+**Tier 2 — cross-repo real-two-binary E2E (`scripts/ha-e2e.sh`).** The HA relay
+path can only be proven with real binaries talking to each other, so it is **not**
+part of any per-repo CI — a repo's CI checks out that repo alone and has no
+sibling binary. It is a parent-level orchestration invoked with `make ha-e2e`: a
+real CP jar + two real Gateways (gw-A ingress / gw-B owner) + a real Agent +
+Postgres + NATS + target-sshd + an ssh client, asserting the command runs across
+the gw-A→gw-B relay, the ingress owns the recording, no session bytes touch the
+coordination bus (§0 anti-requirement), and NFR-1 (kill the owner) re-routes a new
+session instead of hanging. It needs all three binaries, so it runs on demand for
+release evidence (RESULT), not on push; `preflight()` exits BLOCKED (3) with no
+side effects until `GW_A_CMD` / `GW_B_CMD` / `AGENT_CMD` are supplied.
+
+The parent `SessionLayer/` folder is intentionally not a git repo, so
+`scripts/ha-e2e.sh` and the parent `Makefile` are not version-controlled — **this
+file is the durable record** of how the cross-repo run is wired and what it
+proves.
