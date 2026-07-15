@@ -35,6 +35,12 @@ servers:
 tags:
   - name: meta
     description: Liveness, readiness, and version metadata probes. Public and unauthenticated.
+  - name: nodes
+    description: >-
+      Node lifecycle — agentless enrollment, listing, quarantine (an S10 Lock),
+      and remove (deregister + agent-credential revoke) (Design §9/§12A;
+      FR-NODE-1/2/3). Platform-RBAC gated (`node:enroll`/`node:quarantine`/
+      `node:remove`) and audited; provisioning is an API flow.
   - name: locks
     description: Incident-response lock CRUD (Design §8.3). Platform-RBAC gated and audited.
   - name: join-tokens
@@ -549,6 +555,187 @@ paths:
       responses:
         '204':
           description: The join token was revoked (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/nodes:
+    get:
+      operationId: listNodes
+      summary: List nodes (admin).
+      description: |
+        Lists enrolled nodes with their connectivity model, lifecycle status, and
+        health (Design §12A; FR-NODE-1/2). Removed nodes are excluded by default.
+        Platform-RBAC gated (`node:enroll`) + audited.
+      tags:
+        - nodes
+      responses:
+        '200':
+          description: The enrolled nodes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeList'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: registerNode
+      summary: Register an agentless node (admin).
+      description: |
+        Enrolls an AGENTLESS node (Design §9.2/§9.3; FR-NODE-1): registers its dial
+        address and host-identity material — a host-CA-signed host certificate OR
+        an explicitly pinned host key (at least one; NEVER TOFU) — with no software
+        install. An agent node instead joins via a join token
+        (`POST /v1/join-tokens`). Enrollment MAY require approval (operator
+        setting): when on, the node starts `pending` and is excluded from targeting
+        until activated. Provisioning is a pure API flow (closes the S15 dev-seed
+        gap). Platform-RBAC gated (`node:enroll`) + audited.
+      tags:
+        - nodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterNodeRequest'
+      responses:
+        '201':
+          description: The node was registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/nodes/{nodeId}:
+    get:
+      operationId: getNode
+      summary: Get a node (admin).
+      description: Returns one node by id. Platform-RBAC gated (`node:enroll`) + audited.
+      tags:
+        - nodes
+      parameters:
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeResource'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: removeNode
+      summary: Remove a node (admin).
+      description: |
+        Deregisters the node (soft-remove: status `removed`, excluded from
+        targeting; session/audit history preserved) and, for an AGENT node, REVOKES
+        its agent credential — the identity is flipped off `active` and a covering
+        Lock is pushed, so the generation counter + lock make a stale clone
+        unusable and re-join cannot bypass the revocation (FR-NODE-3). Idempotent.
+        Platform-RBAC gated (`node:remove`) + audited.
+      tags:
+        - nodes
+      parameters:
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The node was removed (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/nodes/{nodeId}/quarantine:
+    post:
+      operationId: quarantineNode
+      summary: Quarantine a node (admin).
+      description: |
+        Immediately blocks NEW sessions to the node and tears down or drains
+        EXISTING ones (FR-NODE-3), expressed as a top-tier S10 Lock on the node
+        (deny wins) actively pushed to every Gateway — fail-closed. The
+        `existingSessions` policy selects `kill` (default, torn down at once) vs
+        `drain` (finish, no new channels). Platform-RBAC gated (`node:quarantine`)
+        + audited.
+      tags:
+        - nodes
+      parameters:
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuarantineNodeRequest'
+      responses:
+        '200':
+          description: The node was quarantined and the lock pushed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: releaseQuarantine
+      summary: Release a node from quarantine (admin).
+      description: |
+        Lifts a quarantine: releases the node Lock (pushed to every Gateway) and
+        returns the node to `active`. Never resurrects a torn-down session.
+        Idempotent. Platform-RBAC gated (`node:quarantine`) + audited.
+      tags:
+        - nodes
+      parameters:
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The node was released from quarantine.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeResource'
         '403':
           $ref: '#/components/responses/Problem'
         '404':
@@ -1546,6 +1733,127 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JoinTokenResource'
+      additionalProperties: false
+    RegisterNodeRequest:
+      type: object
+      title: Register Node Request
+      description: |
+        Enrol an agentless node. `address` (host:port) is required; at least one of
+        `hostCertificate` / `pinnedHostKey` is required (host-identity anchor — no
+        TOFU, §9.3).
+      required:
+        - name
+        - address
+      properties:
+        name:
+          type: string
+          description: The node's stable, unique human name (the enrollment key + the SSH addressing name).
+        address:
+          type: string
+          description: The node sshd dial address, `host:port` (port defaults to 22 if omitted).
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: Inventory labels ("key=value") used by data-plane rule/lock node selectors.
+        hostCertificate:
+          type: string
+          description: The node's host-CA-signed OpenSSH host certificate line (the primary host-identity anchor).
+        pinnedHostKey:
+          type: string
+          description: An explicitly pinned OpenSSH host public-key line (the fallback anchor when the node presents a plain host key).
+        nodePolicyName:
+          type: string
+          description: Optional NodePolicy snapshot reference.
+      additionalProperties: false
+    QuarantineNodeRequest:
+      type: object
+      title: Quarantine Node Request
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          description: Operator/audit reason (mandatory). Never disclosed to the SSH user (§7.1).
+        existingSessions:
+          type: string
+          enum:
+            - kill
+            - drain
+          default: kill
+          description: How existing sessions are handled — `kill` (torn down at once) or `drain` (finish; no new channels).
+        ttlSeconds:
+          type: integer
+          format: int64
+          description: Optional quarantine-lock lifetime in seconds; omitted/null = indefinite until released.
+      additionalProperties: false
+    NodeResource:
+      type: object
+      title: Node
+      required:
+        - id
+        - name
+        - connectorKind
+        - status
+        - health
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        connectorKind:
+          type: string
+          enum:
+            - agent
+            - agentless
+        status:
+          type: string
+          enum:
+            - pending
+            - active
+            - quarantined
+            - removed
+        health:
+          type: string
+          enum:
+            - unknown
+            - healthy
+            - unhealthy
+            - unreachable
+        address:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        owningGateway:
+          type: string
+          description: The Gateway currently owning the node's agent control channel (agent model); absent otherwise.
+        statusReason:
+          type: string
+        statusChangedBy:
+          type: string
+        statusChangedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    NodeList:
+      type: object
+      title: Node List
+      required:
+        - nodes
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeResource'
       additionalProperties: false
     JitRequestSubmission:
       type: object
