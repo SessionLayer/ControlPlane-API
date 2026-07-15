@@ -179,8 +179,23 @@ The SLGW1 relay token travels in the `DialBackSignal` over the CoordinationBacke
 there — redemption additionally requires the owner's mTLS gateway certificate (§7.4),
 so a bus eavesdropper cannot use a captured token. As defense-in-depth, an HA
 deployment MUST run the coordination bus (NATS) **mutually authenticated, encrypted
-(TLS), and subject-authorized** so only the addressed owner can subscribe to
-`sl.dialback.<owner>`. The reference implementation targets a trusted internal
-network; operators exposing the bus more widely MUST enable NATS TLS + account/subject
-permissions. (A bus read *and* a stolen owner certificate would be required to hijack
-a relay; a stolen owner certificate alone already means that Gateway is compromised.)
+(TLS), and subject-authorized**, where the authorization covers **both directions**:
+only the addressed owner may **subscribe** to `sl.dialback.<owner>`, and only
+legitimate ingress Gateways may **publish** to it. Publish-authz matters because an
+attacker able to publish signals (without any subject-read) can still make an owner
+repeatedly perform its local dial-back (a signalling-amplification cost); the owner
+additionally drops any signal whose `owner_nonce` is older than its current presence
+nonce and caps concurrent served relays per node (§7.6), but publish-authz is the
+first line.
+
+**On the reference client:** the bundled NATS backend is a minimal **core** pub/sub
+client that connects in **plaintext with an unauthenticated CONNECT** — it targets a
+**trusted internal network** and is deliberately dependency-free (no TLS stack; see
+the supply-chain rationale for hand-rolling it). It therefore **cannot itself meet the
+TLS/auth mandate above**: a production deployment provides TLS + authentication via a
+**co-located sidecar** (a localhost TLS-terminating proxy / the NATS leaf-node TLS
+boundary), or by substituting a TLS-capable `CoordinationBackend`. The client parses
+the server `INFO` line and **fails loudly** (not a silent reconnect loop) if the broker
+advertises `tls_required`/`auth_required` it cannot satisfy, so a misconfiguration
+surfaces immediately. (A bus read *and* a stolen owner certificate would be required to
+hijack a relay; a stolen owner certificate alone already means that Gateway is compromised.)
