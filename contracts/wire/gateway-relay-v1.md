@@ -129,10 +129,17 @@ signature is checked over the transmitted payload bytes *before* the protobuf
   removal *is* consumption. A replay finds nothing.
 - **Bindings, all required** (else `RELAY_REJECT`, fail closed): unexpired
   (`exp_epoch_ms`); `signer_fingerprint` == this ingress's key; the authenticated
-  mTLS peer id == `owner_gateway_id`; `session_id`/`node_id`/`node_name` match the
-  awaiting session; `owner_nonce` still current (the ingress bound the nonce it saw
-  at `Authorize`). Cross-owner / cross-session / cross-node / expired / stale-nonce
-  are all refused.
+  mTLS peer id (the **`gateway_identity.name` taken from the peer cert's dNSName
+  SAN / CN**, NOT the URI-SAN UUID) == `owner_gateway_id`; `session_id`/`node_id`/
+  `node_name` match the awaiting session. Cross-owner / cross-session / cross-node /
+  expired are refused. `owner_nonce` travels in the token for audit/correlation, but
+  note the **ingress** cannot use it as an anti-stale check — the ingress minted both
+  the token and the pending entry from the same `Authorize`, so an ingress-side
+  comparison is self-referential. The anti-stale enforcement is the **owner's**
+  obligation (§7.6), not this ingress-side compare.
+- **`RELAY_REJECT` carries a single coarse code** for every binding failure (reason
+  string operator-log-only), with no error→code 1:1 mapping or timing gap that would
+  make it an oracle (§7.1 SSH-taxonomy ethos).
 - **Never logged, persisted, or echoed.**
 
 ## 7. Security invariants (normative)
@@ -144,8 +151,36 @@ signature is checked over the transmitted payload bytes *before* the protobuf
 3. **Fail closed on routing ambiguity** (FR-HA-5): no fresh owner / stale nonce /
    unreachable owner / relay not established within `relay_timeout` → deny within
    the bound. The monotonic nonce is the anti-stale-ownership primitive.
-4. **The owner authenticates as a Gateway** (internal-CA `sessionlayer://gateway/<id>`
-   cert) and MUST equal the token's `owner_gateway_id`. A compromised or
-   superseded peer cannot serve a relay for a node it does not own.
+4. **The owner authenticates as a Gateway** (internal-CA cert with a
+   `sessionlayer://gateway/<UUID>` URI SAN) and its **`gateway_identity.name`** (the
+   dNSName SAN / CN) MUST equal the token's `owner_gateway_id`. The HA owner identity
+   is the NAME throughout (presence, the coordination subject, the token) — the URI
+   SAN UUID is only the CP's internal resolver key. A compromised or superseded peer
+   cannot serve a relay for a node it does not own.
 5. **No live migration** (FR-HA-7): a relay is per-session; a lost owner fails the
    session fast (client reconnects, cheap via pinned-key silent reconnect).
+6. **The owner MUST re-verify current ownership before serving** (the anti-stale
+   obligation). On receiving a `DialBackSignal`, the owner serves the relay only if
+   it *currently* believes it owns the node — i.e. its presence heartbeat loop last
+   returned `is_self_owner` for that node. An owner that has lost ownership (a
+   failover advanced the nonce to a standby) MUST refuse; the ingress then hits
+   `relay_timeout` and fails closed, and the client's retry re-routes to the true
+   owner. The owner's live agent control channel (its local dial-back must succeed)
+   is the liveness backstop for a dead owner. This owner-side recheck — not the
+   ingress-side token compare — is what makes the nonce load-bearing (FR-HA-5). A CP
+   round-trip at `RELAY_ACCEPT` is deliberately **not** required: in the agent model
+   any Gateway holding a live channel serves the correct node, so the cached
+   `is_self_owner` belief plus dial-back liveness suffice without a hot-path round-trip.
+
+## 8. Deployment requirement — coordination transport (normative)
+
+The SLGW1 relay token travels in the `DialBackSignal` over the CoordinationBackend
+**by design** (§0: only *session bytes* are barred from the bus). The token is safe
+there — redemption additionally requires the owner's mTLS gateway certificate (§7.4),
+so a bus eavesdropper cannot use a captured token. As defense-in-depth, an HA
+deployment MUST run the coordination bus (NATS) **mutually authenticated, encrypted
+(TLS), and subject-authorized** so only the addressed owner can subscribe to
+`sl.dialback.<owner>`. The reference implementation targets a trusted internal
+network; operators exposing the bus more widely MUST enable NATS TLS + account/subject
+permissions. (A bus read *and* a stolen owner certificate would be required to hijack
+a relay; a stolen owner certificate alone already means that Gateway is compromised.)
