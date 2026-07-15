@@ -1,0 +1,25 @@
+# Golden-frame generator for the Agent<->Gateway / Gateway<->Gateway wire (S15).
+#
+# A LOCAL DEV TOOL — not part of any CI. It constructs each canonical wire message,
+# frames it per the frozen spec (VER|TYPE|LENGTH|PAYLOAD), self-checks by decoding its own
+# output, and writes ../frames.json. It is deliberately self-contained (prost over the
+# vendored contracts protos, its own target/) so generating the vectors never touches or
+# races a consumer repo's build. The committed frames.json is the artifact both Rust repos
+# consume in CI; this generator only regenerates it when the contract changes.
+[package]
+name = "wire-conformance-gen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+prost = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+prost-build = "0.13"
+
+[[bin]]
+name = "wire-conformance-gen"
+path = "src/main.rs"
