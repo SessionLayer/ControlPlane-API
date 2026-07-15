@@ -163,7 +163,8 @@ public class AgentRenewalService {
 		Map<String, String> detail = Map.of("expected", Long.toString(expectedGeneration), "presented",
 				Long.toString(presentedGeneration));
 		Mono<AccessLock> committed = tx.transactional(agentIdentities.findById(agentId).flatMap(fresh -> {
-			AccessLock lock = AccessLock.create(nodeSelector(nodeId), "strict", null, null, CLONE_REASON, CLONE_ACTOR);
+			AccessLock lock = AccessLock.create(cloneLockSelector(nodeId, agentId), "strict", null, null, CLONE_REASON,
+					CLONE_ACTOR);
 			Mono<AccessLock> lockCreate = accessLocks.save(lock)
 					.flatMap(saved -> audit.record(CLONE_ACTOR, agentId.toString(), "agent.renew.generation_mismatch",
 							"failure", null, nodeId, detail).thenReturn(saved));
@@ -186,10 +187,22 @@ public class AgentRenewalService {
 				fresh.updatedAt());
 	}
 
-	private ObjectNode nodeSelector(UUID nodeId) {
+	/**
+	 * The clone lock must reach the cloned agent as a <b>peer</b>, not only as a
+	 * node. An agent's certificate carries its node NAME (dNSName SAN) and its
+	 * agent id (URI SAN) — never the node UUID — so a {@code node_ids}-only
+	 * selector can match the session path but cannot match an agent control
+	 * channel, and the Gateway would not refuse the clone at registration or
+	 * dial-back (S14). Carry both facets. {@code identities} cannot over-block: on
+	 * the session path that facet is matched against the human subject identity,
+	 * which is never an agent UUID.
+	 */
+	private ObjectNode cloneLockSelector(UUID nodeId, UUID agentId) {
 		ObjectNode selector = objectMapper.createObjectNode();
 		ArrayNode nodeIds = selector.putArray("node_ids");
 		nodeIds.add(nodeId.toString());
+		ArrayNode identities = selector.putArray("identities");
+		identities.add(agentId.toString());
 		return selector;
 	}
 

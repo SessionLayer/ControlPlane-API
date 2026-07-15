@@ -107,6 +107,10 @@ class AgentRenewalServiceTest {
 		assertThat(lock.getValue().ttlSeconds()).isNull(); // never auto-clears
 		assertThat(lock.getValue().expiresAt()).isNull();
 		assertThat(lock.getValue().targetSelector().get("node_ids").get(0).stringValue()).isEqualTo(NODE.toString());
+		// The lock must also name the agent IDENTITY: an agent peer is matched by its
+		// agent id (URI SAN), never by the node UUID, so a node_ids-only selector could
+		// not refuse the cloned agent's control channel at the Gateway (S14).
+		assertThat(lock.getValue().targetSelector().get("identities").get(0).stringValue()).isEqualTo(AGENT.toString());
 
 		verify(lockFeedHub).publishAdded(any(AccessLock.class));
 		verify(alerts).cloneDetected(AGENT, NODE, 0L, 5L);

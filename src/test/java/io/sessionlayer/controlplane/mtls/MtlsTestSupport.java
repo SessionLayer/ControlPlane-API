@@ -13,6 +13,12 @@ import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
+import java.util.List;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.ExtensionsGenerator;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
@@ -47,6 +53,27 @@ public final class MtlsTestSupport {
 			return builder.build(signer).getEncoded();
 		} catch (Exception e) {
 			throw new IllegalStateException("failed to build test CSR", e);
+		}
+	}
+
+	/**
+	 * A DER PKCS#10 CSR that additionally <b>requests</b> dNSName SANs via a pkcs-9
+	 * extensionRequest attribute — a hostile CSR, used to prove the CP discards
+	 * what the caller asked for and stamps the names it holds itself (S14).
+	 */
+	public static byte[] csrRequestingSans(KeyPair keyPair, String commonName, List<String> dnsSans) {
+		try {
+			var subject = new org.bouncycastle.asn1.x500.X500Name("CN=" + commonName);
+			var builder = new JcaPKCS10CertificationRequestBuilder(subject, keyPair.getPublic());
+			GeneralName[] requested = dnsSans.stream().map(dns -> new GeneralName(GeneralName.dNSName, dns))
+					.toArray(GeneralName[]::new);
+			ExtensionsGenerator extensions = new ExtensionsGenerator();
+			extensions.addExtension(Extension.subjectAlternativeName, false, new GeneralNames(requested));
+			builder.addAttribute(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest, extensions.generate());
+			ContentSigner signer = new JcaContentSignerBuilder("SHA256withECDSA").build(keyPair.getPrivate());
+			return builder.build(signer).getEncoded();
+		} catch (Exception e) {
+			throw new IllegalStateException("failed to build test CSR with requested SANs", e);
 		}
 	}
 

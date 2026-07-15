@@ -83,7 +83,8 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		info.pinnedHostKeys().forEach(key -> verification.addPinnedHostKeys(ByteString.copyFrom(key)));
 		info.hostCertificates().forEach(cert -> verification.addHostCertificates(ByteString.copyFrom(cert)));
 		return NodeConnection.newBuilder().setConnectorKind(connectorKind(info.connectorKind()))
-				.setDialAddress(info.dialAddress()).setHostVerification(verification.build()).build();
+				.setNodeName(info.nodeName()).setDialAddress(info.dialAddress())
+				.setHostVerification(verification.build()).build();
 	}
 
 	private static ConnectorKind connectorKind(NodeConnectionInfo.ConnectorModel model) {

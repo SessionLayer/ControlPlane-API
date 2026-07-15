@@ -34,6 +34,7 @@ import java.security.Signature;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -177,9 +178,17 @@ class AgentJoinLifecycleIT extends AbstractMtlsIT {
 		assertThat(locked.status()).isEqualTo("locked");
 		assertThat(locked.statusChangedBy()).isEqualTo("system:clone-detection");
 
-		boolean nodeLocked = accessLocks.findAll().toStream().anyMatch(
-				lock -> coversNode(lock, agent.nodeId()) && "strict".equals(lock.mode()) && lock.expiresAt() == null);
-		assertThat(nodeLocked).isTrue();
+		AccessLock cloneLock = accessLocks.findAll().toStream().filter(
+				lock -> coversNode(lock, agent.nodeId()) && "strict".equals(lock.mode()) && lock.expiresAt() == null)
+				.findFirst().orElseThrow();
+
+		// The clone lock must reach the cloned agent as a PEER, not only as a node. An
+		// agent's cert carries its node NAME (dNSName SAN) and its agent id (URI SAN),
+		// never the node UUID — so a node_ids-only selector cannot match an agent
+		// control channel and the Gateway would not refuse the clone at registration or
+		// dial-back (S14).
+		assertThat(selectorValues(cloneLock, "node_ids")).containsExactly(agent.nodeId().toString());
+		assertThat(selectorValues(cloneLock, "identities")).containsExactly(agent.agentId().toString());
 
 		Long alerts = db
 				.sql("SELECT count(*) FROM runtime.audit_event WHERE action = 'agent.identity.clone_detected' "
@@ -306,6 +315,16 @@ class AgentJoinLifecycleIT extends AbstractMtlsIT {
 		signature.initSign(operatorLeafKey.getPrivate());
 		signature.update(message);
 		return signature.sign();
+	}
+
+	private static List<String> selectorValues(AccessLock lock, String facet) {
+		var values = lock.targetSelector().get(facet);
+		if (values == null || !values.isArray()) {
+			return List.of();
+		}
+		List<String> out = new ArrayList<>();
+		values.forEach(element -> out.add(element.stringValue()));
+		return out;
 	}
 
 	private static boolean coversNode(AccessLock lock, UUID nodeId) {

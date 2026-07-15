@@ -18,7 +18,8 @@ after the fork was noticed, and a mismatch would not tear down live sessions on 
 single persist-before-adopt Agent is itself a clone signal): in ONE transaction it flips
 `agent_identity.status='locked'` (reason "generation mismatch (possible credential clone)",
 `status_changed_by='system:clone-detection'`), inserts a strict, **no-TTL** `access_lock` targeting the
-node (`node_ids:[node_id]`), and audits `agent.renew.generation_mismatch`; AFTER commit it pushes the
+node (`node_ids:[node_id]` — extended in S14 to also carry `identities:[agent_id]` so the lock reaches
+the agent as a peer, see F-agent-clone-autolock-2), and audits `agent.renew.generation_mismatch`; AFTER commit it pushes the
 lock via the S10 `LockFeedHub` (live sessions on the node tear down) and raises a distinct high-severity
 security alert (`AgentSecurityAlerts` → `agent.identity.clone_detected` + a loud ERROR log), then refuses
 `FAILED_PRECONDITION`. Because the fingerprint pin tolerates {current, prev}, both the stale copy and the
