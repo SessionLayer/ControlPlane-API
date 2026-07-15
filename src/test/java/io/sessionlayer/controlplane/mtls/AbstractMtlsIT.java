@@ -14,6 +14,11 @@ import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
 import io.sessionlayer.controlplane.grpc.v1.EnrollGatewayRequest;
 import io.sessionlayer.controlplane.grpc.v1.EnrollGatewayResponse;
 import io.sessionlayer.controlplane.grpc.v1.GatewayIdentityGrpc;
+import io.sessionlayer.controlplane.grpc.v1.PresenceGrpc;
+import io.sessionlayer.controlplane.grpc.v1.PresenceHeartbeatRequest;
+import io.sessionlayer.controlplane.grpc.v1.PresenceHeartbeatResponse;
+import io.sessionlayer.controlplane.grpc.v1.PresenceReleaseRequest;
+import io.sessionlayer.controlplane.grpc.v1.PresenceReleaseResponse;
 import io.sessionlayer.controlplane.grpc.v1.SessionSigningGrpc;
 import io.sessionlayer.controlplane.grpc.v1.SignContext;
 import io.sessionlayer.controlplane.grpc.v1.SignSessionCertificateRequest;
@@ -145,6 +150,35 @@ abstract class AbstractMtlsIT {
 				request.setContext(context);
 			}
 			return SessionSigningGrpc.newBlockingStub(channel).signSessionCertificate(request.build());
+		} finally {
+			shutdown(channel);
+		}
+	}
+
+	/**
+	 * {@code Presence.Heartbeat} as {@code gateway}, addressing the node by name.
+	 */
+	protected PresenceHeartbeatResponse presenceHeartbeat(EnrolledGateway gateway, String nodeName,
+			String gatewayAddr) {
+		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), gateway.certificate(),
+				gateway.keyPair().getPrivate());
+		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
+		try {
+			return PresenceGrpc.newBlockingStub(channel).heartbeat(
+					PresenceHeartbeatRequest.newBuilder().setNodeName(nodeName).setGatewayAddr(gatewayAddr).build());
+		} finally {
+			shutdown(channel);
+		}
+	}
+
+	/** {@code Presence.Release} as {@code gateway}, addressing the node by name. */
+	protected PresenceReleaseResponse presenceRelease(EnrolledGateway gateway, String nodeName) {
+		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), gateway.certificate(),
+				gateway.keyPair().getPrivate());
+		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
+		try {
+			return PresenceGrpc.newBlockingStub(channel)
+					.release(PresenceReleaseRequest.newBuilder().setNodeName(nodeName).build());
 		} finally {
 			shutdown(channel);
 		}

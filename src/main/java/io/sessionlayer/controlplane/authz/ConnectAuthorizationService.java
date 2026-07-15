@@ -19,9 +19,11 @@ import io.sessionlayer.controlplane.data.runtime.JitRequest;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
+import io.sessionlayer.controlplane.data.runtime.PresenceRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
+import io.sessionlayer.controlplane.ha.HaProperties;
 import io.sessionlayer.controlplane.jit.JitLifecycleService;
 import io.sessionlayer.controlplane.recording.RecordingTokenService;
 import java.time.Duration;
@@ -102,6 +104,8 @@ public class ConnectAuthorizationService {
 	private final BreakglassProperties breakglassProperties;
 	private final AuditWriter audit;
 	private final AuthzProperties properties;
+	private final PresenceRepository presence;
+	private final HaProperties haProperties;
 	private final ObjectMapper objectMapper;
 	private final TransactionalOperator tx;
 
@@ -112,7 +116,8 @@ public class ConnectAuthorizationService {
 			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, JitLifecycleService jit,
 			BreakglassTokenService breakglassTokens, BreakglassActivationRepository breakglassActivations,
 			BreakglassPolicyRepository breakglassPolicies, BreakglassProperties breakglassProperties, AuditWriter audit,
-			AuthzProperties properties, ObjectMapper objectMapper, TransactionalOperator tx) {
+			AuthzProperties properties, PresenceRepository presence, HaProperties haProperties,
+			ObjectMapper objectMapper, TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -132,6 +137,8 @@ public class ConnectAuthorizationService {
 		this.breakglassProperties = breakglassProperties;
 		this.audit = audit;
 		this.properties = properties;
+		this.presence = presence;
+		this.haProperties = haProperties;
 		this.objectMapper = objectMapper;
 		this.tx = tx;
 	}
@@ -399,6 +406,10 @@ public class ConnectAuthorizationService {
 	private Mono<NodeConnectionInfo> resolveNodeConnection(Node node) {
 		NodeConnectionInfo.ConnectorModel model = NodeConnectionInfo.ConnectorModel.fromInventory(node.connectorKind());
 		String dial = dialAddress(node);
+		return hostVerification(node, model, dial).flatMap(info -> attachFreshOwner(node, info));
+	}
+
+	private Mono<NodeConnectionInfo> hostVerification(Node node, NodeConnectionInfo.ConnectorModel model, String dial) {
 		return hostKeys.findByNodeId(node.id()).collectList().flatMap(rows -> {
 			List<byte[]> pinned = rows.stream().filter(row -> "pinned_key".equals(row.source()))
 					.map(row -> wireBlob(row.publicKey())).filter(Objects::nonNull).toList();
@@ -438,6 +449,28 @@ public class ConnectAuthorizationService {
 					node.id(), node.name());
 		}
 		return info;
+	}
+
+	// HA routing (Design §10.2/§10.3; FR-HA-2/5): fold the FRESH presence owner
+	// into
+	// the connection for an outbound-agent node so the ingress Gateway routes to
+	// the
+	// owner (self ⇒ local S14 path; other ⇒ relay). Only a fresh owner counts — an
+	// absent/stale owner means no live Gateway holds the agent channel, so the
+	// fields
+	// stay empty and the ingress fails closed to "node offline". Agentless nodes
+	// have
+	// no ownership (any Gateway dials directly), so they never carry owner fields.
+	// The
+	// nonce is the anti-stale fencing token the ingress binds into the relay token.
+	private Mono<NodeConnectionInfo> attachFreshOwner(Node node, NodeConnectionInfo info) {
+		if (info.connectorKind() != NodeConnectionInfo.ConnectorModel.OUTBOUND_AGENT) {
+			return Mono.just(info);
+		}
+		Instant staleBefore = Instant.now().minus(haProperties.getPresenceStaleness());
+		return presence.findById(node.id()).filter(owner -> owner.lastSeen().isAfter(staleBefore)).map(owner -> info
+				.withOwner(owner.owningGateway(), owner.gatewayAddr(), owner.nonce(), owner.nonceId().toString()))
+				.defaultIfEmpty(info);
 	}
 
 	// §9.2: the agentless dial address is "host:port". Inventory stores a reachable
