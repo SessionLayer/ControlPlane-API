@@ -264,6 +264,37 @@ advertised gRPC range stays `[1.0, 1.1]`, `protocol_min` stays 1.0).
    identity, it is a TLS credential derived from one; revocation is by locking the
    `gateway_identity` (the CP then refuses to reissue and the leaf expires).
 
+**Session Fifteen (High Availability) added one additive CP service, four
+additive `NodeConnection` fields, and a new Gateway↔Gateway contract**, all
+`buf breaking`-clean and staying within **1.1** (the advertised gRPC range stays
+`[1.0, 1.1]`, `protocol_min` stays 1.0). No migration (the `runtime.presence`
+columns and `cp_runtime` grants were front-loaded in S2/S3).
+
+1. **`Presence` service** (`proto/sessionlayer/controlplane/v1/presence.proto`) —
+   `Heartbeat` (claim/refresh/standby with a monotonic nonce) and `Release`. The
+   Gateway has no database access, so ownership of `runtime.presence` is written
+   through the CP (Design D11: the CP is the sole Postgres owner), preserving the
+   datastore boundary. The **owner is the authenticated mTLS peer** (`gateway_id`),
+   never a request field. mTLS-required tier. Message names are package-unique
+   (`PresenceHeartbeatRequest/Response`, not `Heartbeat` — that name is taken by
+   `lock.proto`). An N-1 CP without the service simply cannot run HA; single-instance
+   mode never calls it (the sole owner is always local).
+2. **`NodeConnection` gained owner fields 5–8** (`owning_gateway_id`,
+   `owning_gateway_addr`, `owner_nonce`, `owner_nonce_id`) — the routing READ path,
+   folded into `Authorize` because the CP already does the authz round-trip there.
+   Populated only when a **fresh** presence owner exists (agent nodes); empty ⇒ the
+   Gateway fails closed to "node offline". UNSIGNED, like the rest of `NodeConnection`
+   (it rides the trusted mTLS channel). An N-1 Gateway ignores the fields and has no
+   HA routing (single-instance behaviour), so the window holds.
+3. **A new Gateway↔Gateway contract** (`wire/gateway-relay-v1.md` +
+   `proto/sessionlayer/gateway/v1/coordination.proto`) — the `CoordinationBackend`
+   signal (`DialBackSignal`) and the direct peer-relay handshake
+   (`RELAY_OPEN`/`ACCEPT`/`REJECT` = wire types `0x24`–`0x26`, additive to the shared
+   registry) with the single-use **SLGW1** relay token. A **separate contract with
+   its own 1.0 version line** (like the Agent↔Gateway wire); the CP is **not a party**
+   (it lives here as the canonical cross-repo home; the CP generates unused Java).
+   **Session bytes never traverse the coordination bus** — the bus is signalling only.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

@@ -150,7 +150,10 @@ not legal is a protocol error.
 | `0x50` | `CREDENTIAL_ROTATE` | either | control | *reserved* |
 | `0x7F` | `GOAWAY` | either | both | *reserved* — graceful drain (FR-HA-7) |
 
-Reserved types MUST be rejected as protocol errors until they are defined.
+`0x24`–`0x26` are allocated to the **Gateway↔Gateway relay profile** (`RELAY_OPEN`
+/`RELAY_ACCEPT`/`RELAY_REJECT`, `contracts/wire/gateway-relay-v1.md`, Session
+Fifteen); they never appear on an Agent↔Gateway connection. Reserved types MUST be
+rejected as protocol errors until they are defined.
 
 **Renamed from the skeleton, same slot and direction:** `0x21` was pencilled in
 as `DIAL_BACK_READY`; it is defined here as `DIAL_BACK_RESULT` because it must

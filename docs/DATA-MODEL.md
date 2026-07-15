@@ -198,6 +198,14 @@ not cascade-erase a recording's object key / encryption-key reference / hash-cha
   §10.3/FR-HA-2) gets the identical `BEFORE UPDATE` guard (`runtime.enforce_presence_nonce_monotonic()`) so a
   stale/duplicated Gateway cannot re-claim a node by writing a lower nonce — a split-brain routing hazard the
   `@Version` lock alone would not catch.
+- **Presence is written only through the CP `Presence` gRPC service (Session Fifteen, HA).** The Gateway has no
+  database access (Design D11: the CP is the sole Postgres owner), so the owning Gateway claims/refreshes
+  ownership via `Presence.Heartbeat` and relinquishes it via `Presence.Release`; the routing READ is folded into
+  `Authorize` (`NodeConnection` owner fields). The **owner is the authenticated mTLS peer** `gateway_id`, never a
+  request field — a Gateway can only take ownership for itself. The claim/refresh/standby transition and the
+  monotonic-nonce bump run server-side against this table; a lower-nonce write trips the trigger above and the RPC
+  fails closed (stale ownership rejected). Same rows in single-instance and HA modes (mode-symmetry, §10.1); only
+  the signalling transport differs.
 - **Recording provenance is write-once.** A `BEFORE UPDATE` trigger on `recording_ref`
   (`runtime.enforce_recording_ref_write_once()`) rejects any change to `session_id` / `object_key` /
   `encryption_key_ref` (and to `hash_chain_head` once set), so recording metadata cannot be silently rewritten
