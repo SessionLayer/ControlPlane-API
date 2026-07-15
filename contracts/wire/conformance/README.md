@@ -55,6 +55,33 @@ with the error named by `expect` (mapping to `agent/wire.rs::FrameError`:
 `Short` / `LengthMismatch` / `TooLarge` / `UnknownType` / `BadVersion`). The
 oversized case is rejected **at the length header, without buffering the body**.
 
+### Role-appropriate obligations (parties vs partial parties)
+
+"Decode every golden frame" is the right obligation only for a consumer that is a
+**party to every protocol** sharing the registry — the **Gateway**, which is both
+the Agent↔Gateway server and the Gateway↔Gateway relay server, so it legitimately
+decodes all 16 frames including the RELAY types (`0x24`–`0x26`).
+
+A **partial-party** consumer — the **Agent** is not a party to the
+Gateway↔Gateway relay — MUST NOT decode a protocol it does not speak. Its portable
+obligation is instead:
+
+- **byte-pin** the §2 framing + payload for *all* frames (re-encode the types it
+  owns byte-exact; assert the frozen layout formula for the rest), so the shared
+  bytes stay the oracle and the type-number registry is pinned — `0x24`–`0x26`
+  cannot be reused for one of its own types without this test failing;
+- **accept** every frame it may legitimately receive;
+- **refuse** every frame it must not — its own *outbound* types with an
+  illegal-direction error, and any *non-party* / reserved type (RELAY) with an
+  unknown-type error.
+
+Refusing a non-party type as *unknown* (rather than carrying it in the codec's
+registry as known-but-unhandled) is the stronger posture: the consumer never
+silently accepts a frame from a protocol it does not speak, and the shared
+numbering is still pinned. The Agent's `tests/wire_conformance.rs` is the
+reference partial-party adaptation; the shared golden bytes remain the single
+oracle in every repo's CI regardless of role.
+
 A reference consumer test (portable Rust, drop into each repo's `tests/`) lives
 in [`consumer-test.rs.txt`](./consumer-test.rs.txt).
 
