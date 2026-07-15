@@ -1,7 +1,6 @@
 package io.sessionlayer.controlplane.grpc;
 
 import io.grpc.stub.StreamObserver;
-import io.sessionlayer.controlplane.data.runtime.GatewayIdentity;
 import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
 import io.sessionlayer.controlplane.data.runtime.Presence;
 import io.sessionlayer.controlplane.data.runtime.PresenceRepository;
@@ -162,13 +161,21 @@ public class PresenceService extends PresenceGrpc.PresenceImplBase {
 
 	// The owner is the AUTHENTICATED peer's gateway_identity.name (the HA routing
 	// key), resolved from its gatewayId — never a request field. An unknown
-	// identity fails closed (cannot happen for a peer the interceptor
-	// authenticated,
-	// but a deleted/revoked identity must not own a node).
+	// identity fails closed (a deleted identity must not own a node). A Gateway is
+	// a first-class lockable principal, so a non-active (locked/revoked/removed)
+	// one
+	// may not acquire or hold ownership — the same fail-closed gate every sibling
+	// gateway-write RPC applies (SignSessionCertificate, RenewGatewayIdentity). A
+	// squatting locked owner is at worst a bounded availability dip a healthy
+	// standby then claims (fail-safe), never a routing bypass.
 	private Mono<String> ownerName(UUID caller) {
-		return gatewayIdentities.findById(caller).map(GatewayIdentity::name)
+		return gatewayIdentities.findById(caller)
 				.switchIfEmpty(Mono.error(new GatewayRequestException(GatewayRequestException.Reason.UNAUTHENTICATED,
-						"gateway identity unknown")));
+						"gateway identity unknown")))
+				.flatMap(identity -> "active".equals(identity.status())
+						? Mono.just(identity.name())
+						: Mono.error(new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED,
+								"gateway not active")));
 	}
 
 	private Mono<Presence> refresh(Presence existing, String gatewayAddr, Instant now) {

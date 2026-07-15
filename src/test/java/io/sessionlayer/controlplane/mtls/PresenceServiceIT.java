@@ -2,13 +2,29 @@ package io.sessionlayer.controlplane.mtls;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
+import io.grpc.ManagedChannel;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.netty.handler.ssl.SslContext;
+import io.sessionlayer.controlplane.ca.mtls.LeafCertificateSpec;
+import io.sessionlayer.controlplane.ca.mtls.LeafPurpose;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.Presence;
 import io.sessionlayer.controlplane.data.runtime.PresenceRepository;
+import io.sessionlayer.controlplane.grpc.v1.PresenceGrpc;
+import io.sessionlayer.controlplane.grpc.v1.PresenceHeartbeatRequest;
 import io.sessionlayer.controlplane.grpc.v1.PresenceHeartbeatResponse;
 import io.sessionlayer.controlplane.grpc.v1.PresenceReleaseResponse;
+import java.math.BigInteger;
+import java.security.KeyPair;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.cert.X509Certificate;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -139,6 +155,35 @@ class PresenceServiceIT extends AbstractMtlsIT {
 	}
 
 	@Test
+	void anAgentAuthenticatedPeerCannotClaimOwnership() {
+		// The interceptor authenticates an agent cert (it is a valid principal), but a
+		// non-Gateway peer must not own a node — the handler fails closed (FR-HA-2).
+		UUID nodeId = seedAgentNode();
+		KeyPair agentKey = MtlsTestSupport.generateEcKeyPair();
+		X509Certificate agentCert = agentClientCert(agentKey.getPublic(), UUID.randomUUID());
+
+		StatusRuntimeException refused = catchThrowableOfType(StatusRuntimeException.class,
+				() -> heartbeatWithCert(agentCert, agentKey.getPrivate(), nodeId, ADDR_A));
+		assertThat(refused.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+		// No ownership was recorded (the write never ran).
+		assertThat(presences.findById(nodeId).block()).isNull();
+	}
+
+	@Test
+	void aLockedGatewayCannotClaimOwnership() {
+		EnrolledGateway gwA = enroll("gw-pres-locked-" + unique());
+		UUID nodeId = seedAgentNode();
+		lockGateway(gwA);
+
+		// A locked Gateway is a non-active principal: it may not acquire ownership
+		// (same gate SignSessionCertificate / RenewGatewayIdentity apply).
+		StatusRuntimeException refused = catchThrowableOfType(StatusRuntimeException.class,
+				() -> presenceHeartbeat(gwA, nodeId, ADDR_A));
+		assertThat(refused.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+		assertThat(presences.findById(nodeId).block()).isNull();
+	}
+
+	@Test
 	void releaseLetsAStandbyClaimImmediately() {
 		EnrolledGateway gwA = enroll("gw-pres-rel-a-" + unique());
 		String nameB = "gw-pres-rel-b-" + unique();
@@ -197,6 +242,34 @@ class PresenceServiceIT extends AbstractMtlsIT {
 		Long updated = db.sql("UPDATE runtime.presence SET last_seen = now() - interval '1 hour' WHERE node_id = :id")
 				.bind("id", nodeId).fetch().rowsUpdated().block();
 		assertThat(updated).isEqualTo(1L);
+	}
+
+	private void lockGateway(EnrolledGateway gateway) {
+		Long updated = db.sql("UPDATE runtime.gateway_identity SET status = 'locked' WHERE id = :id")
+				.bind("id", gateway.gatewayId()).fetch().rowsUpdated().block();
+		assertThat(updated).isEqualTo(1L);
+	}
+
+	// An AGENT-namespace client leaf (SAN sessionlayer://agent/<id>) off the same
+	// internal CA — a valid non-Gateway principal, self-contained to this IT.
+	private X509Certificate agentClientCert(PublicKey publicKey, UUID agentId) {
+		return mtlsCa.activeBackend().block()
+				.issueLeaf(new LeafCertificateSpec(publicKey, "probe-agent", List.of("probe-agent"),
+						List.of(AgentIdentityUri.of(agentId)), LeafPurpose.CLIENT,
+						BigInteger.valueOf(System.nanoTime()), Instant.now().minusSeconds(60),
+						Instant.now().plusSeconds(3600)));
+	}
+
+	private PresenceHeartbeatResponse heartbeatWithCert(X509Certificate clientCert, PrivateKey clientKey, UUID nodeId,
+			String gatewayAddr) {
+		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), clientCert, clientKey);
+		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
+		try {
+			return PresenceGrpc.newBlockingStub(channel).heartbeat(PresenceHeartbeatRequest.newBuilder()
+					.setNodeId(nodeId.toString()).setGatewayAddr(gatewayAddr).build());
+		} finally {
+			shutdown(channel);
+		}
 	}
 
 	private UUID seedAgentNode() {
