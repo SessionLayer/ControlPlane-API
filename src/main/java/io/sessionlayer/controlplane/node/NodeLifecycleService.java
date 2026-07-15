@@ -123,17 +123,31 @@ public class NodeLifecycleService {
 		if (ttlSeconds != null && (ttlSeconds <= 0 || ttlSeconds > Integer.MAX_VALUE)) {
 			return Mono.error(invalid("ttlSeconds must be a positive number of seconds"));
 		}
-		// kill (default) tears sessions down at once → a strict lock; drain lets them
-		// finish with no new channels → best_effort (Design §8.4 / FR-NODE-3).
+		// Quarantine ALWAYS flips status to 'quarantined', which blocks NEW sessions
+		// via
+		// the non-active-node deny in the Authorize path (decide()). How EXISTING
+		// sessions are handled is the kill/drain difference — and it canNOT ride the
+		// pushed Lock's mode, because the wire Lock carries no mode (LockCodec drops
+		// it),
+		// so ANY pushed node Lock tears sessions down (deny wins). Therefore:
+		// kill → status flip + push a node Lock so S10 tears existing sessions down;
+		// drain → status flip ONLY (no Lock) so existing sessions finish naturally.
 		boolean drain = "drain".equals(existingSessions);
-		String mode = drain ? "best_effort" : "strict";
 		String policy = drain ? "drain" : "kill";
 		Integer ttl = ttlSeconds == null ? null : ttlSeconds.intValue();
 		Instant now = Instant.now();
 		Instant expiresAt = ttl == null ? null : now.plusSeconds(ttl);
 		return nodes.findById(nodeId).switchIfEmpty(Mono.error(notFound(nodeId))).flatMap(node -> {
 			Node quarantined = withStatus(node, STATUS_QUARANTINED, reason, actor, now);
-			AccessLock lock = AccessLock.create(nodeSelector(nodeId), mode, ttl, expiresAt, reason, actor);
+			if (drain) {
+				return tx
+						.transactional(nodes.save(quarantined)
+								.flatMap(saved -> audit
+										.record(actor, nodeId.toString(), "node.quarantine", "success", null, nodeId,
+												Map.of("reason", reason, "existing_sessions", policy))
+										.thenReturn(saved)));
+			}
+			AccessLock lock = AccessLock.create(nodeSelector(nodeId), "strict", ttl, expiresAt, reason, actor);
 			Mono<Tuple2<Node, AccessLock>> committed = tx
 					.transactional(nodes.save(quarantined)
 							.flatMap(savedNode -> accessLocks.save(lock).flatMap(savedLock -> audit

@@ -159,10 +159,11 @@ class NodeCrudIT extends AbstractAuthIT {
 
 		client.post().uri("/v1/nodes/" + id + "/quarantine").header("Authorization", "Bearer " + token)
 				.contentType(MediaType.APPLICATION_JSON)
-				.bodyValue(Map.of("reason", "incident", "existingSessions", "drain")).exchange().expectStatus().isOk()
+				.bodyValue(Map.of("reason", "incident", "existingSessions", "kill")).exchange().expectStatus().isOk()
 				.expectBody().jsonPath("$.status").isEqualTo("quarantined");
-		// drain → best_effort lock.
-		assertThat(nodeLock(id).mode()).isEqualTo("best_effort");
+		// kill → a node Lock is pushed (existing sessions torn down); release clears
+		// it.
+		assertThat(nodeLock(id).mode()).isEqualTo("strict");
 
 		client.delete().uri("/v1/nodes/" + id + "/quarantine").header("Authorization", "Bearer " + token).exchange()
 				.expectStatus().isOk().expectBody().jsonPath("$.status").isEqualTo("active");
@@ -172,6 +173,23 @@ class NodeCrudIT extends AbstractAuthIT {
 				.expectStatus().isOk();
 		assertThat(auditEvents.findByActor(admin).collectList().block())
 				.anySatisfy(e -> assertThat(e.action()).isEqualTo("node.quarantine.release"));
+	}
+
+	@Test
+	void drainQuarantineBlocksNewSessionsButRaisesNoLock() {
+		String token = tokenWith("svc-node-drain-" + unique(), PlatformPermissions.NODE_ENROLL,
+				PlatformPermissions.NODE_QUARANTINE);
+		UUID id = UUID.fromString(register(token, "web-" + unique()));
+
+		client.post().uri("/v1/nodes/" + id + "/quarantine").header("Authorization", "Bearer " + token)
+				.contentType(MediaType.APPLICATION_JSON)
+				.bodyValue(Map.of("reason", "drain-me", "existingSessions", "drain")).exchange().expectStatus().isOk()
+				.expectBody().jsonPath("$.status").isEqualTo("quarantined");
+
+		// DRAIN pushes NO Lock: the wire Lock carries no mode, so any node Lock would
+		// tear existing sessions down. NEW sessions are blocked by the 'quarantined'
+		// status (the non-active-node deny); existing ones finish naturally.
+		assertThat(nodeLock(id)).isNull();
 	}
 
 	@Test
