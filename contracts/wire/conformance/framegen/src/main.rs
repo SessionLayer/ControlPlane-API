@@ -13,6 +13,7 @@
 
 use prost::Message;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 // prost emits cross-package refs as `super::super::controlplane::v1::…`, so the generated
 // files must be nested to match their proto package paths.
@@ -84,6 +85,19 @@ struct Vectors {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex(Sha256::digest(bytes).as_slice())
+}
+
+/// Header for `frames.provenance` (verified by scripts/gate.sh). Trailing lines are
+/// `<path relative to contracts/>` TAB `<sha256>`.
+const PROVENANCE_HEADER: &str = "\
+# Wire-conformance golden provenance — DO NOT hand-edit; regenerated with frames.json by
+# framegen (make wire-conformance). scripts/gate.sh verifies these sha256sums against the
+# working tree, so the golden cannot silently drift from the frozen proto or be hand-edited
+# (a stale/wrong golden is a worse oracle than none — see conformance/README.md).
+";
 
 fn frame_bytes(ver: u8, type_byte: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
@@ -413,15 +427,44 @@ fn main() {
     };
 
     let json = serde_json::to_string_pretty(&out).expect("serialize vectors");
-    let dest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let json_bytes = (json + "\n").into_bytes();
+
+    let conformance = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("gen/ has a parent (conformance/)")
-        .join("frames.json");
-    std::fs::write(&dest, json + "\n").expect("write frames.json");
+        .expect("framegen/ has a parent (conformance/)")
+        .to_path_buf();
+    let frames_path = conformance.join("frames.json");
+    std::fs::write(&frames_path, &json_bytes).expect("write frames.json");
+
+    // Golden provenance: bind frames.json's own sha256 AND the sha256 of every input proto it
+    // was generated from, so the CP gate (scripts/gate.sh, pure sha256 — no toolchain) fails
+    // if the golden is hand-edited OR a proto changes without a regen. Paths are relative to
+    // contracts/ (the gate resolves them from the repo root).
+    let contracts = conformance
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("conformance/ -> wire/ -> contracts/");
+    let inputs = [
+        "proto/sessionlayer/controlplane/v1/common.proto",
+        "proto/sessionlayer/agent/v1/wire.proto",
+        "proto/sessionlayer/gateway/v1/coordination.proto",
+    ];
+    let mut prov = String::from(PROVENANCE_HEADER);
+    prov.push_str(&format!(
+        "wire/conformance/frames.json\t{}\n",
+        sha256_hex(&json_bytes)
+    ));
+    for rel in inputs {
+        let bytes =
+            std::fs::read(contracts.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        prov.push_str(&format!("{rel}\t{}\n", sha256_hex(&bytes)));
+    }
+    std::fs::write(conformance.join("frames.provenance"), prov).expect("write frames.provenance");
+
     eprintln!(
-        "wrote {} frames + {} negatives to {}",
+        "wrote {} frames + {} negatives to {} (+ frames.provenance)",
         out.frames.len(),
         out.decode_negatives.len(),
-        dest.display()
+        frames_path.display()
     );
 }

@@ -1,0 +1,8 @@
+# Wire-conformance golden provenance — DO NOT hand-edit; regenerated with frames.json by
+# framegen (make wire-conformance). scripts/gate.sh verifies these sha256sums against the
+# working tree, so the golden cannot silently drift from the frozen proto or be hand-edited
+# (a stale/wrong golden is a worse oracle than none — see conformance/README.md).
+wire/conformance/frames.json	a74fc073452bdab1097dd638c34fd532ac318f3a122abb7fd37d63953dcaa14b
+proto/sessionlayer/controlplane/v1/common.proto	42d6df1deb98c0f0f59657c3bc84903796e0d377acae3de88cbcdc0770bd1b17
+proto/sessionlayer/agent/v1/wire.proto	3c2f5f2e7a99102389000078a97153686e57d2c09def21a9dc7f57fe2a9c7a90
+proto/sessionlayer/gateway/v1/coordination.proto	a212a147bddfb16c74f1e4f91aecd29cd219739b93ff14765de68b38de86c90d

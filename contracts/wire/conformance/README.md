@@ -27,14 +27,32 @@ same frozen proto both repos generate from, so the bytes are authoritative; the
 generator additionally decodes every frame it emits (self-check) and asserts a
 hand-computable anchor (`Ping{nonce=42}` → `011000000002082a`).
 
-Regenerate **only when the contract changes**:
+Regenerate **only when the contract changes** — this rewrites `frames.json` **and**
+`frames.provenance` together:
 
 ```
-cd framegen && cargo run          # rewrites ../frames.json ; commit the diff
+make wire-conformance             # (or: cd framegen && cargo run) ; commit both files
 ```
 
 `framegen/` is a self-contained dev tool (its own `target/`, prost over the vendored
 protos) so regenerating never touches a consumer repo's build.
+
+### Golden integrity — the golden can't drift silently
+
+`framegen` is a manual dev tool that **never runs in CI**, and `sync-contracts.sh
+--check` no-ops in a lone checkout (the canonical source is absent) — so nothing
+downstream re-derives the golden. If `frames.json` were stale (a proto changed but
+framegen was not re-run) or hand-edited, both Rust repos would vendor it and both
+conformance suites would pass against the **wrong** oracle.
+
+That hole is closed at the source, in the **ControlPlane-API gate** (the only place
+with both `framegen` and the canonical proto). `framegen` writes `frames.provenance`
+next to `frames.json`: the sha256 of `frames.json` itself, plus the sha256 of every
+input proto it was generated from. `scripts/gate.sh` verifies those sums against the
+working tree on every CP CI run — pure `sha256sum`, no Rust toolchain in the Java
+pipeline. A changed proto (input-hash mismatch) or a hand-edited golden (self-hash
+mismatch) **fails the CP gate**, forcing a `make wire-conformance` regen. Both
+`frames.json` and `frames.provenance` are committed and regenerated together.
 
 ### What each repo asserts (portable, no field-construction glue)
 
@@ -45,10 +63,13 @@ For every entry in `frames`:
 2. **Re-frame** `encode(ver, type, payload)` → equals `frame_hex` byte-for-byte.
 
 Together these pin the framing *and* the exact payload bytes both sides must
-agree on, without needing to reconstruct each message from its fields. A repo
-that additionally wants to pin *semantic* construction can build the message from
-`fields` + `message` and assert its `encode_to_vec()` equals `payload_hex` — the
-Gateway does this for the types it owns.
+agree on. Neither repo reconstructs a message from its fields: `message` (the
+fully-qualified proto name) and `fields` (a human description of the encoded
+values) are **annotations for the reader**, not machine inputs. A consumer
+re-encodes the golden *payload* byte-for-byte (step 2) but does not re-derive it
+from scratch — the payload's encoding *correctness* is delegated to the vendored
+proto both repos generate from and pinned upstream by the golden-integrity check
+above.
 
 For every entry in `decode_negatives`: **decode** `hex` → the codec rejects it
 with the error named by `expect` (mapping to `agent/wire.rs::FrameError`:
