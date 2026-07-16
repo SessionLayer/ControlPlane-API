@@ -208,6 +208,10 @@ class NodeCrudIT extends AbstractAuthIT {
 		// Soft-remove: the row survives (status 'removed') but is excluded from the
 		// list.
 		assertThat(nodes.findById(UUID.fromString(id)).block().status()).isEqualTo("removed");
+		// Remove tears down in-flight sessions on an AGENTLESS node too (F4): a bare
+		// node Lock is pushed (there is no agent identity to revoke here).
+		assertThat(nodeLock(UUID.fromString(id))).isNotNull()
+				.satisfies(lock -> assertThat(lock.mode()).isEqualTo("strict"));
 		String list = client.get().uri("/v1/nodes").header("Authorization", "Bearer " + token).exchange().expectStatus()
 				.isOk().expectBody(String.class).returnResult().getResponseBody();
 		assertThat(list).doesNotContain(name);
@@ -240,6 +244,9 @@ class NodeCrudIT extends AbstractAuthIT {
 			assertThat(facet(selector, "node_ids")).contains(node.id().toString());
 			assertThat(facet(selector, "identities")).isNotEmpty();
 		});
+		// F4 parity: a bare node Lock is ALSO pushed (tears down in-flight sessions),
+		// alongside the dual-facet covering Lock above.
+		assertThat(nodeLock(node.id())).isNotNull();
 		assertThat(auditEvents.findByActor(admin).collectList().block())
 				.anySatisfy(e -> assertThat(e.action()).isEqualTo("agent.revoke"));
 	}

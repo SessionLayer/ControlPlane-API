@@ -12,6 +12,7 @@ import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.grpc.LockFeedHub;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -159,27 +160,47 @@ public class NodeLifecycleService {
 		});
 	}
 
+	// DELETE /v1/nodes/{id}/quarantine "clears any block": a QUARANTINED node is
+	// released and its node Lock deleted; a PENDING (approval-required) node is
+	// APPROVED → active — otherwise an approval-required enrollment is a dead end
+	// (nothing else transitions pending→active). Idempotent for active/removed.
 	public Mono<Node> releaseQuarantine(UUID nodeId, String actor) {
 		Instant now = Instant.now();
-		return nodes.findById(nodeId).switchIfEmpty(Mono.error(notFound(nodeId)))
-				.flatMap(node -> accessLocks.findAll()
-						.filter(lock -> isNodeQuarantineLock(lock.targetSelector(), nodeId)).collectList()
-						.flatMap(locks -> releaseWith(node, locks, actor, now)));
+		return nodes.findById(nodeId).switchIfEmpty(Mono.error(notFound(nodeId))).flatMap(node -> {
+			boolean quarantined = STATUS_QUARANTINED.equals(node.status());
+			boolean pending = STATUS_PENDING.equals(node.status());
+			if (!quarantined && !pending) {
+				// active (idempotent) or removed (terminal): no block to clear, and NEVER
+				// delete
+				// a Lock here — a removed node's covering teardown Lock must survive. Audit the
+				// no-op for forensics.
+				return tx
+						.transactional(audit.record(actor, node.id().toString(), "node.quarantine.release", "success",
+								null, node.id(), Map.of("previous_status", node.status(), "locks_removed", "0")))
+						.thenReturn(node);
+			}
+			// A quarantine release deletes the node Lock; a pending approval has none.
+			Mono<List<AccessLock>> lockList = quarantined
+					? accessLocks.findAll().filter(l -> isNodeQuarantineLock(l.targetSelector(), nodeId)).collectList()
+					: Mono.just(List.of());
+			return lockList.flatMap(locks -> clearBlock(node, locks, pending, actor, now));
+		});
 	}
 
-	private Mono<Node> releaseWith(Node node, List<AccessLock> locks, String actor, Instant now) {
-		// Idempotent: whether or not the node was quarantined, clear any bare
-		// node-quarantine lock(s) and return the node to active. A release NEVER
-		// resurrects a torn-down session.
-		Node active = STATUS_QUARANTINED.equals(node.status())
-				? withStatus(node, STATUS_ACTIVE, "quarantine released", actor, now)
-				: node;
-		Mono<List<UUID>> committed = tx.transactional(Flux.fromIterable(locks)
-				.concatMap(lock -> accessLocks.deleteById(lock.id()).thenReturn(lock.id())).collectList()
-				.flatMap(removed -> nodes.save(active)
-						.then(audit.record(actor, node.id().toString(), "node.quarantine.release", "success", null,
-								node.id(), Map.of("locks_removed", Integer.toString(removed.size()))))
-						.thenReturn(removed)));
+	private Mono<Node> clearBlock(Node node, List<AccessLock> locks, boolean pending, String actor, Instant now) {
+		String action = pending ? "node.activate" : "node.quarantine.release";
+		String reason = pending ? "enrollment approved" : "quarantine released";
+		Node active = withStatus(node, STATUS_ACTIVE, reason, actor, now);
+		Mono<List<UUID>> committed = tx
+				.transactional(
+						Flux.fromIterable(locks)
+								.concatMap(lock -> accessLocks.deleteById(lock.id()).thenReturn(lock.id()))
+								.collectList()
+								.flatMap(removed -> nodes
+										.save(active).then(audit.record(actor, node.id().toString(), action, "success",
+												null, node.id(), Map.of("previous_status", node.status(),
+														"locks_removed", Integer.toString(removed.size()))))
+										.thenReturn(removed)));
 		return committed.doOnNext(ids -> ids.forEach(lockFeedHub::publishRemoved)).thenReturn(active);
 	}
 
@@ -187,8 +208,11 @@ public class NodeLifecycleService {
 
 	public Mono<Node> remove(UUID nodeId, String actor) {
 		Instant now = Instant.now();
-		// Idempotent: a node that never existed → no-op success (empty).
-		return nodes.findById(nodeId).flatMap(node -> removeNode(nodeId, node, actor, now));
+		// Idempotent: a node that never existed → no-op success. Audit the bogus-id
+		// attempt (forensics), best effort — never fail the request on an audit hiccup.
+		return nodes.findById(nodeId).flatMap(node -> removeNode(nodeId, node, actor, now)).switchIfEmpty(audit
+				.record(actor, nodeId.toString(), "node.remove", "success", null, nodeId, Map.of("result", "not_found"))
+				.onErrorResume(ignored -> Mono.empty()).then(Mono.empty()));
 	}
 
 	private Mono<Node> removeNode(UUID nodeId, Node node, String actor, Instant now) {
@@ -196,11 +220,23 @@ public class NodeLifecycleService {
 			return Mono.just(node); // already removed → no-op success
 		}
 		Node removed = withStatus(node, STATUS_REMOVED, "node removed", actor, now);
-		Mono<Tuple2<Node, List<AccessLock>>> committed = tx.transactional(nodes.save(removed)
-				.flatMap(savedNode -> revokeActiveAgentIdentity(savedNode, actor, now).flatMap(locks -> audit
-						.record(actor, nodeId.toString(), "node.remove", "success", null, nodeId,
-								Map.of("connector", savedNode.connectorKind()))
-						.thenReturn(Tuples.of(savedNode, locks)))));
+		// Tear down in-flight sessions for BOTH connector kinds via a bare node Lock
+		// (the wire Lock has no mode, so any pushed node Lock = teardown). Additionally
+		// revoke an AGENT node's credential (+ its dual-facet covering Lock that also
+		// reaches the agent control channel). All Locks are published after commit.
+		AccessLock nodeLock = AccessLock.create(nodeSelector(nodeId), "strict", null, null, "node removed", actor);
+		Mono<Tuple2<Node, List<AccessLock>>> committed = tx
+				.transactional(nodes.save(removed).then(accessLocks.save(nodeLock))
+						.flatMap(savedNodeLock -> revokeActiveAgentIdentity(removed, actor, now).flatMap(agentLocks -> {
+							List<AccessLock> published = new ArrayList<>();
+							published.add(savedNodeLock);
+							published.addAll(agentLocks);
+							return audit
+									.record(actor, nodeId.toString(), "node.remove", "success", null, nodeId,
+											Map.of("connector", node.connectorKind(), "lock_id",
+													savedNodeLock.id().toString()))
+									.thenReturn(Tuples.of(removed, published));
+						})));
 		return committed.doOnNext(t -> t.getT2().forEach(lockFeedHub::publishAdded)).map(Tuple2::getT1);
 	}
 
