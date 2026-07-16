@@ -49,7 +49,8 @@ public class PostgresAuditEventStore implements AuditEventStore {
 	private static final long CHAIN_LOCK = 0x53_4C_5F_41_55_44_5F_43L;
 
 	// Off-box shipping must never stall the audited request: bound the forward so a
-	// hung/slow forwarder can't add unbounded latency (it fails best-effort instead).
+	// hung/slow forwarder can't add unbounded latency (it fails best-effort
+	// instead).
 	private static final Duration FORWARD_TIMEOUT = Duration.ofSeconds(5);
 
 	private static final String LATEST_HASH = "SELECT record_hash FROM runtime.audit_event "

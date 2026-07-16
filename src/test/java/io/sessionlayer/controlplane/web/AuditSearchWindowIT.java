@@ -17,9 +17,9 @@ import tools.jackson.databind.node.JsonNodeFactory;
  * The FR-AUD-8 / SESSION §8 audit-search time-window bound (F8): an unfiltered
  * search is pruned to a recent default window (so the partitioned
  * {@code audit_event} table can prune), an explicit range within the maximum is
- * honored verbatim, and a range wider than the maximum is rejected
- * ({@code 422} — a semantic bound on well-formed input). Uses small test windows
- * so the bounds are exercised against rows in the current partition.
+ * honored verbatim, and a range wider than the maximum is rejected ({@code 422}
+ * — a semantic bound on well-formed input). Uses small test windows so the
+ * bounds are exercised against rows in the current partition.
  */
 @TestPropertySource(properties = {"sessionlayer.audit.search.default-window=PT1H",
 		"sessionlayer.audit.search.max-window=PT2H"})

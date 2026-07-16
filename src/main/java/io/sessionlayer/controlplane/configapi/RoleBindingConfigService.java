@@ -108,8 +108,8 @@ public class RoleBindingConfigService {
 	// on the audit read path, previously diverged between search and get-by-id.
 	private static void requireValidScope(JsonNode scope) {
 		if (!PlatformScopes.isValid(scope)) {
-			throw ApiProblemException.validation(
-					"scope must be omitted or impose an effective node_labels/users/time facet");
+			throw ApiProblemException
+					.validation("scope must be omitted or impose an effective node_labels/users/time facet");
 		}
 	}
 
