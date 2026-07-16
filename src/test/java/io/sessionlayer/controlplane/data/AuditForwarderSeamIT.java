@@ -29,7 +29,8 @@ class AuditForwarderSeamIT extends AbstractDataIT {
 
 	@TestConfiguration
 	static class Doubles {
-		// A bean of type AuditForwarder suppresses the default @ConditionalOnMissingBean
+		// A bean of type AuditForwarder suppresses the default
+		// @ConditionalOnMissingBean
 		// log forwarder; @Primary makes injection unambiguous either way, so the real
 		// store forwards through THIS impl.
 		@Bean
