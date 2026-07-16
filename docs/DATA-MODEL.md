@@ -816,3 +816,40 @@ when non-standing so standing decisions stay byte-identical) lets the Gateway fo
 strict recording for break-glass and pick the per-model mid-session-expiry behaviour.
 JIT-revoke / break-glass-abort is expressed **as a `Lock`** (runtime), inheriting the
 S10 fail-closed teardown — no new revocation entity.
+
+---
+
+## 22. Session Sixteen (host addressing & node lifecycle) — no migration
+
+S16 makes the platform usable by human node name (all three OpenSSH addressing modes)
+and adds node enroll / quarantine / remove — **entirely on the front-loaded schema; no
+`V21`.** The `node` lifecycle columns (`status IN (pending,active,quarantined,removed)`,
+`health`, `status_reason`/`status_changed_by`/`status_changed_at`; `V3`+`V10`), the
+`node_host_key` host-identity anchor (`V9`), the `access_lock` push (`V3`, S10), and the
+`agent_identity` monotonic-generation guard (`V3`+`V19`) already exist.
+
+### 22.1 Name→id resolution (no schema change)
+`AuthorizeRequest.node_name` (proto field 9) resolves to `runtime.node.id` via the
+existing `NodeRepository.findByName` — **server-side + authoritative** (a client
+`node_id` is ignored when a name is present). An unknown name is the same generic deny as
+any no-match (no existence disclosure). Closes `F-ha-connect-nodename-1`.
+
+### 22.2 Node lifecycle as status flips + a Lock + a revoke (reuse)
+- **Enroll (agentless)** = insert a `runtime.node` (`connector_kind='agentless'`,
+  `status='active'` or `'pending'` when approval is on) + a `runtime.node_host_key` row
+  (`source='host_ca'` cert **or** `source='pinned_key'`; never TOFU).
+- **Quarantine** = flip `node.status='quarantined'` + insert a **node-targeting
+  `access_lock`** (strict, `{"node_ids":[…]}`) pushed via the S10 `LockFeed` (deny wins;
+  existing sessions torn down/drained). Release = delete the lock + flip back to `active`.
+- **Remove** = flip `node.status='removed'` (soft; session/audit history preserved via the
+  `ON DELETE SET NULL` FKs) + for an agent node **revoke the credential** (flip
+  `agent_identity.status` off `active` + a covering lock — the same
+  status-flip-plus-lock the S12 clone-detection path uses; the generation guard + lock
+  make re-join non-bypassable).
+
+### 22.3 Gateway outer host cert (no schema change)
+`HostCertSigning.SignGatewayHostCertificate` signs the Gateway's presented **outer host
+public key** into a short-lived host cert from the **existing `host` SSH CA**
+(`caSigner.activeSigner("host")`), a new `CertType.HOST` profile (no `permit-*`
+extensions). Cert-only return (D2). Nothing is persisted — the cert is handed to the
+Gateway for the ProxyJump host-cert MITM path.

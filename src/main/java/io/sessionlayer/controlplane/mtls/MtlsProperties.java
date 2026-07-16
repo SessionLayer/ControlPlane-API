@@ -37,6 +37,13 @@ public class MtlsProperties {
 	private Duration sessionSigningTokenTtl = Duration.ofSeconds(120);
 
 	/**
+	 * The Gateway OUTER SSH host-certificate TTL (S16, FR-ADDR-1). Short-lived; the
+	 * Gateway re-fetches before expiry to rotate. Backdated by
+	 * {@link #certBackdate}.
+	 */
+	private Duration hostCertTtl = Duration.ofHours(1);
+
+	/**
 	 * Backdating applied to issued certs' not-before for clock skew (FR-BOOT-4).
 	 */
 	private Duration certBackdate = Duration.ofMinutes(2);
@@ -82,6 +89,14 @@ public class MtlsProperties {
 
 	public void setSessionSigningTokenTtl(Duration sessionSigningTokenTtl) {
 		this.sessionSigningTokenTtl = sessionSigningTokenTtl;
+	}
+
+	public Duration getHostCertTtl() {
+		return hostCertTtl;
+	}
+
+	public void setHostCertTtl(Duration hostCertTtl) {
+		this.hostCertTtl = hostCertTtl;
 	}
 
 	public Duration getCertBackdate() {

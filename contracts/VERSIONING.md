@@ -295,6 +295,34 @@ columns and `cp_runtime` grants were front-loaded in S2/S3).
    (it lives here as the canonical cross-repo home; the CP generates unused Java).
    **Session bytes never traverse the coordination bus** — the bus is signalling only.
 
+**Session Sixteen added host addressing + node lifecycle, all additive (gRPC stays
+`1.1`, OpenAPI stays `v1`, wire stays `1.0`, no migration** — the node lifecycle
+columns `node.status`/`health`/`status_*` and the `agent_identity` generation
+guard were front-loaded in S2/S3/S10). `buf breaking`-clean vs `main`.
+
+1. **`AuthorizeRequest.node_name` (field 9)** — the target node's HUMAN NAME the
+   Gateway forwards from its `TargetResolver`. When set, the CP resolves it to
+   `runtime.node.id` via `findByName` — **server-side + authoritative** (a
+   client-asserted `node_id` is ignored when a name is present; §2.6/§11) — and an
+   unknown name yields the same generic deny as any no-match (§7.1). Empty ⇒ the
+   CP falls back to `node_id` (UUID) for direct-id callers. Closes
+   `F-ha-connect-nodename-1`: the platform is usable by human node name across all
+   three OpenSSH addressing modes. An N-1 CP without the field falls back to the
+   `node_id` UUID (unchanged behaviour), so the window holds.
+2. **A new additive service `HostCertSigning`** (`signing.proto`) —
+   `SignGatewayHostCertificate` issues the Gateway's OUTER SSH host certificate
+   (host CA) for the ProxyJump host-cert MITM path (§9.3/§11; FR-ADDR-1). Unlike
+   `SessionSigning` it is NOT session-bound: it is authorized purely by the
+   caller's ACTIVE, UNLOCKED gateway mTLS identity (the lock is the revocation).
+   Key custody per D2 (Gateway sends only the public key; cert-only return). A new
+   RPC within the already-bumped 1.1 minor does not move the number.
+3. **OpenAPI `/v1/nodes`** — the `nodes` resource (register agentless / list / get
+   / quarantine=S10-Lock / release / remove=deregister+revoke) + join-token
+   issuance (S12, already present) so provisioning is an API flow, not hand-SQL
+   (closes `F-ha-e2e-devseed-1`). Platform-RBAC gated
+   (`node:enroll`/`node:quarantine`/`node:remove`) + audited. Adding paths/schemas
+   is an additive, backward-compatible OpenAPI change within URI major **v1**.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
