@@ -14,7 +14,13 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * them nor the internal CA); the OIDC RP is off by default (subclasses that
  * need the {@code oidc-mock} enable it).
  */
-@SpringBootTest(properties = "sessionlayer.mtls.server.port=0")
+// Raise the token-endpoint rate limit for ITs: all suites share the localhost
+// source bucket, so the fixed-window default (30/min) is exhausted cumulatively
+// by
+// the CRUD suites in a fast CI run, flaking later suites with `rate_limited`.
+// Tests
+// exercise the limiter directly in AuthController/OtpService tests, not here.
+@SpringBootTest(properties = {"sessionlayer.mtls.server.port=0", "sessionlayer.auth.token-endpoint.max=1000000"})
 public abstract class AbstractAuthIT {
 
 	@SuppressWarnings("resource")
