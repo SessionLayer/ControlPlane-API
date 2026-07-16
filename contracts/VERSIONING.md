@@ -350,6 +350,32 @@ guard were front-loaded in S2/S3/S10). `buf breaking`-clean vs `main`.
    decision); config is UI + API over Postgres (D11). The column and the config/
    runtime schema split are retained.
 
+**Session Eighteen implemented the frozen audit/recording read side — additive
+OpenAPI only (gRPC stays `1.1`, wire stays `1.0`, URI major stays `v1`,
+`info.version` stays `0.1.0`).** No protobuf/wire change, so `buf breaking` is
+untouched. One migration (`V23`) — not a contract-version event. The `recordings`
+and `audit-events` operations moved from `501` stub to implemented; the drift gate
+(controllers implement the generated interfaces) stays green.
+
+1. **Audit-event search / get** (`/v1/audit-events`, FR-AUD-8/9) — implemented.
+   To cover every FR-AUD-8 dimension the search gained **additive optional query
+   params** (`capability`, `accessModel`, `nodeLabel` repeatable, `correlationId`)
+   on top of the frozen set. Adding optional query params is backward-compatible
+   within URI major **v1**. `audit:read`-gated, results RBAC-scope-filtered,
+   read-only (the append-only hash chain stays verifiable).
+2. **Recording replay/export** (`/v1/recordings/{id}/replay|export`, FR-AUD-5) —
+   implemented as short-lived signed **GET** URLs to the still-encrypted object
+   (bytes never through the CP; the CP cannot decrypt). `recording:replay`/
+   `recording:export`-gated, scopable (FR-PADM-2), itself audited.
+3. **Recording retention/legal-hold/governance-delete** (FR-AUD-3/6) — two
+   **additive** operations: `DELETE /v1/recordings/{id}` (governance erasure) and
+   `PUT /v1/recordings/{id}/legal-hold`, both gated on the **new**
+   `recording:delete` platform permission (added additively to the
+   `PlatformPermission` enum + the `platform_role` CHECK, `V23`). `RecordingResource`
+   gained additive optional fields (`identity`, `nodeId`, `status`, `wormMode`,
+   `prunedAt`). Compliance-mode = un-deletable (object-lock); legal hold blocks
+   both prune and governance delete.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)
