@@ -22,9 +22,11 @@ import tools.jackson.databind.ObjectMapper;
 @Configuration
 public class LoggingAuditForwarder {
 
+	// Method name must differ from the @Configuration class's own bean name
+	// (loggingAuditForwarder) or the two definitions collide (override is disabled).
 	@Bean
 	@ConditionalOnMissingBean(AuditForwarder.class)
-	AuditForwarder loggingAuditForwarder(ObjectMapper objectMapper) {
+	AuditForwarder auditForwarder(ObjectMapper objectMapper) {
 		return new StructuredLogForwarder(objectMapper);
 	}
 
