@@ -2,6 +2,7 @@ package io.sessionlayer.controlplane.grpc;
 
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.grpc.v1.Lock;
+import io.sessionlayer.controlplane.grpc.v1.LockMode;
 import io.sessionlayer.controlplane.grpc.v1.LockTarget;
 import java.time.Instant;
 import java.util.function.Consumer;
@@ -22,7 +23,13 @@ final class LockCodec {
 	static Lock toProto(AccessLock lock) {
 		return Lock.newBuilder().setLockId(lock.id().toString()).setTarget(toTarget(lock.targetSelector()))
 				.setExpiresAtEpochSeconds(epoch(lock.expiresAt())).setCreatedAtEpochSeconds(epoch(lock.createdAt()))
-				.setReason(nullToEmpty(lock.reason())).build();
+				.setReason(nullToEmpty(lock.reason())).setMode(mode(lock.mode())).build();
+	}
+
+	// A persisted lock is always strict or best_effort (NOT NULL CHECK); a
+	// null/unknown value maps to STRICT — the stronger, fail-safe deny.
+	private static LockMode mode(String mode) {
+		return "best_effort".equals(mode) ? LockMode.LOCK_MODE_BEST_EFFORT : LockMode.LOCK_MODE_STRICT;
 	}
 
 	static LockTarget toTarget(JsonNode selector) {

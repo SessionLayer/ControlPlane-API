@@ -203,6 +203,28 @@ class AuditEventSearchIT extends AbstractConfigApiIT {
 				.isForbidden();
 	}
 
+	// GET /v1/audit-events/{id} (implemented on main; not a 501): a scoped caller
+	// whose grant COVERS the event reads it (200); an absent id is an
+	// indistinguishable 404 for a permitted caller; no audit:read grant is 403.
+	@Test
+	void getByIdHonoursScopeAbsenceAndGrant() {
+		UUID run = UUID.randomUUID();
+		String tag = run.toString().substring(0, 8);
+		AuditEvent event = seed("u-" + tag, null, "scope.get", "success", run, null, null, null, null, null,
+				labels("env", "prod"), T3);
+
+		ObjectNode inScope = JSON.objectNode();
+		inScope.set("node_labels", JSON.objectNode().put("env", "prod"));
+		String scoped = scopedToken("svc-audit-getins-" + run, inScope, PlatformPermissions.AUDIT_READ);
+		assertThat(getStatus(scoped, event.id())).isEqualTo(200);
+
+		String all = tokenWith("svc-audit-getabsent-" + run, PlatformPermissions.AUDIT_READ);
+		assertThat(getStatus(all, UUID.randomUUID())).isEqualTo(404);
+
+		String none = tokenWith("svc-audit-getnograntget-" + run);
+		assertThat(getStatus(none, event.id())).isEqualTo(403);
+	}
+
 	@Test
 	void correlatedStreamReconstructsApproveConnectRunReplay() {
 		// The primary correlation key in this codebase is session_id — connect/run/
