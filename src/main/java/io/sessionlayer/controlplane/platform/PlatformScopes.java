@@ -1,39 +1,95 @@
 package io.sessionlayer.controlplane.platform;
 
 import java.time.Instant;
-import java.util.Set;
 import tools.jackson.databind.JsonNode;
 
 /**
  * Decides whether a {@code role_binding}'s stored scope <b>covers</b> a
  * requested scopable action (FR-PADM-2). A binding with no scope is
  * unrestricted and covers anything; a scoped binding cannot authorize an
- * unscoped/global request. Each present facet ({@code node_labels},
- * {@code users}, {@code time}) must be satisfied (AND); an absent facet is
- * unrestricted. A malformed scope throws — the caller denies (fail closed).
+ * unscoped/global request, and must impose at least one <b>effective</b> facet
+ * ({@code node_labels}, {@code users}, {@code time}) — each
+ * present-and-effective facet must be satisfied (AND). A present-but-degenerate
+ * or unrecognized-only scope imposes no constraint and therefore covers
+ * <b>nothing</b> (fail closed), exactly mirroring {@code AuditSearchSql}'s
+ * scope predicate so the search filter and the single-event scope check cannot
+ * diverge.
  */
 public final class PlatformScopes {
 
 	private PlatformScopes() {
 	}
 
-	private static final Set<String> FACETS = Set.of("node_labels", "users", "time");
-
 	public static boolean covers(JsonNode scope, PlatformScope request) {
 		if (scope == null || scope.isNull() || scope.isEmpty()) {
 			return true; // unrestricted binding (no scope)
 		}
-		// A malformed scope must fail closed, not silently widen the binding: a
-		// non-object, or an object whose only keys are unrecognized (a typo'd facet),
-		// covers nothing (mirrors LockMatching's recognized-facet discipline).
-		if (!scope.isObject() || FACETS.stream().noneMatch(scope::has)) {
+		if (!scope.isObject() || request == null) {
+			// Non-object => malformed; a scoped binding cannot authorize an unscoped/global
+			// action. Fail closed either way.
 			return false;
 		}
-		if (request == null) {
-			return false; // a scoped binding cannot authorize an unscoped/global action
+		// A scoped binding must impose at least one EFFECTIVE recognized facet, and
+		// cover
+		// the request on each present-and-effective facet. A present-but-degenerate
+		// facet
+		// (empty node_labels object, empty users array, a non-object/non-array facet, a
+		// time object with no bounds, or only unrecognized keys) imposes NO constraint
+		// —
+		// so a binding with no effective constraint covers NOTHING (fail closed). This
+		// mirrors AuditSearchSql's non-empty-AND predicate exactly, so the search
+		// filter
+		// and the single-event scope check can never diverge (no read-by-id scope
+		// bypass).
+		boolean anyConstraint = false;
+		JsonNode nodeLabels = scope.get("node_labels");
+		if (nodeLabels != null && nodeLabels.isObject() && !nodeLabels.isEmpty()) {
+			anyConstraint = true;
+			if (!nodeLabelsCover(nodeLabels, request)) {
+				return false;
+			}
 		}
-		return nodeLabelsCover(scope.get("node_labels"), request) && usersCover(scope.get("users"), request)
-				&& timeCovers(scope.get("time"), request);
+		JsonNode users = scope.get("users");
+		if (users != null && users.isArray() && !users.isEmpty()) {
+			anyConstraint = true;
+			if (!usersCover(users, request)) {
+				return false;
+			}
+		}
+		JsonNode time = scope.get("time");
+		if (time != null && time.isObject() && (time.has("not_before") || time.has("not_after"))) {
+			anyConstraint = true;
+			if (!timeCovers(time, request)) {
+				return false;
+			}
+		}
+		return anyConstraint;
+	}
+
+	/**
+	 * Whether a {@code role_binding} scope is storable: unset/empty (an unscoped
+	 * binding) or imposing at least one <b>effective</b> facet. A degenerate or
+	 * unrecognized-only scope ({@code {"node_labels":{}}}, {@code {"users":[]}}, a
+	 * typo'd key) is rejected at write time — otherwise it covers nothing (fail
+	 * closed) yet reads as "scoped", a footgun that silently locks a grant out.
+	 */
+	public static boolean isValid(JsonNode scope) {
+		if (scope == null || scope.isNull() || scope.isEmpty()) {
+			return true;
+		}
+		if (!scope.isObject()) {
+			return false;
+		}
+		JsonNode nodeLabels = scope.get("node_labels");
+		if (nodeLabels != null && nodeLabels.isObject() && !nodeLabels.isEmpty()) {
+			return true;
+		}
+		JsonNode users = scope.get("users");
+		if (users != null && users.isArray() && !users.isEmpty()) {
+			return true;
+		}
+		JsonNode time = scope.get("time");
+		return time != null && time.isObject() && (time.has("not_before") || time.has("not_after"));
 	}
 
 	private static boolean nodeLabelsCover(JsonNode nodeLabels, PlatformScope request) {

@@ -24,7 +24,7 @@ import io.sessionlayer.controlplane.recording.FileTransferAuditEntry;
 import io.sessionlayer.controlplane.recording.RecordingRegistration;
 import io.sessionlayer.controlplane.recording.RecordingRegistrationService;
 import io.sessionlayer.controlplane.recording.RecordingRequestContext;
-import io.sessionlayer.controlplane.recording.WormObjectStore.PresignedUpload;
+import io.sessionlayer.controlplane.recording.RecordingStore.PresignedAccess;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -112,7 +112,7 @@ public class RecordingService extends RecordingGrpc.RecordingImplBase {
 				.build();
 	}
 
-	private static UploadCredential toUpload(PresignedUpload upload) {
+	private static UploadCredential toUpload(PresignedAccess upload) {
 		return UploadCredential.newBuilder().setUrl(upload.url()).setMethod(upload.method())
 				.putAllRequiredHeaders(upload.requiredHeaders())
 				.setExpiresAtEpochSeconds(upload.expiresAtEpochSeconds()).build();

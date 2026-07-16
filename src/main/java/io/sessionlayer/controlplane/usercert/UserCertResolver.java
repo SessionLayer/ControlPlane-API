@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.usercert;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.ca.CaRotationService;
 import io.sessionlayer.controlplane.ca.cert.UserCertificateVerifier;
 import io.sessionlayer.controlplane.ca.cert.UserCertificateVerifier.Verdict;
@@ -28,9 +28,9 @@ public class UserCertResolver {
 	private static final Duration CLOCK_SKEW = Duration.ofSeconds(60);
 
 	private final CaRotationService caRotation;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
-	public UserCertResolver(CaRotationService caRotation, AuditWriter audit) {
+	public UserCertResolver(CaRotationService caRotation, AuditEventStore audit) {
 		this.caRotation = caRotation;
 		this.audit = audit;
 	}

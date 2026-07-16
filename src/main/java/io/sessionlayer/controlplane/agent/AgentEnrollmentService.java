@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.agent;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.authz.LockMatching;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.ca.mtls.LeafCertificateSpec;
@@ -51,12 +51,12 @@ public class AgentEnrollmentService {
 	private final NodeRepository nodes;
 	private final AccessLockRepository accessLocks;
 	private final AgentJoinProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final ObjectMapper objectMapper;
 
 	public AgentEnrollmentService(AgentJoinTokenService tokenJoin, OidcJoinVerifier oidcJoin, MtlsJoinVerifier mtlsJoin,
 			InternalMtlsCaService mtlsCa, AgentIdentityRepository agentIdentities, NodeRepository nodes,
-			AccessLockRepository accessLocks, AgentJoinProperties properties, AuditWriter audit,
+			AccessLockRepository accessLocks, AgentJoinProperties properties, AuditEventStore audit,
 			ObjectMapper objectMapper) {
 		this.tokenJoin = tokenJoin;
 		this.oidcJoin = oidcJoin;

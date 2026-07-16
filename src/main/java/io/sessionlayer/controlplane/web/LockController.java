@@ -5,7 +5,7 @@ import io.sessionlayer.controlplane.api.model.CreateLockRequest;
 import io.sessionlayer.controlplane.api.model.LockList;
 import io.sessionlayer.controlplane.api.model.LockResource;
 import io.sessionlayer.controlplane.api.model.LockTarget;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.grpc.LockFeedHub;
@@ -44,12 +44,12 @@ public class LockController implements LocksApi {
 
 	private final AccessLockRepository accessLocks;
 	private final LockFeedHub lockFeedHub;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final PlatformAuthorization platformAuthorization;
 	private final CurrentAuthentication currentAuthentication;
 	private final TransactionalOperator tx;
 
-	public LockController(AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditWriter audit,
+	public LockController(AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditEventStore audit,
 			PlatformAuthorization platformAuthorization, CurrentAuthentication currentAuthentication,
 			TransactionalOperator tx) {
 		this.accessLocks = accessLocks;

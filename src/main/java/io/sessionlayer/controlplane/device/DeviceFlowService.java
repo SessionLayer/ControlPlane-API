@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.device;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.AuthProperties;
 import io.sessionlayer.controlplane.auth.RateLimiter;
 import io.sessionlayer.controlplane.auth.Secrets;
@@ -33,11 +33,11 @@ public class DeviceFlowService {
 	private final OidcProperties oidcProperties;
 	private final AuthProperties authProperties;
 	private final RateLimiter rateLimiter;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final ObjectMapper objectMapper;
 
 	public DeviceFlowService(DeviceFlowRepository deviceFlows, OidcProperties oidcProperties,
-			AuthProperties authProperties, RateLimiter rateLimiter, AuditWriter audit, ObjectMapper objectMapper) {
+			AuthProperties authProperties, RateLimiter rateLimiter, AuditEventStore audit, ObjectMapper objectMapper) {
 		this.deviceFlows = deviceFlows;
 		this.oidcProperties = oidcProperties;
 		this.authProperties = authProperties;

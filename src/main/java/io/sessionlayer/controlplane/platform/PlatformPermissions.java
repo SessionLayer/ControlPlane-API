@@ -20,6 +20,11 @@ public final class PlatformPermissions {
 	public static final String REQUEST_APPROVE = "request:approve";
 	public static final String RECORDING_REPLAY = "recording:replay";
 	public static final String RECORDING_EXPORT = "recording:export";
+	/**
+	 * Governance-mode erasure + legal-hold custody (FR-AUD-3/6): destructive,
+	 * specifically-privileged.
+	 */
+	public static final String RECORDING_DELETE = "recording:delete";
 	public static final String AUDIT_READ = "audit:read";
 	public static final String USER_MANAGE = "user:manage";
 	public static final String SETTINGS_WRITE = "settings:write";
@@ -28,10 +33,17 @@ public final class PlatformPermissions {
 	public static final String BREAKGLASS_MANAGE = "breakglass:manage";
 
 	public static final Set<String> ALL = Set.of(RBAC_READ, RBAC_WRITE, NODE_ENROLL, NODE_QUARANTINE, NODE_REMOVE,
-			CA_MANAGE, CA_ROTATE, REQUEST_APPROVE, RECORDING_REPLAY, RECORDING_EXPORT, AUDIT_READ, USER_MANAGE,
-			SETTINGS_WRITE, LOCK_READ, LOCK_WRITE, BREAKGLASS_MANAGE);
+			CA_MANAGE, CA_ROTATE, REQUEST_APPROVE, RECORDING_REPLAY, RECORDING_EXPORT, RECORDING_DELETE, AUDIT_READ,
+			USER_MANAGE, SETTINGS_WRITE, LOCK_READ, LOCK_WRITE, BREAKGLASS_MANAGE);
 
-	public static final Set<String> SCOPABLE = Set.of(RECORDING_REPLAY, RECORDING_EXPORT);
+	/**
+	 * Permissions a {@code role_binding} scope narrows (FR-PADM-2, FR-AUD-8):
+	 * {@code recording:replay}/{@code recording:export} via the strict per-request
+	 * {@code covers()} gate, and {@code audit:read} via the search RESULT filter
+	 * ({@code resolveScopeGrant}). A scope on any other permission is fail-closed
+	 * (an unscoped action a scoped binding cannot cover → deny).
+	 */
+	public static final Set<String> SCOPABLE = Set.of(RECORDING_REPLAY, RECORDING_EXPORT, AUDIT_READ);
 
 	private PlatformPermissions() {
 	}

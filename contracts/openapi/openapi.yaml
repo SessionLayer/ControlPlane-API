@@ -116,13 +116,15 @@ tags:
       get (`audit:read`); terminate pushes an S10 Lock (`lock:write`) + audited.
   - name: recordings
     description: >-
-      Session-recording read surface (Design §12/§18; FR-API-2). List/get + replay/
-      export signed URLs; gated (`recording:replay`/`recording:export`). FROZEN
-      contract — returns 501 until Session 18.
+      Session-recording admin surface (Design §12/§18; FR-AUD-5/6, FR-PADM-2).
+      List/get + replay/export short-lived signed URLs (bytes never proxy through
+      the CP; the object stays customer-key encrypted) gated
+      (`recording:replay`/`recording:export`, scopable); legal-hold + governance
+      delete gated (`recording:delete`) + audited.
   - name: audit-events
     description: >-
-      Correlated audit-stream search (`runtime.audit_event`; Design §12). Gated
-      (`audit:read`). FROZEN contract — returns 501 until Session 18.
+      Correlated audit-stream search (`runtime.audit_event`; Design §12,
+      FR-AUD-8/9). Gated (`audit:read`), RBAC-scope-filtered, read-only.
 # Default security applied to operations that do not override it. The public
 # meta probes below explicitly opt out with `security: []`. Declaring the three
 # first-class schemes here (Design §13, FR-AUTH-17) fixes them in the contract.
@@ -2550,13 +2552,12 @@ paths:
   /v1/recordings:
     get:
       operationId: listRecordings
-      summary: List session recordings (admin) — FROZEN, 501 until Session 18.
+      summary: List session recordings (admin).
       description: |
         Lists session recording metadata (`runtime.recording_ref`; Design §12).
         NEVER returns recording bytes — replay/export issue short-lived signed URLs.
-        Optional filters narrow by session, node, identity, and time. Cursor-paginated.
-        Platform-RBAC gated (`recording:replay`). FROZEN CONTRACT: returns `501` until
-        Session 18 implements it.
+        Optional filters narrow by session, node, and identity. Cursor-paginated.
+        Platform-RBAC gated (`recording:replay`).
       tags:
         - recordings
       parameters:
@@ -2593,8 +2594,6 @@ paths:
           $ref: '#/components/responses/Problem'
         '403':
           $ref: '#/components/responses/Problem'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
         default:
           $ref: '#/components/responses/Problem'
   /v1/recordings/{recordingId}:
@@ -2602,10 +2601,10 @@ paths:
       - $ref: '#/components/parameters/RecordingId'
     get:
       operationId: getRecording
-      summary: Get session recording metadata (admin) — FROZEN, 501 until Session 18.
+      summary: Get session recording metadata (admin).
       description: |
         Returns one recording's metadata (never bytes). Platform-RBAC gated
-        (`recording:replay`). FROZEN CONTRACT: returns `501` until Session 18.
+        (`recording:replay`).
       tags:
         - recordings
       responses:
@@ -2619,8 +2618,31 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        default:
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: deleteRecording
+      summary: Governance-delete a recording (admin, privileged).
+      description: |
+        Governance-mode erasure escape hatch (Design §12.2/§12.3, FR-AUD-3/6): a
+        specifically-privileged, audited role deletes the encrypted recording object
+        and marks the metadata pruned. Platform-RBAC gated (`recording:delete`) +
+        audited (FR-PADM-3). Refused (`409`) for a **compliance**-mode recording
+        (truly un-deletable, object-lock) or one under **legal hold**. Idempotent —
+        `204` whether or not the object was still present.
+      tags:
+        - recordings
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: The recording object was governance-deleted (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
         default:
           $ref: '#/components/responses/Problem'
   /v1/recordings/{recordingId}/replay:
@@ -2628,13 +2650,13 @@ paths:
       - $ref: '#/components/parameters/RecordingId'
     post:
       operationId: replayRecording
-      summary: Issue a replay signed URL (admin) — FROZEN, 501 until Session 18.
+      summary: Issue a replay signed URL (admin).
       description: |
         Issues a short-lived, single-object SIGNED URL for replaying a recording
-        (Design §12.2/§18) — bytes NEVER proxy through the CP; the access is itself
-        audited (FR-PADM-3). Platform-RBAC gated (`recording:replay`), scopable by
-        node-label/user/time (FR-PADM-2). FROZEN CONTRACT: returns `501` until
-        Session 18 implements signed-URL issuance.
+        (Design §12.2/§18) — bytes NEVER proxy through the CP and the object stays
+        customer-key encrypted (the CP cannot decrypt); the access is itself audited
+        (FR-AUD-5/FR-PADM-3). Platform-RBAC gated (`recording:replay`), scopable by
+        node-label/user/time (FR-PADM-2).
       tags:
         - recordings
       parameters:
@@ -2650,8 +2672,8 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '409':
+          $ref: '#/components/responses/Problem'
         default:
           $ref: '#/components/responses/Problem'
   /v1/recordings/{recordingId}/export:
@@ -2659,12 +2681,12 @@ paths:
       - $ref: '#/components/parameters/RecordingId'
     post:
       operationId: exportRecording
-      summary: Issue an export signed URL (admin) — FROZEN, 501 until Session 18.
+      summary: Issue an export signed URL (admin).
       description: |
         Issues a short-lived, single-object SIGNED URL for exporting a recording
-        (Design §12.2/§18) — bytes NEVER proxy through the CP; itself audited.
-        Platform-RBAC gated (`recording:export`), scopable (FR-PADM-2). FROZEN
-        CONTRACT: returns `501` until Session 18.
+        (Design §12.2/§18) — bytes NEVER proxy through the CP and the object stays
+        customer-key encrypted (the CP cannot decrypt); itself audited (FR-AUD-5).
+        Platform-RBAC gated (`recording:export`), scopable (FR-PADM-2).
       tags:
         - recordings
       parameters:
@@ -2680,20 +2702,62 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+        '409':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/recordings/{recordingId}/legal-hold:
+    parameters:
+      - $ref: '#/components/parameters/RecordingId'
+    put:
+      operationId: setRecordingLegalHold
+      summary: Set or release a recording's legal hold (admin, privileged).
+      description: |
+        Places or releases a legal hold on a recording (Design §12.3, FR-AUD-6). A
+        held recording is exempt from retention pruning AND governance delete in
+        either WORM mode. Platform-RBAC gated (`recording:delete`) + audited
+        (FR-PADM-3). Idempotent by desired state.
+      tags:
+        - recordings
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegalHoldRequest'
+      responses:
+        '200':
+          description: The updated recording metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
         default:
           $ref: '#/components/responses/Problem'
   /v1/audit-events:
     get:
       operationId: searchAuditEvents
-      summary: Search the audit stream (admin) — FROZEN, 501 until Session 18.
+      summary: Search the correlated audit stream (admin).
       description: |
-        Searches the correlated audit stream (`runtime.audit_event`; Design §12) —
-        one stream for SSH-session and web/admin events, correlated by id. Filters:
-        actor, subject, action, outcome, node, session, source IP, and a time range.
-        Cursor-paginated. Platform-RBAC gated (`audit:read`). FROZEN CONTRACT:
-        returns `501` until Session 18 implements the query.
+        Searches the correlated audit stream (`runtime.audit_event`; Design §12,
+        FR-AUD-8/9) — one append-only stream for SSH-session and web/admin events,
+        correlated by id, newest-first. Search dimensions (FR-AUD-8): identity
+        (`actor`), subject, action, outcome, node (`nodeId`) and node label
+        (`nodeLabel`), session, source IP, capability, access model, and a time
+        range; `correlationId` reconstructs one full path (approve → connect → run →
+        replay, FR-AUD-9). Cursor-paginated. Read-only — a search never mutates the
+        append-only stream and the hash chain stays verifiable. Platform-RBAC gated
+        (`audit:read`); results are additionally filtered to the caller's RBAC scope
+        (a node-label/user/time-scoped `audit:read` grant returns only in-scope
+        events; an unscoped grant sees all).
       tags:
         - audit-events
       parameters:
@@ -2757,9 +2821,39 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: capability
+          in: query
+          required: false
+          description: Filter to events whose capability set includes this capability (FR-AUD-8).
+          schema:
+            $ref: '#/components/schemas/Capability'
+        - name: accessModel
+          in: query
+          required: false
+          description: Filter by the session's access model (FR-AUD-8).
+          schema:
+            $ref: '#/components/schemas/AccessModel'
+        - name: nodeLabel
+          in: query
+          required: false
+          description: |
+            Filter by a snapshot node label as `key=value` (FR-AUD-8). Repeatable;
+            all supplied labels must match (AND).
+          schema:
+            type: array
+            items:
+              type: string
+              maxLength: 512
+        - name: correlationId
+          in: query
+          required: false
+          description: Filter to one correlation id — the FR-AUD-9 full-path join key.
+          schema:
+            type: string
+            format: uuid
       responses:
         '200':
-          description: A page of audit events.
+          description: A page of audit events (newest first).
           content:
             application/json:
               schema:
@@ -2768,8 +2862,6 @@ paths:
           $ref: '#/components/responses/Problem'
         '403':
           $ref: '#/components/responses/Problem'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
         default:
           $ref: '#/components/responses/Problem'
   /v1/audit-events/{auditEventId}:
@@ -4063,6 +4155,7 @@ components:
         - request:approve
         - recording:replay
         - recording:export
+        - recording:delete
         - audit:read
         - user:manage
         - settings:write
@@ -5105,9 +5198,21 @@ components:
         sessionId:
           type: string
           format: uuid
+        identity:
+          type: string
+          description: The session subject identity (the recorded user).
+        nodeId:
+          type: string
+          format: uuid
         format:
           type: string
           description: Capture format (e.g. `asciicast-v2`).
+        status:
+          type: string
+          description: Lifecycle status (`recording|finalized|truncated|failed`).
+        wormMode:
+          type: string
+          description: WORM object-lock mode (`compliance|governance`).
         sizeBytes:
           type: integer
           format: int64
@@ -5122,6 +5227,10 @@ components:
         retentionUntil:
           type: string
           format: date-time
+        prunedAt:
+          type: string
+          format: date-time
+          description: When the encrypted object was deleted (retention prune or governance delete); metadata is retained.
         startedAt:
           type: string
           format: date-time
@@ -5131,6 +5240,20 @@ components:
         createdAt:
           type: string
           format: date-time
+      additionalProperties: false
+    LegalHoldRequest:
+      type: object
+      title: Legal Hold Request
+      description: Places or releases a legal hold on a recording (FR-AUD-6).
+      required:
+        - held
+      properties:
+        held:
+          type: boolean
+          description: True to place a legal hold, false to release it.
+        reason:
+          type: string
+          maxLength: 4096
       additionalProperties: false
     RecordingPage:
       type: object

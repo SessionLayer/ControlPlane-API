@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.ca.CaRotationService;
 import io.sessionlayer.controlplane.data.config.CaConfig;
 import io.sessionlayer.controlplane.data.config.CaConfigRepository;
@@ -43,11 +43,11 @@ public class CaConfigService {
 	private final CaConfigRepository caConfigs;
 	private final CaRotationService rotation;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
 	public CaConfigService(CaConfigRepository caConfigs, CaRotationService rotation, CursorPages cursorPages,
-			AuditWriter audit, TransactionalOperator tx) {
+			AuditEventStore audit, TransactionalOperator tx) {
 		this.caConfigs = caConfigs;
 		this.rotation = rotation;
 		this.cursorPages = cursorPages;

@@ -2,6 +2,7 @@ package io.sessionlayer.controlplane.recording;
 
 import jakarta.annotation.PreDestroy;
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -24,34 +25,42 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.ObjectLockMode;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
 /**
- * The WORM object store for session recordings (Design §12.2, FR-AUD-3). The CP
- * never touches recording bytes: it ensures the bucket exists with S3
- * <b>object-lock enabled</b> and issues a short-lived, single-object presigned
- * PUT with the object-lock mode + retain-until baked into the signature, so the
- * Gateway uploads the ciphertext directly and <b>cannot strip the WORM lock</b>
- * (changing any signed header breaks the signature → the store rejects the
- * PUT).
+ * The S3-compatible WORM {@link RecordingStore} — the current recording
+ * object-store backend (Design §12.2, FR-AUD-3). The CP never touches recording
+ * bytes: it ensures the bucket exists with S3 <b>object-lock enabled</b>,
+ * issues a short-lived single-object presigned PUT with the object-lock mode +
+ * retain-until baked into the signature (so the Gateway uploads ciphertext
+ * directly and <b>cannot strip the WORM lock</b>), issues a short-lived
+ * presigned GET for admin replay/export (the object stays customer-key
+ * encrypted — the CP cannot decrypt it), and performs governance-mode deletion
+ * (compliance is refused, object-lock un-deletable).
  *
  * <p>
- * Bucket-ensure ({@link #ensureBucket()}) does network I/O and is done EAGERLY
- * at startup (and idempotently short-circuited thereafter) so it never runs
- * inside a request-path DB transaction (reliability). The presign
- * ({@link #presign}) is pure local crypto (no network). Both run off the
- * reactive event loop on the bounded-elastic scheduler (non-blocking
- * discipline).
+ * Bucket-ensure ({@link #ensureReady()}) does network I/O and is done EAGERLY
+ * at startup (idempotently short-circuited thereafter) so it never runs inside
+ * a request-path DB transaction. The presigns are pure local crypto (no
+ * network). Every S3 call runs off the reactive event loop on the
+ * bounded-elastic scheduler (non-blocking discipline).
  */
 @Component
-public class WormObjectStore {
+public class WormObjectStore implements RecordingStore {
 
 	private static final Logger LOG = LoggerFactory.getLogger(WormObjectStore.class);
 
@@ -80,44 +89,80 @@ public class WormObjectStore {
 		this.presigner = presignerBuilder.build();
 	}
 
-	/** A presigned single-object upload: the URL, method, and headers to replay. */
-	public record PresignedUpload(String url, String method, Map<String, String> requiredHeaders,
-			long expiresAtEpochSeconds) {
-	}
-
 	// Eagerly create the bucket at startup so the request path never does bucket
 	// I/O
 	// inside a DB transaction. Best-effort: if the store is down at boot, the guard
-	// stays unset and the first RequestUpload re-ensures (fail-closed, not
-	// fail-boot).
+	// stays unset and the first upload re-ensures (fail-closed, not fail-boot).
 	@EventListener(ApplicationReadyEvent.class)
 	void warmUp() {
-		ensureBucket().subscribe(ignored -> {
+		ensureReady().subscribe(ignored -> {
 		}, error -> LOG.warn("WORM bucket warm-up failed (will retry on first upload): {}", error.toString()));
 	}
 
-	/**
-	 * Ensure the WORM bucket exists with object-lock enabled. Idempotent + short-
-	 * circuited after the first success; runs off the event loop.
-	 */
-	public Mono<Void> ensureBucket() {
+	@Override
+	public Mono<Void> ensureReady() {
 		return Mono.<Void>fromRunnable(this::ensureBucketBlocking).subscribeOn(Schedulers.boundedElastic());
 	}
 
-	/**
-	 * Presign a single-object PUT scoped to {@code objectKey} with the WORM mode +
-	 * {@code retainUntil} locked into the signature. Pure local crypto (no
-	 * network); the caller is responsible for having ensured the bucket. Runs off
-	 * the event loop.
-	 */
-	public Mono<PresignedUpload> presign(String objectKey, String wormMode, Instant retainUntil) {
-		return Mono.fromCallable(() -> presignBlocking(objectKey, wormMode, retainUntil))
+	@Override
+	public Mono<PresignedAccess> presignUpload(String objectKey, String wormMode, Instant retainUntil) {
+		return Mono.fromCallable(() -> presignUploadBlocking(objectKey, wormMode, retainUntil))
 				.subscribeOn(Schedulers.boundedElastic());
 	}
 
-	/**
-	 * Liveness probe for the health indicator: HEAD the bucket. Off the event loop.
-	 */
+	@Override
+	public Mono<PresignedAccess> presignDownload(String objectKey, Duration ttl) {
+		return Mono.fromCallable(() -> presignDownloadBlocking(objectKey, ttl))
+				.subscribeOn(Schedulers.boundedElastic());
+	}
+
+	@Override
+	public Mono<Void> deleteObject(String objectKey, String wormMode) {
+		// Compliance objects are truly un-deletable (object-lock); refuse in-app too so
+		// the intent is explicit and we never even attempt a call the store would
+		// reject
+		// (FR-AUD-3).
+		if ("compliance".equals(wormMode)) {
+			return Mono.error(new UnsupportedOperationException("compliance-mode recordings are un-deletable"));
+		}
+		// Object-lock ⇒ VERSIONED bucket: a key-only delete just writes a delete marker
+		// and the governance-locked VERSION survives (GetObjectVersion still returns
+		// the
+		// data) — GDPR erasure would be illusory + storage never reclaimed. Real
+		// erasure
+		// (FR-AUD-6) removes EVERY version + delete marker of the key, bypassing
+		// governance retention (the caller's credential carries
+		// s3:BypassGovernanceRetention).
+		return Mono.<Void>fromRunnable(() -> deleteAllVersionsBlocking(objectKey))
+				.subscribeOn(Schedulers.boundedElastic());
+	}
+
+	private void deleteAllVersionsBlocking(String objectKey) {
+		String bucket = properties.getBucket();
+		ListObjectVersionsRequest request = ListObjectVersionsRequest.builder().bucket(bucket).prefix(objectKey)
+				.build();
+		// prefix is a starts-with match, so filter to the EXACT key (a sibling key that
+		// shares the prefix must not be erased).
+		s3.listObjectVersionsPaginator(request).forEach(page -> {
+			for (ObjectVersion version : page.versions()) {
+				if (version.key().equals(objectKey)) {
+					deleteVersion(bucket, objectKey, version.versionId());
+				}
+			}
+			for (DeleteMarkerEntry marker : page.deleteMarkers()) {
+				if (marker.key().equals(objectKey)) {
+					deleteVersion(bucket, objectKey, marker.versionId());
+				}
+			}
+		});
+	}
+
+	private void deleteVersion(String bucket, String key, String versionId) {
+		s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).versionId(versionId)
+				.bypassGovernanceRetention(true).build());
+	}
+
+	@Override
 	public Mono<Void> probe() {
 		return Mono
 				.<Void>fromRunnable(
@@ -125,7 +170,7 @@ public class WormObjectStore {
 				.subscribeOn(Schedulers.boundedElastic());
 	}
 
-	private PresignedUpload presignBlocking(String objectKey, String wormMode, Instant retainUntil) {
+	private PresignedAccess presignUploadBlocking(String objectKey, String wormMode, Instant retainUntil) {
 		PutObjectRequest put = PutObjectRequest.builder().bucket(properties.getBucket()).key(objectKey)
 				.objectLockMode(objectLockMode(wormMode)).objectLockRetainUntilDate(retainUntil).build();
 		PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
@@ -134,10 +179,24 @@ public class WormObjectStore {
 		// The signed headers are part of the signature — the Gateway MUST replay them
 		// verbatim (they include x-amz-object-lock-* + host), so a value change breaks
 		// the signature and the store refuses the PUT (the lock cannot be stripped).
-		Map<String, String> headers = presigned.signedHeaders().entrySet().stream()
+		return new PresignedAccess(presigned.url().toString(), presigned.httpRequest().method().name(),
+				signedHeaders(presigned.signedHeaders()), presigned.expiration().getEpochSecond());
+	}
+
+	// A read-only presigned GET for admin replay/export. No object-lock headers (a
+	// GET does not mutate); the object remains customer-key encrypted end to end.
+	private PresignedAccess presignDownloadBlocking(String objectKey, Duration ttl) {
+		GetObjectRequest get = GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build();
+		GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder().signatureDuration(ttl)
+				.getObjectRequest(get).build();
+		PresignedGetObjectRequest presigned = presigner.presignGetObject(presignRequest);
+		return new PresignedAccess(presigned.url().toString(), presigned.httpRequest().method().name(),
+				signedHeaders(presigned.signedHeaders()), presigned.expiration().getEpochSecond());
+	}
+
+	private static Map<String, String> signedHeaders(Map<String, List<String>> signed) {
+		return signed.entrySet().stream()
 				.collect(Collectors.toMap(Map.Entry::getKey, entry -> String.join(",", entry.getValue())));
-		return new PresignedUpload(presigned.url().toString(), presigned.httpRequest().method().name(), headers,
-				presigned.expiration().getEpochSecond());
 	}
 
 	// Create-if-absent WITH object-lock enabled (which also turns on versioning).

@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.agent;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.ca.mtls.LeafCertificateSpec;
 import io.sessionlayer.controlplane.ca.mtls.LeafPurpose;
@@ -58,13 +58,14 @@ public class AgentRenewalService {
 	private final LockFeedHub lockFeedHub;
 	private final AgentSecurityAlerts alerts;
 	private final AgentJoinProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 	private final ObjectMapper objectMapper;
 
 	public AgentRenewalService(InternalMtlsCaService mtlsCa, AgentIdentityRepository agentIdentities,
 			NodeRepository nodes, AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AgentSecurityAlerts alerts,
-			AgentJoinProperties properties, AuditWriter audit, TransactionalOperator tx, ObjectMapper objectMapper) {
+			AgentJoinProperties properties, AuditEventStore audit, TransactionalOperator tx,
+			ObjectMapper objectMapper) {
 		this.mtlsCa = mtlsCa;
 		this.agentIdentities = agentIdentities;
 		this.nodes = nodes;

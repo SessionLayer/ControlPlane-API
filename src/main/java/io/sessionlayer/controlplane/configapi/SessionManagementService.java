@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
@@ -31,13 +31,13 @@ public class SessionManagementService {
 	private final CursorPages cursorPages;
 	private final AccessLockRepository accessLocks;
 	private final LockFeedHub lockFeedHub;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 	private final ObjectMapper objectMapper;
 	private final SessionManagementProperties properties;
 
 	public SessionManagementService(SshSessionRepository sessions, CursorPages cursorPages,
-			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditWriter audit, TransactionalOperator tx,
+			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditEventStore audit, TransactionalOperator tx,
 			ObjectMapper objectMapper, SessionManagementProperties properties) {
 		this.sessions = sessions;
 		this.cursorPages = cursorPages;

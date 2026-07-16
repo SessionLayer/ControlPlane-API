@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.jit;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.authz.Capabilities;
 import io.sessionlayer.controlplane.authz.Selectors;
 import io.sessionlayer.controlplane.data.config.JitPolicy;
@@ -64,13 +64,13 @@ public class JitLifecycleService {
 	private final NodeRepository nodes;
 	private final AccessLockRepository accessLocks;
 	private final LockFeedHub lockFeedHub;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final JitProperties properties;
 	private final TransactionalOperator tx;
 	private final ObjectMapper objectMapper;
 
 	public JitLifecycleService(JitRequestRepository requests, JitPolicyRepository policies, NodeRepository nodes,
-			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditWriter audit, JitProperties properties,
+			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditEventStore audit, JitProperties properties,
 			TransactionalOperator tx, ObjectMapper objectMapper) {
 		this.requests = requests;
 		this.policies = policies;

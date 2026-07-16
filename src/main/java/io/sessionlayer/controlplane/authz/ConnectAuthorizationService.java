@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.authz;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.breakglass.BreakglassProperties;
 import io.sessionlayer.controlplane.breakglass.BreakglassTokenService;
 import io.sessionlayer.controlplane.ca.CaRotationService;
@@ -102,7 +102,7 @@ public class ConnectAuthorizationService {
 	private final BreakglassActivationRepository breakglassActivations;
 	private final BreakglassPolicyRepository breakglassPolicies;
 	private final BreakglassProperties breakglassProperties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final AuthzProperties properties;
 	private final PresenceRepository presence;
 	private final HaProperties haProperties;
@@ -115,8 +115,8 @@ public class ConnectAuthorizationService {
 			SshSessionRepository sshSessions, PolicyEngine engine, DecisionContextSigner signer,
 			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, JitLifecycleService jit,
 			BreakglassTokenService breakglassTokens, BreakglassActivationRepository breakglassActivations,
-			BreakglassPolicyRepository breakglassPolicies, BreakglassProperties breakglassProperties, AuditWriter audit,
-			AuthzProperties properties, PresenceRepository presence, HaProperties haProperties,
+			BreakglassPolicyRepository breakglassPolicies, BreakglassProperties breakglassProperties,
+			AuditEventStore audit, AuthzProperties properties, PresenceRepository presence, HaProperties haProperties,
 			ObjectMapper objectMapper, TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;

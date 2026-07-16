@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.machine;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.AuthProperties;
 import io.sessionlayer.controlplane.auth.ConsumedAssertionStore;
 import io.sessionlayer.controlplane.auth.RateLimiter;
@@ -48,12 +48,12 @@ public class MachineIdentityService {
 	private final ConsumedAssertionStore consumedAssertions;
 	private final RateLimiter rateLimiter;
 	private final AuthProperties authProperties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
 	public MachineIdentityService(ServiceAccountRepository serviceAccounts,
 			ServiceAccountCredentialRepository credentials, MachineTokenSigner signer,
 			MachineTokenProperties properties, ConsumedAssertionStore consumedAssertions, RateLimiter rateLimiter,
-			AuthProperties authProperties, AuditWriter audit) {
+			AuthProperties authProperties, AuditEventStore audit) {
 		this.serviceAccounts = serviceAccounts;
 		this.credentials = credentials;
 		this.signer = signer;

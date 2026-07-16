@@ -44,7 +44,7 @@ class RoleBindingCrudIT extends AbstractConfigApiIT {
 
 		client.post().uri("/v1/role-bindings").header("Authorization", "Bearer " + token)
 				.contentType(MediaType.APPLICATION_JSON)
-				.bodyValue(bindingBody(roleId, subject, Map.of("nodeLabels", Map.of("env", "prod")))).exchange()
+				.bodyValue(bindingBody(roleId, subject, Map.of("node_labels", Map.of("env", "prod")))).exchange()
 				.expectStatus().isCreated().expectBody().jsonPath("$.id").isNotEmpty().jsonPath("$.roleId")
 				.isEqualTo(roleId.toString()).jsonPath("$.subject").isEqualTo(subject).jsonPath("$.origin")
 				.isEqualTo("api").jsonPath("$.version").isEqualTo(0);
@@ -95,18 +95,18 @@ class RoleBindingCrudIT extends AbstractConfigApiIT {
 		UUID roleId = seedRole();
 		String subject = "user-" + UUID.randomUUID();
 
-		String id = create(token, bindingBody(roleId, subject, Map.of("env", "prod")));
+		String id = create(token, bindingBody(roleId, subject, Map.of("node_labels", Map.of("env", "prod"))));
 
 		client.get().uri("/v1/role-bindings/" + id).header("Authorization", "Bearer " + token).exchange().expectStatus()
-				.isOk().expectBody().jsonPath("$.scope.env").isEqualTo("prod");
+				.isOk().expectBody().jsonPath("$.scope.node_labels.env").isEqualTo("prod");
 
 		// Update replaces the (only mutable) scope + bumps version; subject/role are
 		// fixed.
 		client.put().uri("/v1/role-bindings/" + id).header("Authorization", "Bearer " + token)
 				.contentType(MediaType.APPLICATION_JSON)
-				.bodyValue(Map.of("scope", Map.of("env", "staging"), "version", 0)).exchange().expectStatus().isOk()
-				.expectBody().jsonPath("$.scope.env").isEqualTo("staging").jsonPath("$.subject").isEqualTo(subject)
-				.jsonPath("$.version").isEqualTo(1);
+				.bodyValue(Map.of("scope", Map.of("node_labels", Map.of("env", "staging")), "version", 0)).exchange()
+				.expectStatus().isOk().expectBody().jsonPath("$.scope.node_labels.env").isEqualTo("staging")
+				.jsonPath("$.subject").isEqualTo(subject).jsonPath("$.version").isEqualTo(1);
 
 		// A stale version is a 409.
 		client.put().uri("/v1/role-bindings/" + id).header("Authorization", "Bearer " + token)
@@ -129,7 +129,7 @@ class RoleBindingCrudIT extends AbstractConfigApiIT {
 		UUID roleId = seedRole();
 		String subject = "user-" + UUID.randomUUID();
 		String key = "idem-" + UUID.randomUUID();
-		Map<String, Object> body = bindingBody(roleId, subject, Map.of("env", "prod"));
+		Map<String, Object> body = bindingBody(roleId, subject, Map.of("node_labels", Map.of("env", "prod")));
 
 		String firstId = client.post().uri("/v1/role-bindings").header("Authorization", "Bearer " + token)
 				.header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).bodyValue(body).exchange()
@@ -143,8 +143,9 @@ class RoleBindingCrudIT extends AbstractConfigApiIT {
 
 		// Same key + DIFFERENT body -> 422 idempotency conflict.
 		client.post().uri("/v1/role-bindings").header("Authorization", "Bearer " + token).header("Idempotency-Key", key)
-				.contentType(MediaType.APPLICATION_JSON).bodyValue(bindingBody(roleId, subject, Map.of("env", "dev")))
-				.exchange().expectStatus().isEqualTo(422).expectBody().jsonPath("$.type")
+				.contentType(MediaType.APPLICATION_JSON)
+				.bodyValue(bindingBody(roleId, subject, Map.of("node_labels", Map.of("env", "dev")))).exchange()
+				.expectStatus().isEqualTo(422).expectBody().jsonPath("$.type")
 				.isEqualTo("https://docs.sessionlayer.example/problems/idempotency-key-conflict");
 	}
 

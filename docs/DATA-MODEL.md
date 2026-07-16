@@ -858,3 +858,45 @@ public key** into a short-lived host cert from the **existing `host` SSH CA**
 (`caSigner.activeSigner("host")`), a new `CertType.HOST` profile (no `permit-*`
 extensions). Cert-only return (D2). Nothing is persisted — the cert is handed to the
 Gateway for the ProxyJump host-cert MITM path.
+
+---
+
+## 23. Session Eighteen (audit search + recording replay/export + retention) — `V23`
+
+S18 implements the frozen audit/recording READ + management side behind pluggable
+interfaces (owner requirement, §15): the correlated audit stream is reached only
+through `AuditEventStore` (Postgres impl) with an `AuditForwarder` off-box seam, and
+the recording object store only through `RecordingStore` (the S3/WORM `WormObjectStore`
+impl). One migration (`V23`); the next free version is **V24**.
+
+### 23.1 `recording:delete` permission (`V23`)
+`config.platform_role.permissions` CHECK widened (drop + recreate, as `V18`/`V20` did) to
+add **`recording:delete`** — the specifically-privileged, audited custodian verb gating
+governance-mode erasure (the GDPR escape hatch) and legal-hold custody (FR-AUD-3/6,
+FR-PADM-1). Existing roles stay a subset; no GRANT change (cp_runtime already has CRUD on
+`platform_role`). Mirrored in the `PlatformPermission` OpenAPI enum + `PlatformPermissions`.
+
+### 23.2 `recording_ref` retention/governance-delete lifecycle (`V23`)
+`runtime.recording_ref` gains `pruned_at`, `delete_mode` (`retention|governance`),
+`deleted_by`, `legal_hold_reason` — all nullable + mutable (the `V8` write-once trigger
+guards only `session_id`/`object_key`/`encryption_key_ref`/`hash_chain_head`/
+`content_digest`, so the lifecycle columns are freely settable). **The provenance row is
+never deleted** (crown jewels, §15 / `ON DELETE RESTRICT`): retention prune and governance
+delete erase the encrypted *object* and MARK the row (`pruned_at`), so the audit trail that
+a recording existed — and was expired/erased, by whom — survives while the personal data
+(the recorded bytes) is gone.
+
+`recording_prunable(cutoff)` (from `V8`) is refreshed (CREATE OR REPLACE, same return
+signature) to also skip already-pruned rows (`pruned_at IS NULL`); it still never returns
+compliance-mode or legal-held recordings. `RecordingRetentionService` (@Scheduled + startup,
+mirrors `AuthMaintenanceService`) drives it: `deleteObject` the object via `RecordingStore`,
+mark the row, audit `recording.prune`. Governance delete (`DELETE /v1/recordings/{id}`,
+`recording:delete`) does the same with `delete_mode='governance'` + `deleted_by`; it is
+refused (`409`) for a **compliance** recording (object-lock un-deletable) or one under
+**legal hold**.
+
+### 23.3 No new tables; recording bytes still never touch the CP (Design §12.2)
+Replay/export return short-lived signed **GET** URLs (`RecordingStore.presignDownload`) to
+the still-customer-key-encrypted object; the CP holds only the customer PUBLIC key and
+cannot decrypt. Every replay/export/delete/legal-hold access is platform-RBAC-gated
+(replay/export scopable per FR-PADM-2) and itself audited (FR-AUD-5/FR-PADM-3).

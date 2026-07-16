@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.otp;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.AuthProperties;
 import io.sessionlayer.controlplane.auth.RateLimiter;
 import io.sessionlayer.controlplane.auth.Secrets;
@@ -44,12 +44,12 @@ public class OtpService {
 
 	private final OtpRepository otps;
 	private final OperatorSettingsRepository settings;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final RateLimiter rateLimiter;
 	private final AuthProperties authProperties;
 	private final DatabaseClient db;
 
-	public OtpService(OtpRepository otps, OperatorSettingsRepository settings, AuditWriter audit,
+	public OtpService(OtpRepository otps, OperatorSettingsRepository settings, AuditEventStore audit,
 			RateLimiter rateLimiter, AuthProperties authProperties, DatabaseClient db) {
 		this.otps = otps;
 		this.settings = settings;

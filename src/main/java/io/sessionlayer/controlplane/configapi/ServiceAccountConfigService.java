@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.ServiceAccount;
 import io.sessionlayer.controlplane.data.config.ServiceAccountRepository;
 import io.sessionlayer.controlplane.web.ApiProblemException;
@@ -30,11 +30,11 @@ public class ServiceAccountConfigService {
 
 	private final ServiceAccountRepository accounts;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
-	public ServiceAccountConfigService(ServiceAccountRepository accounts, CursorPages cursorPages, AuditWriter audit,
-			TransactionalOperator tx) {
+	public ServiceAccountConfigService(ServiceAccountRepository accounts, CursorPages cursorPages,
+			AuditEventStore audit, TransactionalOperator tx) {
 		this.accounts = accounts;
 		this.cursorPages = cursorPages;
 		this.audit = audit;

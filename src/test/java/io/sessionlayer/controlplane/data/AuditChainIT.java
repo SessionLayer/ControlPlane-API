@@ -3,7 +3,7 @@ package io.sessionlayer.controlplane.data;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.sessionlayer.controlplane.audit.AuditChainVerifier;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.data.runtime.AuditEventRepository;
 import java.util.ArrayList;
@@ -17,7 +17,7 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * The {@code audit_event} tamper-evidence hash chain (Design §12.2 baseline,
- * FR-AUD-3). Every {@link AuditWriter} write links into a per-{@code seq}
+ * FR-AUD-3). Every {@link AuditEventStore} write links into a per-{@code seq}
  * SHA-256 chain; {@link AuditChainVerifier} recomputes it. This proves the two
  * properties the append-only WORM table cannot prove alone — no row's content
  * was altered, and no row was removed/reordered — so an adversary who somehow
@@ -26,7 +26,7 @@ import reactor.core.scheduler.Schedulers;
 class AuditChainIT extends AbstractDataIT {
 
 	@Autowired
-	private AuditWriter audit;
+	private AuditEventStore audit;
 
 	@Autowired
 	private AuditEventRepository audits;

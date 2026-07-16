@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.CapabilityDef;
 import io.sessionlayer.controlplane.data.config.CapabilityDefRepository;
 import io.sessionlayer.controlplane.web.ApiProblemException;
@@ -28,11 +28,11 @@ public class CapabilityDefConfigService {
 
 	private final CapabilityDefRepository capabilities;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
-	public CapabilityDefConfigService(CapabilityDefRepository capabilities, CursorPages cursorPages, AuditWriter audit,
-			TransactionalOperator tx) {
+	public CapabilityDefConfigService(CapabilityDefRepository capabilities, CursorPages cursorPages,
+			AuditEventStore audit, TransactionalOperator tx) {
 		this.capabilities = capabilities;
 		this.cursorPages = cursorPages;
 		this.audit = audit;

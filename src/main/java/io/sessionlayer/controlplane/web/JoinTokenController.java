@@ -8,7 +8,7 @@ import io.sessionlayer.controlplane.api.model.IssueJoinTokenRequest;
 import io.sessionlayer.controlplane.api.model.IssuedJoinToken;
 import io.sessionlayer.controlplane.api.model.JoinTokenList;
 import io.sessionlayer.controlplane.api.model.JoinTokenResource;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.runtime.JoinToken;
 import io.sessionlayer.controlplane.platform.PlatformAuthorization;
 import io.sessionlayer.controlplane.platform.PlatformPermissions;
@@ -42,12 +42,12 @@ public class JoinTokenController implements JoinTokensApi {
 
 	private final AgentJoinTokenService joinTokens;
 	private final AgentJoinProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final PlatformAuthorization platformAuthorization;
 	private final CurrentAuthentication currentAuthentication;
 	private final TransactionalOperator tx;
 
-	public JoinTokenController(AgentJoinTokenService joinTokens, AgentJoinProperties properties, AuditWriter audit,
+	public JoinTokenController(AgentJoinTokenService joinTokens, AgentJoinProperties properties, AuditEventStore audit,
 			PlatformAuthorization platformAuthorization, CurrentAuthentication currentAuthentication,
 			TransactionalOperator tx) {
 		this.joinTokens = joinTokens;

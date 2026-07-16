@@ -1,7 +1,7 @@
 package io.sessionlayer.controlplane.node;
 
 import io.sessionlayer.controlplane.agent.AgentNodeNames;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.AgentIdentity;
@@ -60,13 +60,13 @@ public class NodeLifecycleService {
 	private final AgentIdentityRepository agentIdentities;
 	private final AccessLockRepository accessLocks;
 	private final LockFeedHub lockFeedHub;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final ObjectMapper objectMapper;
 	private final TransactionalOperator tx;
 
 	public NodeLifecycleService(NodeRepository nodes, NodeHostKeyRepository hostKeys,
 			AgentIdentityRepository agentIdentities, AccessLockRepository accessLocks, LockFeedHub lockFeedHub,
-			AuditWriter audit, ObjectMapper objectMapper, TransactionalOperator tx) {
+			AuditEventStore audit, ObjectMapper objectMapper, TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.agentIdentities = agentIdentities;

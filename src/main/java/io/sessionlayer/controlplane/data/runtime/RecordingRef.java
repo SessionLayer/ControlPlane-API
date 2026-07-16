@@ -10,23 +10,24 @@ import org.springframework.data.annotation.Version;
 import org.springframework.data.relational.core.mapping.Table;
 
 /**
- * RUNTIME · {@code runtime.recording_ref} (FR-DATA-2 / FR-AUD-3). 1:1 with a
+ * RUNTIME · {@code runtime.recording_ref} (FR-DATA-2 / FR-AUD-3/6). 1:1 with a
  * {@link SshSession} ({@code sessionId} is UNIQUE + FK).
  * {@code encryptionKeyRef} is a reference to the customer-held key, never key
  * material. {@code hashChainHead} is the recording hash-chain head (S9 fills).
+ * The retention/governance columns ({@code legalHold}, {@code prunedAt},
+ * {@code deleteMode}, {@code deletedBy}) drive the S18 retention lifecycle: the
+ * provenance row is retained even after the encrypted object is pruned/erased.
  */
 @Table(schema = "runtime", name = "recording_ref")
 public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String encryptionKeyRef, String hashChainHead,
 		String wormMode, Long sizeBytes, Instant retentionUntil, boolean legalHold, String status, String format,
-		String contentDigest, @Version Long version, @CreatedDate Instant createdAt,
-		@LastModifiedDate Instant updatedAt) {
+		String contentDigest, Instant prunedAt, String deleteMode, String deletedBy, String legalHoldReason,
+		@Version Long version, @CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
 
 	public static RecordingRef create(UUID sessionId, String objectKey, String encryptionKeyRef, String hashChainHead,
 			String wormMode, Long sizeBytes) {
-		// Retention (FR-AUD-6) + lifecycle (NFR-6) fields default sensibly; a later
-		// session sets retentionUntil/legalHold/contentDigest and finalizes status.
 		return new RecordingRef(Uuids.v7(), sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
-				null, false, "recording", "asciicast-v2", null, null, null, null);
+				null, false, "recording", "asciicast-v2", null, null, null, null, null, null, null, null);
 	}
 
 	/**
@@ -39,7 +40,7 @@ public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String
 	public static RecordingRef begin(UUID id, UUID sessionId, String objectKey, String encryptionKeyRef,
 			String wormMode, Instant retentionUntil) {
 		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, null, wormMode, null, retentionUntil, false,
-				"recording", "asciicast-v2", null, null, null, null);
+				"recording", "asciicast-v2", null, null, null, null, null, null, null, null);
 	}
 
 	/**
@@ -54,6 +55,27 @@ public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String
 		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef,
 				hashChainHead != null ? hashChainHead : this.hashChainHead, wormMode,
 				sizeBytes != null ? sizeBytes : this.sizeBytes, retentionUntil, legalHold, status, format,
-				contentDigest != null ? contentDigest : this.contentDigest, version, createdAt, updatedAt);
+				contentDigest != null ? contentDigest : this.contentDigest, prunedAt, deleteMode, deletedBy,
+				legalHoldReason, version, createdAt, updatedAt);
+	}
+
+	/**
+	 * Place or release the legal hold (FR-AUD-6): blocks retention prune +
+	 * governance delete.
+	 */
+	public RecordingRef withLegalHold(boolean held, String reason) {
+		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
+				retentionUntil, held, status, format, contentDigest, prunedAt, deleteMode, deletedBy,
+				held ? reason : null, version, createdAt, updatedAt);
+	}
+
+	/**
+	 * Mark the encrypted object deleted (retention prune or governance erasure);
+	 * the row is retained.
+	 */
+	public RecordingRef pruned(String deleteMode, String deletedBy, Instant prunedAt) {
+		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
+				retentionUntil, legalHold, status, format, contentDigest, prunedAt, deleteMode, deletedBy,
+				legalHoldReason, version, createdAt, updatedAt);
 	}
 }
