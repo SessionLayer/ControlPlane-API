@@ -25,11 +25,14 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.ObjectLockMode;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -118,16 +121,45 @@ public class WormObjectStore implements RecordingStore {
 		// Compliance objects are truly un-deletable (object-lock); refuse in-app too so
 		// the intent is explicit and we never even attempt a call the store would
 		// reject
-		// (FR-AUD-3). Governance deletion passes the bypass-retention flag (the
-		// caller's
-		// credential must carry s3:BypassGovernanceRetention).
+		// (FR-AUD-3).
 		if ("compliance".equals(wormMode)) {
 			return Mono.error(new UnsupportedOperationException("compliance-mode recordings are un-deletable"));
 		}
-		return Mono
-				.<Void>fromRunnable(() -> s3.deleteObject(DeleteObjectRequest.builder().bucket(properties.getBucket())
-						.key(objectKey).bypassGovernanceRetention(true).build()))
+		// Object-lock ⇒ VERSIONED bucket: a key-only delete just writes a delete marker
+		// and the governance-locked VERSION survives (GetObjectVersion still returns
+		// the
+		// data) — GDPR erasure would be illusory + storage never reclaimed. Real
+		// erasure
+		// (FR-AUD-6) removes EVERY version + delete marker of the key, bypassing
+		// governance retention (the caller's credential carries
+		// s3:BypassGovernanceRetention).
+		return Mono.<Void>fromRunnable(() -> deleteAllVersionsBlocking(objectKey))
 				.subscribeOn(Schedulers.boundedElastic());
+	}
+
+	private void deleteAllVersionsBlocking(String objectKey) {
+		String bucket = properties.getBucket();
+		ListObjectVersionsRequest request = ListObjectVersionsRequest.builder().bucket(bucket).prefix(objectKey)
+				.build();
+		// prefix is a starts-with match, so filter to the EXACT key (a sibling key that
+		// shares the prefix must not be erased).
+		s3.listObjectVersionsPaginator(request).forEach(page -> {
+			for (ObjectVersion version : page.versions()) {
+				if (version.key().equals(objectKey)) {
+					deleteVersion(bucket, objectKey, version.versionId());
+				}
+			}
+			for (DeleteMarkerEntry marker : page.deleteMarkers()) {
+				if (marker.key().equals(objectKey)) {
+					deleteVersion(bucket, objectKey, marker.versionId());
+				}
+			}
+		});
+	}
+
+	private void deleteVersion(String bucket, String key, String versionId) {
+		s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).versionId(versionId)
+				.bypassGovernanceRetention(true).build());
 	}
 
 	@Override

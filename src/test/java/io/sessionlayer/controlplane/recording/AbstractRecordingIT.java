@@ -1,5 +1,7 @@
 package io.sessionlayer.controlplane.recording;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import io.sessionlayer.controlplane.data.config.PlatformRole;
 import io.sessionlayer.controlplane.data.config.PlatformRoleRepository;
 import io.sessionlayer.controlplane.data.config.RoleBinding;
@@ -123,12 +125,27 @@ public abstract class AbstractRecordingIT extends AbstractConfigApiIT {
 
 	protected RecordingRef seedRecording(UUID sessionId, String objectKey, String wormMode, Instant retentionUntil,
 			boolean legalHold) {
-		RecordingRef ref = RecordingRef.begin(UUID.randomUUID(), sessionId, objectKey, "kms://customer-1", wormMode,
-				retentionUntil);
+		return seedRecording(sessionId, objectKey, wormMode, retentionUntil, legalHold, "finalized");
+	}
+
+	protected RecordingRef seedRecording(UUID sessionId, String objectKey, String wormMode, Instant retentionUntil,
+			boolean legalHold, String status) {
+		RecordingRef ref = RecordingRef
+				.begin(UUID.randomUUID(), sessionId, objectKey, "kms://customer-1", wormMode, retentionUntil)
+				.finalized(null, null, null, status);
 		if (legalHold) {
 			ref = ref.withLegalHold(true, "litigation");
 		}
 		return recordings.save(ref).block();
+	}
+
+	// Assert a governance object was FULLY erased: no live version AND no delete
+	// marker remains (a key-only delete would leave a locked version behind a
+	// marker).
+	protected void assertFullyErased(S3Client admin, String key) {
+		var listing = admin.listObjectVersions(b -> b.bucket(wormProperties.getBucket()).prefix(key));
+		assertThat(listing.versions()).as("live versions of %s", key).noneMatch(v -> v.key().equals(key));
+		assertThat(listing.deleteMarkers()).as("delete markers of %s", key).noneMatch(m -> m.key().equals(key));
 	}
 
 	protected String objectKey(UUID sessionId) {

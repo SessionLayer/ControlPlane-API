@@ -1,6 +1,7 @@
 package io.sessionlayer.controlplane.recording;
 
-import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -19,19 +20,29 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(value = "sessionlayer.recording.retention.enabled", havingValue = "true", matchIfMissing = true)
 public class RecordingRetentionJob {
 
+	private static final Logger LOG = LoggerFactory.getLogger(RecordingRetentionJob.class);
+
 	private final RecordingRetentionService retention;
 
 	public RecordingRetentionJob(RecordingRetentionService retention) {
 		this.retention = retention;
 	}
 
+	// Fire-and-forget: NEVER block or throw out of the ready event — a retention
+	// hiccup must not abort application startup (that would crash-loop the CP and
+	// take auth/CA/RBAC down for a recording problem). prune() already swallows its
+	// own errors; this is the belt-and-suspenders subscribe (mirrors
+	// WormObjectStore).
 	@EventListener(ApplicationReadyEvent.class)
 	public void pruneOnStartup() {
-		retention.prune("startup").block(Duration.ofSeconds(60));
+		retention.prune("startup").subscribe(done -> {
+		}, error -> LOG.warn("startup recording retention prune failed (will retry on the schedule)", error));
 	}
 
+	// Runs on a dedicated scheduler thread; prune() never signals a fatal error.
 	@Scheduled(cron = "${sessionlayer.recording.retention.cron:0 0 * * * *}")
 	public void pruneScheduled() {
-		retention.prune("scheduled").block(Duration.ofSeconds(60));
+		retention.prune("scheduled").subscribe(done -> {
+		}, error -> LOG.warn("scheduled recording retention prune failed (will retry next cycle)", error));
 	}
 }

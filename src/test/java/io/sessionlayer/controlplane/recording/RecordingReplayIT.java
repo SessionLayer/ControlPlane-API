@@ -38,7 +38,7 @@ class RecordingReplayIT extends AbstractRecordingIT {
 
 		client.get().uri("/v1/recordings/" + r1.id()).header("Authorization", "Bearer " + token).exchange()
 				.expectStatus().isOk().expectBody().jsonPath("$.identity").isEqualTo(alice).jsonPath("$.wormMode")
-				.isEqualTo("governance").jsonPath("$.status").isEqualTo("recording").jsonPath("$.nodeId")
+				.isEqualTo("governance").jsonPath("$.status").isEqualTo("finalized").jsonPath("$.nodeId")
 				.isEqualTo(nodeId.toString());
 
 		client.get().uri("/v1/recordings/" + UUID.randomUUID()).header("Authorization", "Bearer " + token).exchange()
@@ -142,5 +142,40 @@ class RecordingReplayIT extends AbstractRecordingIT {
 		String token = tokenWith("svc-rec-pruned-" + unique(), PlatformPermissions.RECORDING_REPLAY);
 		client.post().uri("/v1/recordings/" + ref.id() + "/replay").header("Authorization", "Bearer " + token)
 				.exchange().expectStatus().isEqualTo(409);
+	}
+
+	@Test
+	void replayOfNonFinalizedRecordingIsConflict() {
+		UUID nodeId = seedNode(Map.of("env", "prod"));
+		UUID sessionId = seedSession("henry-" + unique(), nodeId);
+		// A still-in-progress ("recording") capture has no complete object → dead URL.
+		RecordingRef ref = seedRecording(sessionId, objectKey(sessionId), "governance",
+				Instant.now().plusSeconds(86_400), false, "recording");
+
+		String token = tokenWith("svc-rec-nf-" + unique(), PlatformPermissions.RECORDING_REPLAY);
+		client.post().uri("/v1/recordings/" + ref.id() + "/replay").header("Authorization", "Bearer " + token)
+				.exchange().expectStatus().isEqualTo(409);
+	}
+
+	@Test
+	void probeWithoutAnyRecordingPermissionIsForbiddenAndAudited() {
+		UUID nodeId = seedNode(Map.of("env", "prod"));
+		UUID sessionId = seedSession("ivy-" + unique(), nodeId);
+		RecordingRef ref = seedRecording(sessionId, objectKey(sessionId), "governance",
+				Instant.now().plusSeconds(86_400), false);
+
+		// A caller with NO recording grant is denied before any lookup (no 404/409/403
+		// existence oracle) and the probe is audited.
+		String svc = "svc-rec-noperm-" + unique();
+		String token = tokenWith(svc); // zero permissions
+		client.post().uri("/v1/recordings/" + ref.id() + "/replay").header("Authorization", "Bearer " + token)
+				.exchange().expectStatus().isForbidden();
+		client.post().uri("/v1/recordings/" + UUID.randomUUID() + "/replay").header("Authorization", "Bearer " + token)
+				.exchange().expectStatus().isForbidden(); // absent id: SAME 403, no oracle
+
+		assertThat(auditEvents.findByActor(svc).collectList().block()).anySatisfy(e -> {
+			assertThat(e.action()).isEqualTo("recording.replay");
+			assertThat(e.outcome()).isEqualTo("denied");
+		});
 	}
 }

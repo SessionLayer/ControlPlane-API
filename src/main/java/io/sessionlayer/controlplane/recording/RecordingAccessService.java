@@ -113,27 +113,51 @@ public class RecordingAccessService {
 		return issue(subject, recordingId, PlatformPermissions.RECORDING_EXPORT, "recording.export");
 	}
 
-	// Replay/export are identical but for the permission + audited action. Denial
-	// (out-of-scope) completes EMPTY so the controller renders a bodiless 403 (the
-	// platform-RBAC no-disclosure idiom); the deny itself is audited by
-	// authorize().
-	// A pruned recording's object is gone → 409.
+	// Replay/export are identical but for the permission + audited action. A caller
+	// holding NEITHER a scoped nor unscoped grant is denied BEFORE any recording
+	// lookup, so an unprivileged caller gets no 404/409/403 existence oracle and
+	// the
+	// probe is still audited. Denial (coarse or out-of-scope) completes EMPTY so
+	// the
+	// controller renders a bodiless 403 (the platform-RBAC no-disclosure idiom);
+	// the
+	// scoped deny is audited by authorize(). Among permission-holders, distinct
+	// 404/409/403 is accepted (UUIDv7 ids + contract-documented).
 	private Mono<PresignedAccess> issue(PlatformSubject subject, UUID recordingId, String permission,
 			String auditAction) {
-		return loadRef(recordingId).flatMap(ref -> {
+		return platformAuthorization.resolveScopeGrant(subject, permission).flatMap(grant -> {
+			if (!grant.granted()) {
+				return audit
+						.record(subject.identity(), recordingId.toString(), auditAction, "denied", null, null,
+								Map.of("reason", "not_granted"))
+						.onErrorResume(e -> Mono.empty()).then(Mono.<PresignedAccess>empty());
+			}
+			return loadRef(recordingId)
+					.flatMap(ref -> sessions.findById(ref.sessionId()).flatMap(session -> nodeLabels(session).flatMap(
+							labels -> authorizeAndIssue(subject, permission, auditAction, ref, session, labels))));
+		});
+	}
+
+	private Mono<PresignedAccess> authorizeAndIssue(PlatformSubject subject, String permission, String auditAction,
+			RecordingRef ref, SshSession session, Map<String, String> labels) {
+		PlatformScope scope = new PlatformScope(labels, session.identity(), Instant.now());
+		return platformAuthorization.authorize(subject, permission, scope).flatMap(decision -> {
+			if (!decision.allowed()) {
+				return Mono.empty();
+			}
+			// Only a replayable object gets a URL, and this is checked AFTER authorize so
+			// an out-of-scope caller learns nothing about the recording's state: a pruned
+			// object is erased; a still-recording or failed capture has no complete object.
+			// finalized + truncated stay replayable.
 			if (ref.prunedAt() != null) {
 				return Mono.error(ApiProblemException.conflict("recording object has been erased"));
 			}
-			return sessions.findById(ref.sessionId()).flatMap(session -> nodeLabels(session).flatMap(labels -> {
-				PlatformScope scope = new PlatformScope(labels, session.identity(), Instant.now());
-				return platformAuthorization.authorize(subject, permission, scope).flatMap(decision -> {
-					if (!decision.allowed()) {
-						return Mono.empty();
-					}
-					return recordingStore.presignDownload(ref.objectKey(), properties.getSignedUrlTtl())
-							.flatMap(access -> auditAccess(subject, ref, session, auditAction).thenReturn(access));
-				});
-			}));
+			if ("recording".equals(ref.status()) || "failed".equals(ref.status())) {
+				return Mono.error(
+						ApiProblemException.conflict("recording is not replayable (status " + ref.status() + ")"));
+			}
+			return recordingStore.presignDownload(ref.objectKey(), properties.getSignedUrlTtl())
+					.flatMap(access -> auditAccess(subject, ref, session, auditAction).thenReturn(access));
 		});
 	}
 

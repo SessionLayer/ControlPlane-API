@@ -2,11 +2,14 @@ package io.sessionlayer.controlplane.recording;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.r2dbc.spi.Row;
+import io.r2dbc.spi.RowMetadata;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.OperatorSettings;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
@@ -23,8 +26,11 @@ import io.sessionlayer.controlplane.web.ApiProblemType;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import org.junit.jupiter.api.Test;
 import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.r2dbc.core.RowsFetchSpec;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -58,6 +64,10 @@ class RecordingStoreSeamTest {
 				Instant.now().plusSeconds(86_400));
 	}
 
+	private RecordingRef finalizedRef(UUID id, UUID sessionId, String objectKey) {
+		return governanceRef(id, sessionId, objectKey).finalized(null, null, null, "finalized");
+	}
+
 	private SshSession session(UUID sessionId) {
 		SshSession base = SshSession.create("alice", null, null, "deploy", null, null, "standing", List.of("shell"),
 				null, null, null, null, null, null, Instant.now());
@@ -72,8 +82,10 @@ class RecordingStoreSeamTest {
 		UUID sessionId = UUID.randomUUID();
 		String objectKey = "recordings/" + sessionId + "/" + id + ".cast.enc";
 		store.seed(objectKey);
-		when(recordings.findById(id)).thenReturn(Mono.just(governanceRef(id, sessionId, objectKey)));
+		when(recordings.findById(id)).thenReturn(Mono.just(finalizedRef(id, sessionId, objectKey)));
 		when(sessions.findById(sessionId)).thenReturn(Mono.just(session(sessionId)));
+		when(authorization.resolveScopeGrant(any(), any()))
+				.thenReturn(Mono.just(PlatformAuthorization.ScopeGrant.all()));
 		when(authorization.authorize(any(), any(), any()))
 				.thenReturn(Mono.just(new PlatformDecision(true, PlatformDecision.Reason.ALLOWED, null, null)));
 		when(audit.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(Mono.empty());
@@ -95,14 +107,51 @@ class RecordingStoreSeamTest {
 		String objectKey = "recordings/" + sessionId + "/" + id + ".cast.enc";
 		store.seed(objectKey);
 		when(recordings.findById(id)).thenReturn(Mono.just(governanceRef(id, sessionId, objectKey)));
-		when(recordings.save(any())).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
 		when(audit.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(Mono.empty());
+		stubClaim(objectKey, "governance", sessionId); // the atomic claim UPDATE ... RETURNING
 
 		retention.governanceDelete("custodian", id).block();
 
 		assertThat(store.contains(objectKey)).isFalse();
 		verify(audit).record(eq("custodian"), eq(id.toString()), eq("recording.delete"), eq("success"), eq(sessionId),
 				any(), any());
+	}
+
+	// Stub the DatabaseClient atomic-claim UPDATE...RETURNING to yield one claimed
+	// row
+	// so the delete path proceeds through the RecordingStore double. The mapper is
+	// the
+	// real (row,meta)->Claimed function; a hand-rolled RowsFetchSpec avoids nested
+	// Mockito stubbing during answer evaluation.
+	@SuppressWarnings("unchecked")
+	private void stubClaim(String objectKey, String wormMode, UUID sessionId) {
+		DatabaseClient.GenericExecuteSpec spec = mock(DatabaseClient.GenericExecuteSpec.class);
+		when(db.sql(anyString())).thenReturn(spec);
+		when(spec.bind(anyString(), any())).thenReturn(spec);
+		Row row = mock(Row.class);
+		when(row.get("object_key", String.class)).thenReturn(objectKey);
+		when(row.get("worm_mode", String.class)).thenReturn(wormMode);
+		when(row.get("session_id", UUID.class)).thenReturn(sessionId);
+		when(spec.map(any(BiFunction.class))).thenAnswer(invocation -> {
+			BiFunction<Row, RowMetadata, Object> mapper = invocation.getArgument(0);
+			Object claimed = mapper.apply(row, null);
+			return new RowsFetchSpec<Object>() {
+				@Override
+				public Mono<Object> one() {
+					return Mono.just(claimed);
+				}
+
+				@Override
+				public Mono<Object> first() {
+					return Mono.just(claimed);
+				}
+
+				@Override
+				public Flux<Object> all() {
+					return Flux.just(claimed);
+				}
+			};
+		});
 	}
 
 	@Test

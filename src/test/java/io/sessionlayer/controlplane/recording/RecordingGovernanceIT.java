@@ -38,8 +38,8 @@ class RecordingGovernanceIT extends AbstractRecordingIT {
 				.header("Authorization", "Bearer " + token).exchange().expectStatus().isNoContent();
 
 		try (S3Client admin = adminS3()) {
-			assertThatThrownBy(() -> admin.headObject(b -> b.bucket(wormProperties.getBucket()).key(key)))
-					.isInstanceOf(S3Exception.class);
+			// Fully erased — no locked version hiding behind a delete marker (F2).
+			assertFullyErased(admin, key);
 		}
 		RecordingRef after = recordings.findById(ref.id()).block();
 		assertThat(after).isNotNull(); // provenance row retained (crown jewels)
@@ -161,8 +161,7 @@ class RecordingGovernanceIT extends AbstractRecordingIT {
 		retention.prune("test").block();
 
 		try (S3Client admin = adminS3()) {
-			assertThatThrownBy(() -> admin.headObject(b -> b.bucket(wormProperties.getBucket()).key(key)))
-					.isInstanceOf(S3Exception.class);
+			assertFullyErased(admin, key);
 		}
 		RecordingRef after = recordings.findById(ref.id()).block();
 		assertThat(after.prunedAt()).isNotNull();
