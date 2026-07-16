@@ -8,6 +8,6 @@ import org.springframework.context.annotation.Configuration;
  * ({@code sessionlayer.idempotency.*}).
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(IdempotencyProperties.class)
+@EnableConfigurationProperties({IdempotencyProperties.class, SessionManagementProperties.class})
 class ConfigApiConfiguration {
 }

@@ -20,8 +20,9 @@ import org.springframework.http.MediaType;
 class JitPolicyCrudIT extends AbstractConfigApiIT {
 
 	private Map<String, Object> body(String name, int ttl) {
-		return Map.of("name", name, "targetSelector", Map.of("env", "prod"), "capabilities", List.of("shell", "exec"),
-				"maxTtlSeconds", ttl, "approvalChain", List.of(Map.of("kind", "email", "value", "boss@example.com")));
+		return Map.of("name", name, "targetSelector", Map.of("env", Map.of("op", "eq", "value", "prod")),
+				"capabilities", List.of("shell", "exec"), "maxTtlSeconds", ttl, "approvalChain",
+				List.of(Map.of("kind", "email", "value", "boss@example.com")));
 	}
 
 	@Test
@@ -99,8 +100,9 @@ class JitPolicyCrudIT extends AbstractConfigApiIT {
 		// immutable.
 		client.put().uri("/v1/jit-policies/" + id).header("Authorization", "Bearer " + token)
 				.contentType(MediaType.APPLICATION_JSON)
-				.bodyValue(Map.of("targetSelector", Map.of("env", "staging"), "capabilities", List.of("sftp"),
-						"maxTtlSeconds", 7200, "approvalChain", List.of(), "version", 0))
+				.bodyValue(
+						Map.of("targetSelector", Map.of("env", Map.of("op", "eq", "value", "staging")), "capabilities",
+								List.of("sftp"), "maxTtlSeconds", 7200, "approvalChain", List.of(), "version", 0))
 				.exchange().expectStatus().isOk().expectBody().jsonPath("$.maxTtlSeconds").isEqualTo(7200)
 				.jsonPath("$.name").isEqualTo(name).jsonPath("$.version").isEqualTo(1);
 

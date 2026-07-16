@@ -49,7 +49,7 @@ public class CapabilityDefConfigService {
 
 	public Mono<CapabilityDef> create(String actor, String name, String description) {
 		CapabilityDef def = CapabilityDef.create(name, description, ORIGIN_API);
-		return persist(def, actor, "capability_def.create", name);
+		return persist(null, def, actor, "capability_def.create", name);
 	}
 
 	public Mono<CapabilityDef> update(UUID id, String actor, Long expectedVersion, String description) {
@@ -57,19 +57,25 @@ public class CapabilityDefConfigService {
 			requireVersion(expectedVersion, existing.version());
 			CapabilityDef updated = new CapabilityDef(existing.id(), existing.name(), description, ORIGIN_API,
 					existing.version(), existing.createdAt(), existing.updatedAt());
-			return persist(updated, actor, "capability_def.update", existing.name());
+			return persist(existing, updated, actor, "capability_def.update", existing.name());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		return tx.transactional(capabilities.deleteById(id)
-				.then(audit.record(actor, id.toString(), "capability_def.delete", "success", null, null, Map.of())));
+		return capabilities.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
 	}
 
-	private Mono<CapabilityDef> persist(CapabilityDef def, String actor, String action, String name) {
+	private Mono<Void> deleteWithAudit(UUID id, String actor, CapabilityDef before) {
+		return tx.transactional(capabilities.deleteById(id)
+				.then(audit.recordChange(actor, id.toString(), "capability_def.delete", Map.of(), before, null)));
+	}
+
+	private Mono<CapabilityDef> persist(CapabilityDef before, CapabilityDef def, String actor, String action,
+			String name) {
 		Mono<CapabilityDef> body = capabilities.save(def)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body).onErrorMap(OptimisticLockingFailureException.class,
 				e -> ApiProblemException.conflict("the capability def was modified concurrently (stale version)"))

@@ -52,7 +52,7 @@ public class NodePolicyConfigService {
 			String hostPinRef, String hostCaRef) {
 		validate(hostPinRef, hostCaRef);
 		NodePolicy policy = NodePolicy.create(name, desiredLabels, connectorKind, hostPinRef, hostCaRef, ORIGIN_API);
-		return persist(policy, actor, "node_policy.create", name);
+		return persist(null, policy, actor, "node_policy.create", name);
 	}
 
 	public Mono<NodePolicy> update(UUID id, String actor, Long expectedVersion, JsonNode desiredLabels,
@@ -62,19 +62,24 @@ public class NodePolicyConfigService {
 			requireVersion(expectedVersion, existing.version());
 			NodePolicy updated = new NodePolicy(existing.id(), existing.name(), desiredLabels, connectorKind,
 					hostPinRef, hostCaRef, ORIGIN_API, existing.version(), existing.createdAt(), existing.updatedAt());
-			return persist(updated, actor, "node_policy.update", existing.name());
+			return persist(existing, updated, actor, "node_policy.update", existing.name());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		return tx.transactional(policies.deleteById(id)
-				.then(audit.record(actor, id.toString(), "node_policy.delete", "success", null, null, Map.of())));
+		return policies.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
 	}
 
-	private Mono<NodePolicy> persist(NodePolicy policy, String actor, String action, String name) {
+	private Mono<Void> deleteWithAudit(UUID id, String actor, NodePolicy before) {
+		return tx.transactional(policies.deleteById(id)
+				.then(audit.recordChange(actor, id.toString(), "node_policy.delete", Map.of(), before, null)));
+	}
+
+	private Mono<NodePolicy> persist(NodePolicy before, NodePolicy policy, String actor, String action, String name) {
 		Mono<NodePolicy> body = policies.save(policy)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body)
 				.onErrorMap(OptimisticLockingFailureException.class,

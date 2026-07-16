@@ -4246,6 +4246,7 @@ components:
         - principals
         - ttlSeconds
         - effect
+        - version
       properties:
         identitySelector:
           $ref: '#/components/schemas/Selector'
@@ -4269,7 +4270,7 @@ components:
         version:
           type: integer
           format: int64
-          description: If present, must match the current version (optimistic concurrency).
+          description: The current resource version; required and must match (optimistic concurrency — no silent lost update).
       additionalProperties: false
     RulePage:
       type: object
@@ -4341,6 +4342,7 @@ components:
       title: Update Role Request
       required:
         - permissions
+        - version
       properties:
         permissions:
           type: array
@@ -4423,6 +4425,8 @@ components:
     UpdateRoleBindingRequest:
       type: object
       title: Update Role Binding Request
+      required:
+        - version
       properties:
         scope:
           $ref: '#/components/schemas/Selector'
@@ -4517,6 +4521,7 @@ components:
         - backend
         - keyReference
         - algorithm
+        - version
       properties:
         backend:
           $ref: '#/components/schemas/CaBackend'
@@ -4616,6 +4621,8 @@ components:
     UpdateServiceAccountRequest:
       type: object
       title: Update Service Account Request
+      required:
+        - version
       properties:
         description:
           type: string
@@ -4704,6 +4711,7 @@ components:
       title: Update Node Policy Request
       required:
         - connectorKind
+        - version
       properties:
         desiredLabels:
           $ref: '#/components/schemas/LabelMap'
@@ -4773,6 +4781,8 @@ components:
     UpdateCapabilityDefRequest:
       type: object
       title: Update Capability Definition Request
+      required:
+        - version
       properties:
         description:
           type: string
@@ -4870,6 +4880,7 @@ components:
       required:
         - targetSelector
         - maxTtlSeconds
+        - version
       properties:
         targetSelector:
           $ref: '#/components/schemas/Selector'
@@ -4966,6 +4977,7 @@ components:
       title: Update Break-glass Policy Request
       required:
         - alertTarget
+        - version
       properties:
         recordingStrict:
           type: boolean
@@ -5060,7 +5072,10 @@ components:
       properties:
         reason:
           type: string
-          description: Operator/audit reason (never disclosed to the SSH user).
+          maxLength: 4096
+          description: |
+            Operator/audit reason (never disclosed to the SSH user). Bounded like a
+            Lock reason (it becomes one) so it cannot inflate the pushed deny-list.
       additionalProperties: false
     SessionPage:
       type: object

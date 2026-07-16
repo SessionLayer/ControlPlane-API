@@ -54,8 +54,9 @@ public class RoleBindingConfigService {
 	}
 
 	public Mono<RoleBinding> create(String actor, UUID roleId, String subjectKind, String subject, JsonNode scope) {
-		return requireRole(roleId).then(persist(RoleBinding.create(roleId, subjectKind, subject, scope, ORIGIN_API),
-				actor, "role_binding.create", subject));
+		return requireRole(roleId)
+				.then(persist(null, RoleBinding.create(roleId, subjectKind, subject, scope, ORIGIN_API), actor,
+						"role_binding.create", subject));
 	}
 
 	public Mono<RoleBinding> update(UUID id, String actor, Long expectedVersion, JsonNode scope) {
@@ -64,14 +65,18 @@ public class RoleBindingConfigService {
 			RoleBinding updated = new RoleBinding(existing.id(), existing.roleId(), existing.subjectKind(),
 					existing.subject(), scope, ORIGIN_API, existing.version(), existing.createdAt(),
 					existing.updatedAt());
-			return persist(updated, actor, "role_binding.update", existing.subject());
+			return persist(existing, updated, actor, "role_binding.update", existing.subject());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		// Idempotent: audit + delete whether or not the row existed.
+		return bindings.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
+	}
+
+	private Mono<Void> deleteWithAudit(UUID id, String actor, RoleBinding before) {
 		return tx.transactional(bindings.deleteById(id)
-				.then(audit.record(actor, id.toString(), "role_binding.delete", "success", null, null, Map.of())));
+				.then(audit.recordChange(actor, id.toString(), "role_binding.delete", Map.of(), before, null)));
 	}
 
 	// The role FK is validated pre-commit for a clean 422; a lost race with a
@@ -81,10 +86,11 @@ public class RoleBindingConfigService {
 				.switchIfEmpty(Mono.error(ApiProblemException.validation("unknown roleId " + roleId)));
 	}
 
-	private Mono<RoleBinding> persist(RoleBinding binding, String actor, String action, String subject) {
+	private Mono<RoleBinding> persist(RoleBinding before, RoleBinding binding, String actor, String action,
+			String subject) {
 		Mono<RoleBinding> body = bindings.save(binding)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("subject", subject))
+						.recordChange(actor, saved.id().toString(), action, Map.of("subject", subject), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body)
 				.onErrorMap(OptimisticLockingFailureException.class,

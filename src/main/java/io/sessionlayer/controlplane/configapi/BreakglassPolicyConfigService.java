@@ -51,7 +51,7 @@ public class BreakglassPolicyConfigService {
 			boolean reviewRequired, String authPath) {
 		BreakglassPolicy policy = BreakglassPolicy.create(name, recordingStrict, alertTarget, reviewRequired, authPath,
 				ORIGIN_API);
-		return persist(policy, actor, "breakglass_policy.create", name);
+		return persist(null, policy, actor, "breakglass_policy.create", name);
 	}
 
 	public Mono<BreakglassPolicy> update(UUID id, String actor, Long expectedVersion, boolean recordingStrict,
@@ -61,19 +61,25 @@ public class BreakglassPolicyConfigService {
 			BreakglassPolicy updated = new BreakglassPolicy(existing.id(), existing.name(), recordingStrict,
 					alertTarget, reviewRequired, authPath, ORIGIN_API, existing.version(), existing.createdAt(),
 					existing.updatedAt());
-			return persist(updated, actor, "breakglass_policy.update", existing.name());
+			return persist(existing, updated, actor, "breakglass_policy.update", existing.name());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		return tx.transactional(policies.deleteById(id)
-				.then(audit.record(actor, id.toString(), "breakglass_policy.delete", "success", null, null, Map.of())));
+		return policies.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
 	}
 
-	private Mono<BreakglassPolicy> persist(BreakglassPolicy policy, String actor, String action, String name) {
+	private Mono<Void> deleteWithAudit(UUID id, String actor, BreakglassPolicy before) {
+		return tx.transactional(policies.deleteById(id)
+				.then(audit.recordChange(actor, id.toString(), "breakglass_policy.delete", Map.of(), before, null)));
+	}
+
+	private Mono<BreakglassPolicy> persist(BreakglassPolicy before, BreakglassPolicy policy, String actor,
+			String action, String name) {
 		Mono<BreakglassPolicy> body = policies.save(policy)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body).onErrorMap(OptimisticLockingFailureException.class,
 				e -> ApiProblemException.conflict("the breakglass policy was modified concurrently (stale version)"))

@@ -55,7 +55,7 @@ public class ServiceAccountConfigService {
 		// auth_method is NOT NULL in the schema; default it when the request omits it.
 		ServiceAccount account = ServiceAccount.create(name, description,
 				authMethod == null ? DEFAULT_AUTH_METHOD : authMethod, keyReference, tokenTtlSeconds, ORIGIN_API);
-		return persist(account, actor, "service_account.create", name);
+		return persist(null, account, actor, "service_account.create", name);
 	}
 
 	public Mono<ServiceAccount> update(UUID id, String actor, Long expectedVersion, String description,
@@ -67,20 +67,25 @@ public class ServiceAccountConfigService {
 			ServiceAccount updated = new ServiceAccount(existing.id(), existing.name(), description,
 					authMethod == null ? existing.authMethod() : authMethod, keyReference, tokenTtlSeconds, ORIGIN_API,
 					existing.version(), existing.createdAt(), existing.updatedAt());
-			return persist(updated, actor, "service_account.update", existing.name());
+			return persist(existing, updated, actor, "service_account.update", existing.name());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		// Idempotent: audit + delete whether or not the row existed.
-		return tx.transactional(accounts.deleteById(id)
-				.then(audit.record(actor, id.toString(), "service_account.delete", "success", null, null, Map.of())));
+		return accounts.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
 	}
 
-	private Mono<ServiceAccount> persist(ServiceAccount account, String actor, String action, String name) {
+	private Mono<Void> deleteWithAudit(UUID id, String actor, ServiceAccount before) {
+		return tx.transactional(accounts.deleteById(id)
+				.then(audit.recordChange(actor, id.toString(), "service_account.delete", Map.of(), before, null)));
+	}
+
+	private Mono<ServiceAccount> persist(ServiceAccount before, ServiceAccount account, String actor, String action,
+			String name) {
 		Mono<ServiceAccount> body = accounts.save(account)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body).onErrorMap(OptimisticLockingFailureException.class,
 				e -> ApiProblemException.conflict("the service account was modified concurrently (stale version)"))

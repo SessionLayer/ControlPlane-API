@@ -8,6 +8,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +33,8 @@ import tools.jackson.databind.ObjectMapper;
  */
 @Service
 public class IdempotencyService {
+
+	private static final Logger LOG = LoggerFactory.getLogger(IdempotencyService.class);
 
 	private static final String UPSERT = """
 			INSERT INTO runtime.idempotency_key
@@ -75,7 +79,13 @@ public class IdempotencyService {
 						: Mono.<ResponseEntity<T>>error(ApiProblemException.idempotencyConflict()))
 				.switchIfEmpty(Mono.defer(
 						() -> action.flatMap(response -> store(key, principal, method, path, fingerprint, response, now)
-								.thenReturn(response))));
+								.onErrorResume(recordFailure -> {
+									// The mutation already ran; a failed idempotency record is best-effort
+									// (a retry re-executes rather than replays) — never fail the request.
+									LOG.warn("idempotency record store failed (best-effort); returning the response",
+											recordFailure);
+									return Mono.empty();
+								}).thenReturn(response))));
 	}
 
 	private <T> ResponseEntity<T> replay(IdempotencyRecord existing, Class<T> responseType) {

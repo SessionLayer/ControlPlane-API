@@ -69,7 +69,7 @@ public class CaConfigService {
 		validate(backend, keyReference, algorithm);
 		// rotationState is server-set: a newly registered CA is the active signer.
 		CaConfig ca = CaConfig.create(name, caKind, backend, keyReference, algorithm, ACTIVE, ORIGIN_API);
-		return persist(ca, actor, "ca.create", name);
+		return persist(null, ca, actor, "ca.create", name);
 	}
 
 	public Mono<CaConfig> update(UUID id, String actor, Long expectedVersion, String backend, String keyReference,
@@ -82,7 +82,7 @@ public class CaConfigService {
 			CaConfig updated = new CaConfig(existing.id(), existing.name(), existing.caKind(), backend, keyReference,
 					algorithm, existing.rotationState(), ORIGIN_API, existing.version(), existing.createdAt(),
 					existing.updatedAt());
-			return persist(updated, actor, "ca.update", existing.name());
+			return persist(existing, updated, actor, "ca.update", existing.name());
 		});
 	}
 
@@ -97,8 +97,8 @@ public class CaConfigService {
 				return Mono.<Void>error(ApiProblemException
 						.conflict("cannot delete the active CA of kind '" + existing.caKind() + "' — rotate first"));
 			}
-			return deleteAndAudit(id, actor);
-		}).switchIfEmpty(Mono.defer(() -> deleteAndAudit(id, actor)));
+			return deleteAndAudit(id, actor, existing);
+		}).switchIfEmpty(Mono.defer(() -> deleteAndAudit(id, actor, null)));
 	}
 
 	/**
@@ -110,22 +110,27 @@ public class CaConfigService {
 	public Mono<CaConfig> rotate(UUID id, String actor) {
 		return get(id).flatMap(existing -> {
 			String kind = existing.caKind();
-			return rotation.beginRotation(kind, kind + "-" + UUID.randomUUID()).then(rotation.promote(kind))
-					.then(caConfigs.findByCaKindAndRotationState(kind, ACTIVE))
+			// Atomic: the incoming/active/outgoing transitions AND the audit commit in one
+			// transaction (the inner CaRotationService tx joins this outer one, REQUIRED),
+			// so a signing-key rotation can never stand without its audit record.
+			Mono<CaConfig> rotated = rotation.beginRotation(kind, kind + "-" + UUID.randomUUID())
+					.then(rotation.promote(kind)).then(caConfigs.findByCaKindAndRotationState(kind, ACTIVE))
 					.flatMap(active -> audit.record(actor, active.id().toString(), "ca.rotate", "success", null, null,
 							Map.of("kind", kind)).thenReturn(active));
+			return tx.transactional(rotated).onErrorMap(DataIntegrityViolationException.class,
+					e -> ApiProblemException.conflict("a concurrent rotation of the '" + kind + "' CA is in progress"));
 		});
 	}
 
-	private Mono<Void> deleteAndAudit(UUID id, String actor) {
+	private Mono<Void> deleteAndAudit(UUID id, String actor, CaConfig before) {
 		return tx.transactional(caConfigs.deleteById(id)
-				.then(audit.record(actor, id.toString(), "ca.delete", "success", null, null, Map.of())));
+				.then(audit.recordChange(actor, id.toString(), "ca.delete", Map.of(), before, null)));
 	}
 
-	private Mono<CaConfig> persist(CaConfig ca, String actor, String action, String name) {
+	private Mono<CaConfig> persist(CaConfig before, CaConfig ca, String actor, String action, String name) {
 		Mono<CaConfig> body = caConfigs.save(ca)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body)
 				.onErrorMap(OptimisticLockingFailureException.class,

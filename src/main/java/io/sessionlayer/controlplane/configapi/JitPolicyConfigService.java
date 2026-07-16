@@ -51,33 +51,38 @@ public class JitPolicyConfigService {
 
 	public Mono<JitPolicy> create(String actor, String name, JsonNode targetSelector, List<String> capabilities,
 			int maxTtlSeconds, JsonNode approvalChain) {
-		validate(maxTtlSeconds, approvalChain);
+		validate(maxTtlSeconds, targetSelector, approvalChain);
 		JitPolicy policy = JitPolicy.create(name, targetSelector, capabilities, maxTtlSeconds, approvalChain,
 				ORIGIN_API);
-		return persist(policy, actor, "jit_policy.create", name);
+		return persist(null, policy, actor, "jit_policy.create", name);
 	}
 
 	public Mono<JitPolicy> update(UUID id, String actor, Long expectedVersion, JsonNode targetSelector,
 			List<String> capabilities, int maxTtlSeconds, JsonNode approvalChain) {
-		validate(maxTtlSeconds, approvalChain);
+		validate(maxTtlSeconds, targetSelector, approvalChain);
 		return get(id).flatMap(existing -> {
 			requireVersion(expectedVersion, existing.version());
 			JitPolicy updated = new JitPolicy(existing.id(), existing.name(), targetSelector, capabilities,
 					maxTtlSeconds, approvalChain, ORIGIN_API, existing.version(), existing.createdAt(),
 					existing.updatedAt());
-			return persist(updated, actor, "jit_policy.update", existing.name());
+			return persist(existing, updated, actor, "jit_policy.update", existing.name());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		return tx.transactional(policies.deleteById(id)
-				.then(audit.record(actor, id.toString(), "jit_policy.delete", "success", null, null, Map.of())));
+		return policies.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
 	}
 
-	private Mono<JitPolicy> persist(JitPolicy policy, String actor, String action, String name) {
+	private Mono<Void> deleteWithAudit(UUID id, String actor, JitPolicy before) {
+		return tx.transactional(policies.deleteById(id)
+				.then(audit.recordChange(actor, id.toString(), "jit_policy.delete", Map.of(), before, null)));
+	}
+
+	private Mono<JitPolicy> persist(JitPolicy before, JitPolicy policy, String actor, String action, String name) {
 		Mono<JitPolicy> body = policies.save(policy)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body)
 				.onErrorMap(OptimisticLockingFailureException.class,
@@ -89,10 +94,13 @@ public class JitPolicyConfigService {
 	// The approval-chain length ceiling (<= 3) is a bean-validation 400; here we
 	// reject the semantic gaps a schema cannot catch (FR-ACC-3): a non-positive TTL
 	// and an approval level with no addressable value.
-	private static void validate(int maxTtlSeconds, JsonNode approvalChain) {
+	private static void validate(int maxTtlSeconds, JsonNode targetSelector, JsonNode approvalChain) {
 		if (maxTtlSeconds <= 0) {
 			throw ApiProblemException.validation("maxTtlSeconds must be > 0");
 		}
+		// The JIT-request submit path label-matches this selector against a node; a
+		// shape the evaluator can't parse would break submit, so reject it pre-commit.
+		SelectorValidation.labelSelector(targetSelector, "targetSelector");
 		if (approvalChain != null && approvalChain.isArray()) {
 			for (JsonNode level : approvalChain) {
 				JsonNode value = level.get("value");

@@ -27,10 +27,6 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class SessionManagementService {
 
-	// Bounded so a terminate is a decisive teardown, not a standing ban: once it
-	// expires the identity may reconnect under unchanged policy (§8.4).
-	private static final int TERMINATE_TTL_SECONDS = 60;
-
 	private final SshSessionRepository sessions;
 	private final CursorPages cursorPages;
 	private final AccessLockRepository accessLocks;
@@ -38,10 +34,11 @@ public class SessionManagementService {
 	private final AuditWriter audit;
 	private final TransactionalOperator tx;
 	private final ObjectMapper objectMapper;
+	private final SessionManagementProperties properties;
 
 	public SessionManagementService(SshSessionRepository sessions, CursorPages cursorPages,
 			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditWriter audit, TransactionalOperator tx,
-			ObjectMapper objectMapper) {
+			ObjectMapper objectMapper, SessionManagementProperties properties) {
 		this.sessions = sessions;
 		this.cursorPages = cursorPages;
 		this.accessLocks = accessLocks;
@@ -49,6 +46,7 @@ public class SessionManagementService {
 		this.audit = audit;
 		this.tx = tx;
 		this.objectMapper = objectMapper;
+		this.properties = properties;
 	}
 
 	public Mono<CursorPages.Page<SshSession>> list(String cursor, Integer limit, String identity, UUID nodeId,
@@ -73,17 +71,30 @@ public class SessionManagementService {
 		return sessions.findById(id).switchIfEmpty(Mono.error(ApiProblemException.notFound("session", id)));
 	}
 
+	// The reason becomes a Lock reason pushed to every Gateway in the deny-list
+	// snapshot, so bound it like LockIngestValidation does (defense-in-depth behind
+	// the contract's maxLength) — an oversized reason can't inflate that channel.
+	private static final int MAX_REASON_LENGTH = 4096;
+
 	public Mono<SshSession> terminate(UUID id, String actor, String reason) {
+		if (reason != null && reason.length() > MAX_REASON_LENGTH) {
+			return Mono.error(
+					ApiProblemException.validation("reason must be at most " + MAX_REASON_LENGTH + " characters"));
+		}
 		return get(id).flatMap(session -> {
 			Instant now = Instant.now();
-			Instant expiresAt = now.plusSeconds(TERMINATE_TTL_SECONDS);
+			// Bounded so a terminate is a decisive teardown, not a standing ban: long
+			// enough that a briefly-disconnected Gateway still tears the session down on
+			// its next resync, short enough that the identity may reconnect afterwards
+			// (§8.4; configurable via sessionlayer.session.terminate-lock-ttl).
+			int ttlSeconds = (int) properties.getTerminateLockTtl().toSeconds();
+			Instant expiresAt = now.plusSeconds(ttlSeconds);
 			// The wire Lock selector has no per-session facet, so teardown is
 			// identity-scoped (it also affects that identity's other live sessions).
 			var selector = objectMapper.createObjectNode();
 			selector.putArray("identities").add(session.identity());
 			String lockReason = reason == null || reason.isBlank() ? "operator terminate" : reason;
-			AccessLock lock = AccessLock.create(selector, "strict", TERMINATE_TTL_SECONDS, expiresAt, lockReason,
-					actor);
+			AccessLock lock = AccessLock.create(selector, "strict", ttlSeconds, expiresAt, lockReason, actor);
 			Map<String, String> detail = Map.of("identity", session.identity());
 			// Persist lock + audit atomically; push the deny only AFTER commit so a
 			// Gateway can never be handed a lock a rolled-back transaction never stored.

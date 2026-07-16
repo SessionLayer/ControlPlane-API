@@ -314,12 +314,13 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 | `runtime.join_token` | Token **hash** (never raw), scope, single-use, expiry, `consumed_at` (Design §8.1, FR-JOIN-2). |
 | `runtime.ssh_session` | The `session` entity: identity, node, principal, gateway, access model, times + **decision snapshot** (FR-DATA-2). |
 | `runtime.recording_ref` | 1:1 with `ssh_session`, object-store key, encryption-key **ref**, hash-chain head (FR-DATA-2, FR-AUD-3). |
-| `runtime.access_lock` | The `lock` entity: target selector, mode, ttl, reason, created_by. **API-only** (FR-API-3). |
+| `runtime.access_lock` | The `lock` entity: target selector, mode, ttl, reason, created_by. **API-only runtime** (FR-DATA-1). |
 | `runtime.jit_request` | FR-ACC-2 state machine, requester, approver-chain progress, reason, two clocks. |
 | `runtime.breakglass_activation` | Principal, reason, alert ref, review status (FR-ACC-6). |
 | `runtime.pin` | Pubkey fingerprint, identity, source-cidr, principals, expiry (Design §5.5). |
 | `runtime.otp` | OTP **hash** (never raw), identity, allowed principals, source-cidr, expiry, `used` (Design §5.4). |
-| `runtime.audit_event` | Actor, subject, action, outcome, UTC time, correlation id. **Append-only, zero FKs** (§4.6, FR-AUD-9). |
+| `runtime.idempotency_key` | (`V22`, S17) The recorded response for one `Idempotency-Key` scoped to (principal, method, path); bounded by `expires_at`, swept by `AuthMaintenanceService` (FR-API-1). |
+| `runtime.audit_event` | Actor, subject, action, outcome, UTC time, correlation id, `detail` (incl. config **before/after**, FR-PADM-3). **Append-only, zero FKs** (§4.6, FR-AUD-9). |
 
 ---
 

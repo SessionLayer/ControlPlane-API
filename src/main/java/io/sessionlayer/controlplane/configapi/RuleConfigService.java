@@ -51,35 +51,41 @@ public class RuleConfigService {
 	public Mono<DpRule> create(String actor, String name, JsonNode identitySelector, JsonNode nodeLabelSelector,
 			JsonNode sourceIpCondition, List<String> principals, int ttlSeconds, List<String> capabilities,
 			String effect) {
-		validate(ttlSeconds, principals);
+		validate(ttlSeconds, principals, identitySelector, nodeLabelSelector, sourceIpCondition);
 		DpRule rule = DpRule.create(name, identitySelector, nodeLabelSelector, sourceIpCondition, principals,
 				ttlSeconds, capabilities, effect, ORIGIN_API);
-		return persist(rule, actor, "rule.create", name);
+		return persist(null, rule, actor, "rule.create", name);
 	}
 
 	public Mono<DpRule> update(UUID id, String actor, Long expectedVersion, JsonNode identitySelector,
 			JsonNode nodeLabelSelector, JsonNode sourceIpCondition, List<String> principals, int ttlSeconds,
 			List<String> capabilities, String effect) {
-		validate(ttlSeconds, principals);
+		validate(ttlSeconds, principals, identitySelector, nodeLabelSelector, sourceIpCondition);
 		return get(id).flatMap(existing -> {
 			requireVersion(expectedVersion, existing.version());
 			DpRule updated = new DpRule(existing.id(), existing.name(), identitySelector, nodeLabelSelector,
 					sourceIpCondition, principals, ttlSeconds, capabilities, effect, ORIGIN_API, existing.version(),
 					existing.createdAt(), existing.updatedAt());
-			return persist(updated, actor, "rule.update", existing.name());
+			return persist(existing, updated, actor, "rule.update", existing.name());
 		});
 	}
 
 	public Mono<Void> delete(UUID id, String actor) {
-		// Idempotent: audit + delete whether or not the row existed.
-		return tx.transactional(rules.deleteById(id)
-				.then(audit.record(actor, id.toString(), "rule.delete", "success", null, null, Map.of())));
+		// Idempotent + auditable: capture the before-state, then delete + record the
+		// change (before/after, FR-PADM-3); a delete of a missing row is still audited.
+		return rules.findById(id).flatMap(before -> deleteWithAudit(id, actor, before))
+				.switchIfEmpty(Mono.defer(() -> deleteWithAudit(id, actor, null)));
 	}
 
-	private Mono<DpRule> persist(DpRule rule, String actor, String action, String name) {
+	private Mono<Void> deleteWithAudit(UUID id, String actor, DpRule before) {
+		return tx.transactional(rules.deleteById(id)
+				.then(audit.recordChange(actor, id.toString(), "rule.delete", Map.of(), before, null)));
+	}
+
+	private Mono<DpRule> persist(DpRule before, DpRule rule, String actor, String action, String name) {
 		Mono<DpRule> body = rules.save(rule)
 				.flatMap(saved -> audit
-						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.recordChange(actor, saved.id().toString(), action, Map.of("name", name), before, saved)
 						.thenReturn(saved));
 		return tx.transactional(body)
 				.onErrorMap(OptimisticLockingFailureException.class,
@@ -88,13 +94,20 @@ public class RuleConfigService {
 						e -> ApiProblemException.conflict("a rule named '" + name + "' already exists"));
 	}
 
-	private static void validate(int ttlSeconds, List<String> principals) {
+	private static void validate(int ttlSeconds, List<String> principals, JsonNode identitySelector,
+			JsonNode nodeLabelSelector, JsonNode sourceIpCondition) {
 		if (ttlSeconds <= 0) {
 			throw ApiProblemException.validation("ttlSeconds must be > 0");
 		}
 		if (principals == null || principals.isEmpty()) {
 			throw ApiProblemException.validation("principals must be non-empty");
 		}
+		// Reject a selector the S5 evaluator can't parse pre-commit, so a malformed
+		// rule
+		// never persists to fail-closed (or worse) on the decision path.
+		SelectorValidation.identitySelector(identitySelector);
+		SelectorValidation.labelSelector(nodeLabelSelector, "nodeLabelSelector");
+		SelectorValidation.sourceIpCondition(sourceIpCondition);
 	}
 
 	private static void requireVersion(Long expected, Long actual) {

@@ -32,6 +32,9 @@ class CaCrudIT extends AbstractConfigApiIT {
 	@Autowired
 	private CaConfigRepository caConfigs;
 
+	// deleteAll is safe here only because the AbstractAuthIT context disables
+	// cold-start + the mTLS server (so nothing else provisions a ca_config row) and
+	// Failsafe runs ITs serially; the data-layer suites use a separate container.
 	@AfterEach
 	void resetCas() {
 		caConfigs.deleteAll().block();

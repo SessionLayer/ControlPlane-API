@@ -21,8 +21,8 @@ class RuleCrudIT extends AbstractConfigApiIT {
 
 	private Map<String, Object> ruleBody(String name, int ttl, String effect) {
 		return Map.of("name", name, "identitySelector", Map.of("identities", List.of("alice")), "nodeLabelSelector",
-				Map.of("env", "prod"), "principals", List.of("deploy"), "ttlSeconds", ttl, "capabilities",
-				List.of("shell", "exec"), "effect", effect);
+				Map.of("env", Map.of("op", "eq", "value", "prod")), "principals", List.of("deploy"), "ttlSeconds", ttl,
+				"capabilities", List.of("shell", "exec"), "effect", effect);
 	}
 
 	@Test
@@ -88,8 +88,8 @@ class RuleCrudIT extends AbstractConfigApiIT {
 		client.put().uri("/v1/rules/" + id).header("Authorization", "Bearer " + token)
 				.contentType(MediaType.APPLICATION_JSON)
 				.bodyValue(Map.of("identitySelector", Map.of("identities", List.of("alice")), "nodeLabelSelector",
-						Map.of("env", "prod"), "principals", List.of("deploy"), "ttlSeconds", 7200, "effect", "deny",
-						"version", 0))
+						Map.of("env", Map.of("op", "eq", "value", "prod")), "principals", List.of("deploy"),
+						"ttlSeconds", 7200, "effect", "deny", "version", 0))
 				.exchange().expectStatus().isOk().expectBody().jsonPath("$.ttlSeconds").isEqualTo(7200)
 				.jsonPath("$.effect").isEqualTo("deny").jsonPath("$.version").isEqualTo(1);
 
