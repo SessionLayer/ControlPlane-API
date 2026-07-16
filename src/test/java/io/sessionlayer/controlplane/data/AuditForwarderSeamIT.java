@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 
 /**
  * Proves the pluggable audit exporter seam (owner requirement, §15/NFR-5):
@@ -29,8 +30,10 @@ class AuditForwarderSeamIT extends AbstractDataIT {
 	@TestConfiguration
 	static class Doubles {
 		// A bean of type AuditForwarder suppresses the default @ConditionalOnMissingBean
-		// log forwarder, so the real store forwards through THIS impl.
+		// log forwarder; @Primary makes injection unambiguous either way, so the real
+		// store forwards through THIS impl.
 		@Bean
+		@Primary
 		CapturingAuditForwarder capturingAuditForwarder() {
 			return new CapturingAuditForwarder();
 		}
