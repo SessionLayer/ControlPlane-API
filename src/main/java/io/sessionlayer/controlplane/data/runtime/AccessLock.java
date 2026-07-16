@@ -13,9 +13,9 @@ import tools.jackson.databind.JsonNode;
 /**
  * RUNTIME · {@code runtime.access_lock} — the Design §12A "lock" entity
  * (renamed; reserved word, §7.1). A Lock is the top-tier un-overridable deny
- * (Design §6.1/§8.4). <b>API-only</b> runtime resource: the GitOps reconciler
- * MUST reject a committed Lock kind (FR-API-3). No {@code origin} column —
- * never reconciled.
+ * (Design §6.1/§8.4). <b>API-only</b> runtime resource: "deny now and keep it"
+ * is a runtime Lock, never a config edit (FR-DATA-1). No {@code origin} column —
+ * it is runtime state, not config.
  */
 @Table(schema = "runtime", name = "access_lock")
 public record AccessLock(@Id UUID id, JsonNode targetSelector, String mode, Integer ttlSeconds, Instant expiresAt,

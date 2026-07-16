@@ -1,10 +1,10 @@
--- V3 — RUNTIME schema (never reconciled). SessionLayer Control Plane.
+-- V3 — RUNTIME schema (live operational state). SessionLayer Control Plane.
 --
 -- Design §12A "Core data model" (RUNTIME group) + §13. These entities are the
 -- live operational state: registrations, presence, issued identities, sessions,
--- recordings, locks, JIT/break-glass state, pins/OTPs, audit. The S16 GitOps
--- reconciler MUST NEVER touch anything in this schema (FR-API-3); there is
--- deliberately no `origin` column here.
+-- recordings, locks, JIT/break-glass state, pins/OTPs, audit. RUNTIME is the live
+-- side of the config-vs-runtime boundary (FR-DATA-1); there is deliberately no
+-- `origin` provenance column here.
 --
 -- Referential rules (docs/DATA-MODEL.md §6):
 --   * runtime->runtime: real FKs (ON DELETE SET NULL where history must outlive the
@@ -248,8 +248,8 @@ COMMENT ON TABLE runtime.recording_ref IS 'FR-DATA-2: 1:1 with ssh_session (UNIQ
 
 -- ---------------------------------------------------------------------------
 -- access_lock — the Design "lock" entity (renamed; reserved word, §7.1). API-ONLY.
--- No `origin` column: runtime, never reconciled. The reconciler MUST reject a
--- committed Lock kind (FR-API-3). Lock = top-tier un-overridable deny (Design §6.1/§8.4).
+-- No `origin` column: runtime state, not config (FR-DATA-1). "Deny now and keep it"
+-- is a runtime Lock, never a config edit. Lock = top-tier un-overridable deny (Design §6.1/§8.4).
 -- ---------------------------------------------------------------------------
 CREATE TABLE runtime.access_lock (
     id              uuid        PRIMARY KEY,
@@ -263,7 +263,7 @@ CREATE TABLE runtime.access_lock (
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE runtime.access_lock IS 'Design §12A "lock" (renamed access_lock, §7.1). API-ONLY runtime resource (FR-API-3); never reconciled.';
+COMMENT ON TABLE runtime.access_lock IS 'Design §12A "lock" (renamed access_lock, §7.1). API-ONLY runtime resource (FR-DATA-1); the config-vs-runtime boundary keeps it out of config.';
 
 -- ---------------------------------------------------------------------------
 -- breakglass_activation — principal, reason, alert ref, review status. FR-ACC-6.

@@ -58,7 +58,7 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 	@Test
 	void platformRoleAndRoleBindingWithFk() {
 		var role = platformRoles
-				.save(PlatformRole.create("auditor", List.of("audit:read", "recording:replay"), "Auditors", "git"))
+				.save(PlatformRole.create("auditor", List.of("audit:read", "recording:replay"), "Auditors", "api"))
 				.block();
 		assertThat(role).isNotNull();
 		assertThat(role.permissions()).containsExactly("audit:read", "recording:replay");
@@ -69,7 +69,7 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 
 		// config->config FK
 		var scope = objectMapper.readTree("{\"nodeLabels\":{\"env\":\"prod\"}}");
-		var binding = roleBindings.save(RoleBinding.create(role.id(), "group", "sre@corp", scope, "git")).block();
+		var binding = roleBindings.save(RoleBinding.create(role.id(), "group", "sre@corp", scope, "api")).block();
 		assertThat(binding).isNotNull();
 		assertThat(roleBindings.findByRoleId(role.id()).collectList().block()).hasSize(1);
 	}
@@ -94,23 +94,23 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 
 	@Test
 	void caConfigRotationOverlapOneActivePerKind() {
-		caConfigs.save(CaConfig.create("host-active", "host", "local", "ref-a", "ecdsa-p256", "active", "git")).block();
+		caConfigs.save(CaConfig.create("host-active", "host", "local", "ref-a", "ecdsa-p256", "active", "api")).block();
 		// an incoming key for the same kind is allowed (rotation overlap, FR-CA-7)
 		var incoming = caConfigs
-				.save(CaConfig.create("host-incoming", "host", "vault", "ref-b", "ecdsa-p256", "incoming", "git"))
+				.save(CaConfig.create("host-incoming", "host", "vault", "ref-b", "ecdsa-p256", "incoming", "api"))
 				.block();
 		assertThat(incoming).isNotNull();
 		assertThat(caConfigs.findByCaKind("host").collectList().block()).hasSize(2);
 		// but a second ACTIVE for the kind violates the partial unique index
 		StepVerifier
 				.create(caConfigs.save(
-						CaConfig.create("host-active-2", "host", "local", "ref-c", "ecdsa-p256", "active", "git")))
+						CaConfig.create("host-active-2", "host", "local", "ref-c", "ecdsa-p256", "active", "api")))
 				.verifyError(DataIntegrityViolationException.class);
 	}
 
 	@Test
 	void capabilityDefCrud() {
-		var cap = capabilityDefs.save(CapabilityDef.create("sftp", "SFTP subsystem", "git")).block();
+		var cap = capabilityDefs.save(CapabilityDef.create("sftp", "SFTP subsystem", "api")).block();
 		assertThat(cap).isNotNull();
 		assertThat(capabilityDefs.findByName("sftp").block().id()).isEqualTo(cap.id());
 	}
@@ -120,7 +120,7 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 		var target = objectMapper.readTree("{\"env\":\"prod\"}");
 		var chain = objectMapper.readTree(
 				"[{\"kind\":\"email\",\"value\":\"lead@corp\"}," + "{\"kind\":\"oidc_group\",\"value\":\"secops\"}]");
-		var jit = jitPolicies.save(JitPolicy.create("prod-jit", target, List.of("shell", "exec"), 3600, chain, "git"))
+		var jit = jitPolicies.save(JitPolicy.create("prod-jit", target, List.of("shell", "exec"), 3600, chain, "api"))
 				.block();
 		assertThat(jit).isNotNull();
 		var reread = jitPolicies.findById(jit.id()).block();
@@ -131,7 +131,7 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 	@Test
 	void breakglassPolicyCrud() {
 		var bg = breakglassPolicies
-				.save(BreakglassPolicy.create("bg-default", true, "pagerduty://sev1", true, "fido2", "git")).block();
+				.save(BreakglassPolicy.create("bg-default", true, "pagerduty://sev1", true, "fido2", "api")).block();
 		assertThat(bg).isNotNull();
 		assertThat(bg.recordingStrict()).isTrue();
 		assertThat(bg.authPath()).isEqualTo("fido2");
@@ -140,7 +140,7 @@ class ConfigRepositoryCrudIT extends AbstractDataIT {
 	@Test
 	void serviceAccountCrud() {
 		var sa = serviceAccounts
-				.save(ServiceAccount.create("ci-runner", "CI deploy bot", "private_key_jwt", "jwks://ref", 900, "git"))
+				.save(ServiceAccount.create("ci-runner", "CI deploy bot", "private_key_jwt", "jwks://ref", 900, "api"))
 				.block();
 		assertThat(sa).isNotNull();
 		assertThat(serviceAccounts.findByName("ci-runner").block().authMethod()).isEqualTo("private_key_jwt");

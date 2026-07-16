@@ -184,7 +184,7 @@ message FinalizeRecordingRequest {
   // (NFR-6). Written write-once to recording_ref.content_digest.
   string content_digest = 4;
 
-  // Byte length of the uploaded ciphertext object (reconciled against the store).
+  // Byte length of the uploaded ciphertext object (cross-checked against the store).
   int64 byte_len = 5;
 
   // Per-operation SFTP/SCP file-transfer audit — path, direction, size, streaming

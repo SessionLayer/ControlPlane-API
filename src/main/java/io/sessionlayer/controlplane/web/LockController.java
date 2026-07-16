@@ -32,8 +32,8 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * The secured REST surface for the incident-response lock resource (Design
- * §8.3; FR-LOCK-1/2). Locks are an <b>API-only</b> runtime resource (never
- * reconciled). Each mutation is platform-RBAC gated ({@code lock:write}) +
+ * §8.3; FR-LOCK-1/2). Locks are an <b>API-only</b> runtime resource (a runtime
+ * deny, not config). Each mutation is platform-RBAC gated ({@code lock:write}) +
  * audited and triggers the actively-pushed {@link LockFeedHub} deny-list;
  * listing needs {@code
  * lock:read}. The generic {@code 403} on an unauthorized/empty subject mirrors

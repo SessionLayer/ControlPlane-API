@@ -12,8 +12,8 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * CONFIG · {@code config.node_policy} (Design §12A). Desired node labels,
- * connector kind, and declared host trust references. Git-reconcilable; carries
- * {@code origin}.
+ * connector kind, and declared host trust references. A config resource; carries
+ * an {@code origin} provenance label.
  */
 @Table(schema = "config", name = "node_policy")
 public record NodePolicy(@Id UUID id, String name, JsonNode desiredLabels, String connectorKind, String hostPinRef,
