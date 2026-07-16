@@ -32,12 +32,12 @@ public class WormHealthIndicator implements ReactiveHealthIndicator {
 
 	private static final Duration CACHE_TTL = Duration.ofSeconds(10);
 
-	private final WormObjectStore worm;
+	private final RecordingStore worm;
 
 	private volatile Health cached;
 	private volatile long cachedUntilNanos;
 
-	public WormHealthIndicator(WormObjectStore worm) {
+	public WormHealthIndicator(RecordingStore worm) {
 		this.worm = worm;
 	}
 

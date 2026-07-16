@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.oidc;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.Secrets;
 import io.sessionlayer.controlplane.data.runtime.OidcLoginRepository;
 import java.time.Duration;
@@ -45,11 +45,11 @@ public class OidcRpService {
 	private final OidcLoginRepository logins;
 	private final OidcClient client;
 	private final IdTokenValidator idTokenValidator;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final DatabaseClient db;
 
 	public OidcRpService(OidcMetadataService metadata, OidcProperties properties, StateDerivation derivation,
-			OidcLoginRepository logins, OidcClient client, IdTokenValidator idTokenValidator, AuditWriter audit,
+			OidcLoginRepository logins, OidcClient client, IdTokenValidator idTokenValidator, AuditEventStore audit,
 			DatabaseClient db) {
 		this.metadata = metadata;
 		this.properties = properties;

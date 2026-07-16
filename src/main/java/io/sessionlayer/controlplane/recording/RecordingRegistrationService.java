@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.recording;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.Uuids;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
@@ -9,7 +9,7 @@ import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.GatewayRequestException;
 import io.sessionlayer.controlplane.gateway.GatewayRequestException.Reason;
-import io.sessionlayer.controlplane.recording.WormObjectStore.PresignedUpload;
+import io.sessionlayer.controlplane.recording.RecordingStore.PresignedAccess;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -54,13 +54,13 @@ public class RecordingRegistrationService {
 	private final OperatorSettingsRepository operatorSettings;
 	private final SshSessionRepository sshSessions;
 	private final RecordingRefRepository recordings;
-	private final WormObjectStore worm;
-	private final AuditWriter audit;
+	private final RecordingStore worm;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
 	public RecordingRegistrationService(RecordingTokenService recordingTokens,
 			OperatorSettingsRepository operatorSettings, SshSessionRepository sshSessions,
-			RecordingRefRepository recordings, WormObjectStore worm, AuditWriter audit, TransactionalOperator tx) {
+			RecordingRefRepository recordings, RecordingStore worm, AuditEventStore audit, TransactionalOperator tx) {
 		this.recordingTokens = recordingTokens;
 		this.operatorSettings = operatorSettings;
 		this.sshSessions = sshSessions;
@@ -138,11 +138,11 @@ public class RecordingRegistrationService {
 	 * and no S3 I/O runs inside a DB transaction. Every mismatch fails closed
 	 * generically.
 	 */
-	public Mono<PresignedUpload> requestUpload(UUID callerGatewayId, UUID recordingId) {
+	public Mono<PresignedAccess> requestUpload(UUID callerGatewayId, UUID recordingId) {
 		if (callerGatewayId == null || recordingId == null) {
 			return Mono.error(refused());
 		}
-		Mono<PresignedUpload> body = recordings.findById(recordingId).switchIfEmpty(Mono.error(refused())).flatMap(
+		Mono<PresignedAccess> body = recordings.findById(recordingId).switchIfEmpty(Mono.error(refused())).flatMap(
 				ref -> sshSessions.findById(ref.sessionId()).switchIfEmpty(Mono.error(refused())).flatMap(session -> {
 					if (!callerGatewayId.equals(session.gatewayId())) {
 						return Mono.error(refused());
@@ -150,7 +150,7 @@ public class RecordingRegistrationService {
 					Instant retainUntil = ref.retentionUntil() != null
 							? ref.retentionUntil()
 							: Instant.now().plus(Duration.ofDays(1));
-					return worm.ensureBucket().then(worm.presign(ref.objectKey(), ref.wormMode(), retainUntil))
+					return worm.ensureReady().then(worm.presignUpload(ref.objectKey(), ref.wormMode(), retainUntil))
 							.flatMap(upload -> audit
 									.record(session.identity(), recordingId.toString(), "recording.upload", "success",
 											session.id(), session.nodeId(),

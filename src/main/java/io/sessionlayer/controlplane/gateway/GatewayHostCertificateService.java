@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.gateway;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.ca.CaSignerService;
 import io.sessionlayer.controlplane.ca.CertificateRequest;
 import io.sessionlayer.controlplane.ca.OpenSshCertificate;
@@ -54,10 +54,10 @@ public class GatewayHostCertificateService {
 	private final CaSignerService caSigner;
 	private final GatewayIdentityRepository gatewayIdentities;
 	private final MtlsProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
 	public GatewayHostCertificateService(CaSignerService caSigner, GatewayIdentityRepository gatewayIdentities,
-			MtlsProperties properties, AuditWriter audit) {
+			MtlsProperties properties, AuditEventStore audit) {
 		this.caSigner = caSigner;
 		this.gatewayIdentities = gatewayIdentities;
 		this.properties = properties;

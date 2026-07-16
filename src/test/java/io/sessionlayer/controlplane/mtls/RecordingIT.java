@@ -34,8 +34,8 @@ import io.sessionlayer.controlplane.grpc.v1.RecordingStatus;
 import io.sessionlayer.controlplane.grpc.v1.RequestUploadRequest;
 import io.sessionlayer.controlplane.grpc.v1.UploadCredential;
 import io.sessionlayer.controlplane.grpc.v1.WormMode;
+import io.sessionlayer.controlplane.recording.RecordingStore.PresignedAccess;
 import io.sessionlayer.controlplane.recording.WormObjectStore;
-import io.sessionlayer.controlplane.recording.WormObjectStore.PresignedUpload;
 import io.sessionlayer.controlplane.recording.WormProperties;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -396,7 +396,8 @@ class RecordingIT extends AbstractMtlsIT {
 	void complianceWormObjectCannotBeDeleted() throws Exception {
 		String objectKey = "recordings/wormtest/" + UUID.randomUUID() + ".cast.enc";
 		Instant retainUntil = Instant.now().plus(Duration.ofDays(1));
-		PresignedUpload upload = worm.ensureBucket().then(worm.presign(objectKey, "compliance", retainUntil)).block();
+		PresignedAccess upload = worm.ensureReady().then(worm.presignUpload(objectKey, "compliance", retainUntil))
+				.block();
 		// The object-lock headers are part of the signature — surfaced so the uploader
 		// replays them verbatim (the lock cannot be stripped).
 		assertThat(upload.requiredHeaders().keySet().stream().map(String::toLowerCase))
@@ -476,7 +477,7 @@ class RecordingIT extends AbstractMtlsIT {
 		return HttpClient.newHttpClient().send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
 	}
 
-	private int putPresigned(PresignedUpload upload, byte[] body) throws Exception {
+	private int putPresigned(PresignedAccess upload, byte[] body) throws Exception {
 		HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(upload.url())).method(upload.method(),
 				HttpRequest.BodyPublishers.ofByteArray(body));
 		upload.requiredHeaders().forEach((name, value) -> {

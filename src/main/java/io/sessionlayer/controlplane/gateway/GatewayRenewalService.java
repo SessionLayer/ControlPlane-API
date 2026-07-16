@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.gateway;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.ca.mtls.LeafCertificateSpec;
 import io.sessionlayer.controlplane.ca.mtls.LeafPurpose;
@@ -36,10 +36,10 @@ public class GatewayRenewalService {
 	private final InternalMtlsCaService mtlsCa;
 	private final GatewayIdentityRepository gatewayIdentities;
 	private final MtlsProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
 	public GatewayRenewalService(InternalMtlsCaService mtlsCa, GatewayIdentityRepository gatewayIdentities,
-			MtlsProperties properties, AuditWriter audit) {
+			MtlsProperties properties, AuditEventStore audit) {
 		this.mtlsCa = mtlsCa;
 		this.gatewayIdentities = gatewayIdentities;
 		this.properties = properties;

@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.web.ApiProblemException;
@@ -29,10 +29,10 @@ public class RuleConfigService {
 
 	private final DpRuleRepository rules;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
-	public RuleConfigService(DpRuleRepository rules, CursorPages cursorPages, AuditWriter audit,
+	public RuleConfigService(DpRuleRepository rules, CursorPages cursorPages, AuditEventStore audit,
 			TransactionalOperator tx) {
 		this.rules = rules;
 		this.cursorPages = cursorPages;

@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.JitPolicy;
 import io.sessionlayer.controlplane.data.config.JitPolicyRepository;
 import io.sessionlayer.controlplane.web.ApiProblemException;
@@ -30,10 +30,10 @@ public class JitPolicyConfigService {
 
 	private final JitPolicyRepository policies;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
-	public JitPolicyConfigService(JitPolicyRepository policies, CursorPages cursorPages, AuditWriter audit,
+	public JitPolicyConfigService(JitPolicyRepository policies, CursorPages cursorPages, AuditEventStore audit,
 			TransactionalOperator tx) {
 		this.policies = policies;
 		this.cursorPages = cursorPages;

@@ -8,7 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
@@ -46,7 +46,7 @@ class AgentRenewalServiceTest {
 	private final AccessLockRepository accessLocks = mock(AccessLockRepository.class);
 	private final LockFeedHub lockFeedHub = mock(LockFeedHub.class);
 	private final AgentSecurityAlerts alerts = mock(AgentSecurityAlerts.class);
-	private final AuditWriter audit = mock(AuditWriter.class);
+	private final AuditEventStore audit = mock(AuditEventStore.class);
 	private final TransactionalOperator tx = mock(TransactionalOperator.class);
 
 	private AgentRenewalService service;

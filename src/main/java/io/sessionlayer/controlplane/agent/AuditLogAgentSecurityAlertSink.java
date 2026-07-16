@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.agent;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -21,9 +21,9 @@ public class AuditLogAgentSecurityAlertSink implements AgentSecurityAlertSink {
 
 	private static final Logger LOG = LoggerFactory.getLogger(AuditLogAgentSecurityAlertSink.class);
 
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
-	public AuditLogAgentSecurityAlertSink(AuditWriter audit) {
+	public AuditLogAgentSecurityAlertSink(AuditEventStore audit) {
 		this.audit = audit;
 	}
 

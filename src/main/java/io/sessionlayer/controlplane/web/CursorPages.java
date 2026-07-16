@@ -60,7 +60,7 @@ public class CursorPages {
 		return Math.max(1, Math.min(MAX_LIMIT, limit));
 	}
 
-	static UUID decodeCursor(String cursor) {
+	public static UUID decodeCursor(String cursor) {
 		if (cursor == null || cursor.isBlank()) {
 			return null;
 		}
@@ -71,7 +71,7 @@ public class CursorPages {
 		}
 	}
 
-	static String encodeCursor(UUID id) {
+	public static String encodeCursor(UUID id) {
 		return Base64.getUrlEncoder().withoutPadding().encodeToString(id.toString().getBytes(StandardCharsets.UTF_8));
 	}
 }

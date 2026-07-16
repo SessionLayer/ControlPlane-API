@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.breakglass;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.Secrets;
 import io.sessionlayer.controlplane.data.runtime.BreakglassCredential;
 import io.sessionlayer.controlplane.data.runtime.BreakglassCredentialRepository;
@@ -32,10 +32,10 @@ public class BreakglassCredentialService {
 	private final BreakglassCredentialRepository credentials;
 	private final BreakglassOfflineCodeRepository codes;
 	private final BreakglassProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
 	public BreakglassCredentialService(BreakglassCredentialRepository credentials,
-			BreakglassOfflineCodeRepository codes, BreakglassProperties properties, AuditWriter audit) {
+			BreakglassOfflineCodeRepository codes, BreakglassProperties properties, AuditEventStore audit) {
 		this.credentials = credentials;
 		this.codes = codes;
 		this.properties = properties;

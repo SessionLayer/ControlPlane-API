@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.bootstrap;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.Secrets;
 import io.sessionlayer.controlplane.data.config.OperatorSettings;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
@@ -44,11 +44,11 @@ public class BootstrapService {
 	private final PlatformRoleRepository roles;
 	private final RoleBindingRepository bindings;
 	private final BootstrapProperties properties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final DatabaseClient db;
 
 	public BootstrapService(OperatorSettingsRepository settings, PlatformRoleRepository roles,
-			RoleBindingRepository bindings, BootstrapProperties properties, AuditWriter audit, DatabaseClient db) {
+			RoleBindingRepository bindings, BootstrapProperties properties, AuditEventStore audit, DatabaseClient db) {
 		this.settings = settings;
 		this.roles = roles;
 		this.bindings = bindings;

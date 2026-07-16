@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.breakglass;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.AuthProperties;
 import io.sessionlayer.controlplane.auth.RateLimiter;
 import io.sessionlayer.controlplane.auth.Secrets;
@@ -55,13 +55,13 @@ public class BreakglassResolutionService {
 	private final BreakglassSecurityAlerts alerts;
 	private final RateLimiter rateLimiter;
 	private final AuthProperties authProperties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final DatabaseClient db;
 	private final ObjectMapper objectMapper;
 
 	public BreakglassResolutionService(BreakglassCredentialRepository credentials, BreakglassTokenService tokens,
-			BreakglassSecurityAlerts alerts, RateLimiter rateLimiter, AuthProperties authProperties, AuditWriter audit,
-			DatabaseClient db, ObjectMapper objectMapper) {
+			BreakglassSecurityAlerts alerts, RateLimiter rateLimiter, AuthProperties authProperties,
+			AuditEventStore audit, DatabaseClient db, ObjectMapper objectMapper) {
 		this.credentials = credentials;
 		this.tokens = tokens;
 		this.alerts = alerts;

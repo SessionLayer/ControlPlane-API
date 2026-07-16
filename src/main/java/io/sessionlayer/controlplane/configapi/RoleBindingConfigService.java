@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.PlatformRole;
 import io.sessionlayer.controlplane.data.config.PlatformRoleRepository;
 import io.sessionlayer.controlplane.data.config.RoleBinding;
@@ -33,11 +33,11 @@ public class RoleBindingConfigService {
 	private final RoleBindingRepository bindings;
 	private final PlatformRoleRepository roles;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
 	public RoleBindingConfigService(RoleBindingRepository bindings, PlatformRoleRepository roles,
-			CursorPages cursorPages, AuditWriter audit, TransactionalOperator tx) {
+			CursorPages cursorPages, AuditEventStore audit, TransactionalOperator tx) {
 		this.bindings = bindings;
 		this.roles = roles;
 		this.cursorPages = cursorPages;

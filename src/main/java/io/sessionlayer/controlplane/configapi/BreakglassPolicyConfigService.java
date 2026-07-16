@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.configapi;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.BreakglassPolicy;
 import io.sessionlayer.controlplane.data.config.BreakglassPolicyRepository;
 import io.sessionlayer.controlplane.web.ApiProblemException;
@@ -28,11 +28,11 @@ public class BreakglassPolicyConfigService {
 
 	private final BreakglassPolicyRepository policies;
 	private final CursorPages cursorPages;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
 	public BreakglassPolicyConfigService(BreakglassPolicyRepository policies, CursorPages cursorPages,
-			AuditWriter audit, TransactionalOperator tx) {
+			AuditEventStore audit, TransactionalOperator tx) {
 		this.policies = policies;
 		this.cursorPages = cursorPages;
 		this.audit = audit;

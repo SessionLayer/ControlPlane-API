@@ -11,7 +11,7 @@ import static org.mockito.Mockito.when;
 
 import io.sessionlayer.controlplane.api.model.CreateLockRequest;
 import io.sessionlayer.controlplane.api.model.LockTarget;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.grpc.LockFeedHub;
@@ -39,7 +39,7 @@ class LockControllerTest {
 
 	private final AccessLockRepository accessLocks = mock(AccessLockRepository.class);
 	private final LockFeedHub lockFeedHub = mock(LockFeedHub.class);
-	private final AuditWriter audit = mock(AuditWriter.class);
+	private final AuditEventStore audit = mock(AuditEventStore.class);
 	private final PlatformAuthorization platformAuthorization = mock(PlatformAuthorization.class);
 	private final CurrentAuthentication currentAuthentication = mock(CurrentAuthentication.class);
 	private final TransactionalOperator tx = mock(TransactionalOperator.class);

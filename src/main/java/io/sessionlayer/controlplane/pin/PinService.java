@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.pin;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.authz.AuthzProperties;
 import io.sessionlayer.controlplane.data.runtime.Pin;
 import io.sessionlayer.controlplane.data.runtime.PinRepository;
@@ -27,9 +27,9 @@ public class PinService {
 
 	private final PinRepository pins;
 	private final AuthzProperties authzProperties;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
-	public PinService(PinRepository pins, AuthzProperties authzProperties, AuditWriter audit) {
+	public PinService(PinRepository pins, AuthzProperties authzProperties, AuditEventStore audit) {
 		this.pins = pins;
 		this.authzProperties = authzProperties;
 		this.audit = audit;

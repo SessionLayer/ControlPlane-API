@@ -11,7 +11,7 @@ import io.sessionlayer.controlplane.api.model.IssueBreakglassOfflineCodesRequest
 import io.sessionlayer.controlplane.api.model.IssuedBreakglassOfflineCodes;
 import io.sessionlayer.controlplane.api.model.RegisterBreakglassCredentialRequest;
 import io.sessionlayer.controlplane.api.model.ReviewBreakglassActivationRequest;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.breakglass.BreakglassCredentialService;
 import io.sessionlayer.controlplane.data.runtime.BreakglassActivation;
 import io.sessionlayer.controlplane.data.runtime.BreakglassActivationRepository;
@@ -53,14 +53,14 @@ public class BreakglassController implements BreakglassApi {
 
 	private final BreakglassCredentialService credentials;
 	private final BreakglassActivationRepository activations;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 	private final PlatformAuthorization platformAuthorization;
 	private final CurrentAuthentication currentAuthentication;
 	private final ObjectMapper objectMapper;
 
 	public BreakglassController(BreakglassCredentialService credentials, BreakglassActivationRepository activations,
-			AuditWriter audit, PlatformAuthorization platformAuthorization, CurrentAuthentication currentAuthentication,
-			ObjectMapper objectMapper) {
+			AuditEventStore audit, PlatformAuthorization platformAuthorization,
+			CurrentAuthentication currentAuthentication, ObjectMapper objectMapper) {
 		this.credentials = credentials;
 		this.activations = activations;
 		this.audit = audit;

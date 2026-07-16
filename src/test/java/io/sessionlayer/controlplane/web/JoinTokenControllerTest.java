@@ -13,7 +13,7 @@ import io.sessionlayer.controlplane.agent.AgentJoinProperties;
 import io.sessionlayer.controlplane.agent.AgentJoinTokenService;
 import io.sessionlayer.controlplane.api.model.IssueJoinTokenRequest;
 import io.sessionlayer.controlplane.api.model.IssuedJoinToken;
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.platform.PlatformAuthorization;
 import io.sessionlayer.controlplane.platform.PlatformDecision;
 import io.sessionlayer.controlplane.platform.PlatformSubject;
@@ -37,7 +37,7 @@ import reactor.test.StepVerifier;
 class JoinTokenControllerTest {
 
 	private final AgentJoinTokenService joinTokens = mock(AgentJoinTokenService.class);
-	private final AuditWriter audit = mock(AuditWriter.class);
+	private final AuditEventStore audit = mock(AuditEventStore.class);
 	private final PlatformAuthorization platformAuthorization = mock(PlatformAuthorization.class);
 	private final CurrentAuthentication currentAuthentication = mock(CurrentAuthentication.class);
 	private final TransactionalOperator tx = mock(TransactionalOperator.class);

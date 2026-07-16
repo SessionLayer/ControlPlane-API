@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.breakglass;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -30,9 +30,9 @@ public class AuditLogBreakglassSecurityAlertSink implements BreakglassSecurityAl
 
 	private static final Logger LOG = LoggerFactory.getLogger(AuditLogBreakglassSecurityAlertSink.class);
 
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
-	public AuditLogBreakglassSecurityAlertSink(AuditWriter audit) {
+	public AuditLogBreakglassSecurityAlertSink(AuditEventStore audit) {
 		this.audit = audit;
 	}
 

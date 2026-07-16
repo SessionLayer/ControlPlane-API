@@ -1,6 +1,6 @@
 package io.sessionlayer.controlplane.platform;
 
-import io.sessionlayer.controlplane.audit.AuditWriter;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.data.config.PlatformRole;
 import io.sessionlayer.controlplane.data.config.PlatformRoleRepository;
 import io.sessionlayer.controlplane.data.config.RoleBinding;
@@ -31,10 +31,10 @@ public class PlatformAuthorizationService implements PlatformAuthorization {
 
 	private final PlatformRoleRepository roles;
 	private final RoleBindingRepository bindings;
-	private final AuditWriter audit;
+	private final AuditEventStore audit;
 
 	public PlatformAuthorizationService(PlatformRoleRepository roles, RoleBindingRepository bindings,
-			AuditWriter audit) {
+			AuditEventStore audit) {
 		this.roles = roles;
 		this.bindings = bindings;
 		this.audit = audit;
@@ -48,6 +48,38 @@ public class PlatformAuthorizationService implements PlatformAuthorization {
 					LOG.warn("platform authorization failed closed: {}", failure.toString());
 					return Mono.just(PlatformDecision.deny(PlatformDecision.Reason.EVALUATION_ERROR));
 				}).flatMap(decision -> auditDecision(subject, permission, scope, decision).thenReturn(decision));
+	}
+
+	@Override
+	public Mono<ScopeGrant> resolveScopeGrant(PlatformSubject subject, String permission) {
+		return Mono.zip(roles.findAll().collectMap(PlatformRole::id), bindings.findAll().collectList())
+				.map(loaded -> resolveScope(loaded.getT1(), loaded.getT2(), subject, permission))
+				.onErrorResume(failure -> {
+					LOG.warn("platform scope resolution failed closed: {}", failure.toString());
+					return Mono.just(ScopeGrant.deny());
+				});
+	}
+
+	private ScopeGrant resolveScope(Map<UUID, PlatformRole> roleById, List<RoleBinding> allBindings,
+			PlatformSubject subject, String permission) {
+		boolean granted = false;
+		List<tools.jackson.databind.JsonNode> scopes = new java.util.ArrayList<>();
+		for (RoleBinding binding : allBindings) {
+			if (!targets(binding, subject)) {
+				continue;
+			}
+			PlatformRole role = roleById.get(binding.roleId());
+			if (role == null || !permissions(role).contains(permission)) {
+				continue;
+			}
+			granted = true;
+			var scope = binding.scope();
+			if (scope == null || scope.isNull() || scope.isEmpty()) {
+				return ScopeGrant.all(); // an unscoped grant sees everything
+			}
+			scopes.add(scope);
+		}
+		return granted ? ScopeGrant.scoped(scopes) : ScopeGrant.deny();
 	}
 
 	private PlatformDecision decide(Map<UUID, PlatformRole> roleById, List<RoleBinding> allBindings,
