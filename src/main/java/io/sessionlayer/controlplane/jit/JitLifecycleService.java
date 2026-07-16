@@ -1,6 +1,7 @@
 package io.sessionlayer.controlplane.jit;
 
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.authz.Capabilities;
 import io.sessionlayer.controlplane.authz.Selectors;
 import io.sessionlayer.controlplane.data.config.JitPolicy;
@@ -58,6 +59,7 @@ public class JitLifecycleService {
 
 	private static final Logger LOG = LoggerFactory.getLogger(JitLifecycleService.class);
 	private static final String NOT_REQUESTABLE_MSG = "target is not available for JIT access";
+	private static final String MODEL_JIT = "jit";
 
 	private final JitRequestRepository requests;
 	private final JitPolicyRepository policies;
@@ -120,7 +122,9 @@ public class JitLifecycleService {
 	}
 
 	private Mono<JitRequest> rejectSubmit(String requester, UUID targetNodeId, String note) {
-		return audit.record(requester, null, "jit.requested", "denied", null, targetNodeId, detail("reason", note))
+		return audit
+				.record(AuditRecord.builder(requester, null, "jit.requested", "denied").node(targetNodeId)
+						.detail(detail("reason", note)).accessModel(MODEL_JIT).build())
 				.then(Mono.error(new JitException(JitException.Reason.NOT_REQUESTABLE, NOT_REQUESTABLE_MSG)));
 	}
 
@@ -410,12 +414,16 @@ public class JitLifecycleService {
 		return auditTransition(request, "jit.approve", "denied", detail("reason", reason, "approver", approver));
 	}
 
+	// The FR-AUD-9 correlation key for a JIT chain is the request id: the connect
+	// it
+	// authorizes stamps the same value (its ssh_session.jit_request_id), so one
+	// correlation_id search returns requested → approved → connect → run → replay.
 	private Mono<Void> auditTransition(JitRequest request, String action, String outcome, Map<String, String> detail) {
 		Map<String, String> full = new HashMap<>(detail);
 		full.put("state", request.state());
 		full.put("jit_request_id", request.id().toString());
-		return audit.record(request.requester(), request.principal(), action, outcome, null, request.targetNodeId(),
-				full);
+		return audit.record(AuditRecord.builder(request.requester(), request.principal(), action, outcome)
+				.node(request.targetNodeId()).detail(full).accessModel(MODEL_JIT).correlationId(request.id()).build());
 	}
 
 	private static Map<String, String> stateDetail(JitRequest request) {

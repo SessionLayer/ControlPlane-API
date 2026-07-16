@@ -1,6 +1,7 @@
 package io.sessionlayer.controlplane.authz;
 
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.breakglass.BreakglassProperties;
 import io.sessionlayer.controlplane.breakglass.BreakglassTokenService;
 import io.sessionlayer.controlplane.ca.CaRotationService;
@@ -165,8 +166,8 @@ public class ConnectAuthorizationService {
 				.flatMap(node -> decide(callerGatewayId, identity, groups, node, requestedPrincipal, sourceIp,
 						sessionId, breakglassToken))
 				.switchIfEmpty(auditDeny(callerGatewayId, identity, nodeId, sourceIp,
-						DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "node_unknown")
-						.thenReturn(ConnectDecision.denied()))
+						DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "node_unknown",
+						null, null).thenReturn(ConnectDecision.denied()))
 				// Any datastore/unexpected failure denies (fail closed, §8.4) — never leaks.
 				.onErrorResume(failure -> {
 					LOG.warn("connect authorization failed closed: {}", failure.toString());
@@ -186,7 +187,7 @@ public class ConnectAuthorizationService {
 		if (!"active".equals(node.status())) {
 			return auditDeny(callerGatewayId, identity, node.id(), sourceIp,
 					DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null),
-					"node_" + node.status()).thenReturn(ConnectDecision.denied());
+					"node_" + node.status(), null, null).thenReturn(ConnectDecision.denied());
 		}
 		Mono<Long> epochMono = policyEpochs.findSingleton().map(e -> e.epoch()).defaultIfEmpty(0L);
 		Mono<String> gwNameMono = gatewayIdentities.findById(callerGatewayId).map(g -> g.name())
@@ -224,8 +225,8 @@ public class ConnectAuthorizationService {
 						return tryJit(callerGatewayId, node, gatewayName, request, sessionId, grants, locks, epoch,
 								now);
 					}
-					return auditDeny(callerGatewayId, request.identity(), node.id(), sourceIp, decision, null)
-							.thenReturn(ConnectDecision.denied());
+					return auditDeny(callerGatewayId, request.identity(), node.id(), sourceIp, decision, null,
+							MODEL_STANDING, null).thenReturn(ConnectDecision.denied());
 				})));
 	}
 
@@ -243,8 +244,8 @@ public class ConnectAuthorizationService {
 			augmented.add(syntheticJitRule(grant, request.identity(), now));
 			DataPlaneDecision decision = engine.evaluate(request, augmented, locks, now);
 			if (!decision.allowed()) {
-				return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(), decision, "jit")
-						.thenReturn(ConnectDecision.denied());
+				return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(), decision, "jit",
+						MODEL_JIT, grant.id()).thenReturn(ConnectDecision.denied());
 			}
 			// The grant is usable: flip APPROVED → ACTIVE (audited), then emit the allow.
 			return jit.markActive(grant)
@@ -252,8 +253,8 @@ public class ConnectAuthorizationService {
 							decision.sortedCapabilities(), null, "jit:" + nullSafe(grant.jitPolicyName()), MODEL_JIT,
 							grant.id(), null, remainingSeconds(grant.grantExpiresAt(), now), epoch, now));
 		}).switchIfEmpty(auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
-				DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "no_jit_grant")
-				.thenReturn(ConnectDecision.denied()));
+				DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "no_jit_grant",
+				MODEL_JIT, null).thenReturn(ConnectDecision.denied()));
 	}
 
 	private DpRule syntheticJitRule(JitRequest grant, String identity, Instant now) {
@@ -284,7 +285,7 @@ public class ConnectAuthorizationService {
 				// no activation, no alert — just a generic fail-closed deny (§7.1).
 				.switchIfEmpty(auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
 						DataPlaneDecision.deny(DataPlaneDecision.Reason.EVALUATION_ERROR, null, null),
-						"breakglass_token_invalid").thenReturn(ConnectDecision.denied()));
+						"breakglass_token_invalid", MODEL_BREAKGLASS, null).thenReturn(ConnectDecision.denied()));
 	}
 
 	private Mono<ConnectDecision> onValidBreakglass(UUID callerGatewayId, Node node, String gatewayName,
@@ -301,12 +302,15 @@ public class ConnectAuthorizationService {
 					request.requestedPrincipal(), "break-glass", "audit:breakglass.activated",
 					policy == null ? null : policy.id(), policy == null ? null : policy.name(), request.sourceIp(),
 					node.id(), "breakglass_token:" + token.id(), now);
-			Mono<BreakglassActivation> persisted = tx
-					.transactional(breakglassActivations.save(activation)
-							.flatMap(saved -> audit
-									.record(request.identity(), request.requestedPrincipal(), "breakglass.activation",
-											"success", sessionId, node.id(), activationDetail(saved))
-									.thenReturn(saved)));
+			Mono<BreakglassActivation> persisted = tx.transactional(breakglassActivations.save(activation)
+					.flatMap(saved -> audit
+							.record(AuditRecord
+									.builder(request.identity(), request.requestedPrincipal(), "breakglass.activation",
+											"success")
+									.session(sessionId).node(node.id()).detail(activationDetail(saved))
+									.sourceIp(auditableIp(request.sourceIp())).accessModel(MODEL_BREAKGLASS)
+									.correlationId(saved.id()).build())
+							.thenReturn(saved)));
 			// The high-priority alert already fired at authentication (ResolveBreakglass*),
 			// so this path does NOT re-alert; the persisted activation is the durable,
 			// mandatory-review compensating control.
@@ -329,7 +333,7 @@ public class ConnectAuthorizationService {
 					: DataPlaneDecision.Reason.PRINCIPAL_NOT_ALLOWED;
 			return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
 					DataPlaneDecision.deny(reason, lock == null ? null : lock.id(), lock == null ? null : "lock"),
-					"breakglass").thenReturn(ConnectDecision.denied());
+					"breakglass", MODEL_BREAKGLASS, activation.id()).thenReturn(ConnectDecision.denied());
 		}
 		int grantTtlSeconds = (int) Math.min(breakglassProperties.getGrantTtl().toSeconds(), Integer.MAX_VALUE);
 		return emitAllow(callerGatewayId, node, gatewayName, request, sessionId, List.of(principal),
@@ -375,6 +379,15 @@ public class ConnectAuthorizationService {
 			detail.put("principal", requestedPrincipal);
 			detail.put("access_model", accessModel);
 			detail.put("policy_epoch", Long.toString(epoch));
+			// FR-AUD-8/9: the connect decision is the origin of the SSH audit chain — stamp
+			// every searchable dimension (source IP, access model, capabilities, node-label
+			// snapshot) and the correlation key so approve → connect → run → replay all
+			// join by one correlation_id.
+			AuditRecord auditRecord = AuditRecord
+					.builder(callerGatewayId.toString(), identity, DECISION_ACTION, "success").session(sessionId)
+					.node(node.id()).detail(detail).sourceIp(auditableIp(sourceIp)).accessModel(accessModel)
+					.capabilities(capabilities).nodeLabels(labelsOf(node.resolvedLabels()))
+					.correlationId(session.correlationId()).build();
 			// ssh_session snapshot + the two single-use tokens + the allow audit are one
 			// transaction: a failure rolls all back, so a token is never minted without its
 			// session row (Design §12/§15). Audit last (it serializes on the chain lock).
@@ -383,11 +396,8 @@ public class ConnectAuthorizationService {
 							sourceIp))
 					.flatMap(sessionToken -> recordingTokens
 							.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, sourceIp)
-							.flatMap(recordingToken -> audit
-									.record(callerGatewayId.toString(), identity, DECISION_ACTION, "success", sessionId,
-											node.id(), detail)
-									.thenReturn(ConnectDecision.allow(signed, sessionToken, recordingToken,
-											nodeConnection))));
+							.flatMap(recordingToken -> audit.record(auditRecord).thenReturn(
+									ConnectDecision.allow(signed, sessionToken, recordingToken, nodeConnection))));
 			return tx.transactional(allowed);
 		});
 	}
@@ -550,12 +560,16 @@ public class ConnectAuthorizationService {
 	private Mono<ConnectDecision> denyMissingInput(UUID callerGatewayId, String identity, UUID nodeId,
 			String sourceIp) {
 		return auditDeny(callerGatewayId, identity, nodeId, sourceIp,
-				DataPlaneDecision.deny(DataPlaneDecision.Reason.EVALUATION_ERROR, null, null), "missing_input")
-				.thenReturn(ConnectDecision.denied());
+				DataPlaneDecision.deny(DataPlaneDecision.Reason.EVALUATION_ERROR, null, null), "missing_input", null,
+				null).thenReturn(ConnectDecision.denied());
 	}
 
+	// The deny path has no session (sessionId stays null, §8.4), but it still
+	// populates source_ip/access_model/correlation_id where the caller knows them —
+	// so a denied JIT/break-glass attempt is searchable by the same dimensions and
+	// joins its correlation chain (FR-AUD-8).
 	private Mono<Void> auditDeny(UUID callerGatewayId, String identity, UUID nodeId, String sourceIp,
-			DataPlaneDecision decision, String note) {
+			DataPlaneDecision decision, String note, String accessModel, UUID correlationId) {
 		Map<String, String> detail = new HashMap<>();
 		detail.put("reason", decision.reason().name());
 		if (sourceIp != null) {
@@ -567,7 +581,9 @@ public class ConnectAuthorizationService {
 		if (note != null) {
 			detail.put("note", note);
 		}
-		return bestEffortAudit(callerGatewayId, identity, nodeId, "denied", detail);
+		return bestEffortAudit(AuditRecord.builder(actor(callerGatewayId), identity, DECISION_ACTION, "denied")
+				.node(nodeId).detail(detail).sourceIp(auditableIp(sourceIp)).accessModel(accessModel)
+				.correlationId(correlationId).build());
 	}
 
 	private Mono<Void> auditError(UUID callerGatewayId, String identity, UUID nodeId, String sourceIp) {
@@ -576,19 +592,25 @@ public class ConnectAuthorizationService {
 		if (sourceIp != null) {
 			detail.put("source_ip", sourceIp);
 		}
-		return bestEffortAudit(callerGatewayId, identity, nodeId, "error", detail);
+		return bestEffortAudit(AuditRecord.builder(actor(callerGatewayId), identity, DECISION_ACTION, "error")
+				.node(nodeId).detail(detail).sourceIp(auditableIp(sourceIp)).build());
 	}
 
 	// A lost decision-log write must not fail the (already fail-closed) deny, but
 	// it
 	// MUST be observable — a silent audit gap on the deny path defeats FR-AUD-7.
-	private Mono<Void> bestEffortAudit(UUID callerGatewayId, String identity, UUID nodeId, String outcome,
-			Map<String, String> detail) {
-		return audit.record(actor(callerGatewayId), identity, DECISION_ACTION, outcome, null, nodeId, detail)
-				.onErrorResume(auditFailure -> {
-					LOG.error("authz decision-log write failed (decision still denied): {}", auditFailure.toString());
-					return Mono.empty();
-				});
+	private Mono<Void> bestEffortAudit(AuditRecord record) {
+		return audit.record(record).onErrorResume(auditFailure -> {
+			LOG.error("authz decision-log write failed (decision still denied): {}", auditFailure.toString());
+			return Mono.empty();
+		});
+	}
+
+	// source_ip carries a DB CHECK (is_ip_or_cidr); a value that is not a numeric
+	// IP literal is dropped from the COLUMN (kept in detail for forensics) so a
+	// malformed source can never fail the audit insert and roll back an allow.
+	private static String auditableIp(String sourceIp) {
+		return sourceIp != null && Cidrs.isAddress(sourceIp) ? sourceIp : null;
 	}
 
 	private static String actor(UUID callerGatewayId) {

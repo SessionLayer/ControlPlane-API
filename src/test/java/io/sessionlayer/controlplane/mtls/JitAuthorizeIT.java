@@ -4,12 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.ManagedChannel;
 import io.netty.handler.ssl.SslContext;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditQuery;
+import io.sessionlayer.controlplane.configapi.SessionManagementService;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.config.JitPolicy;
 import io.sessionlayer.controlplane.data.config.JitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
+import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.data.runtime.JitRequest;
 import io.sessionlayer.controlplane.data.runtime.JitRequestRepository;
 import io.sessionlayer.controlplane.data.runtime.Node;
@@ -25,6 +29,7 @@ import io.sessionlayer.controlplane.grpc.v1.DecisionContext;
 import io.sessionlayer.controlplane.jit.JitLifecycleService;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,6 +62,10 @@ class JitAuthorizeIT extends AbstractMtlsIT {
 	private JitRequestRepository jitRequests;
 	@Autowired
 	private SshSessionRepository sshSessions;
+	@Autowired
+	private SessionManagementService sessionManagement;
+	@Autowired
+	private AuditEventStore auditStore;
 
 	@Test
 	void anApprovedJitGrantElevatesADefaultDeny() throws Exception {
@@ -84,6 +93,34 @@ class JitAuthorizeIT extends AbstractMtlsIT {
 		assertThat(session.jitRequestId()).isEqualTo(grant.id());
 		// First use flips APPROVED → ACTIVE.
 		assertThat(jitRequests.findById(grant.id()).block().state()).isEqualTo(JitRequest.ACTIVE);
+	}
+
+	// FR-AUD-9 acceptance: one correlation_id reconstructs the whole causal chain
+	// of
+	// a JIT session — the approval (jit.requested/approved), the connect decision
+	// (authz.decision) it authorized, and a downstream in-session event
+	// (session.terminate). The correlation key is the JIT request id, inherited
+	// forward via ssh_session.jit_request_id.
+	@Test
+	void oneCorrelationIdReconstructsApproveConnectAndInSessionEvents() {
+		String identity = "alice-" + unique();
+		String zone = unique();
+		UUID nodeId = seedNode(zone);
+		seedZeroChainPolicy(zone, 1800);
+		JitRequest grant = jit.submit(identity, nodeId, "deploy", List.of("shell", "exec"), "prod fix").block();
+
+		EnrolledGateway gateway = enroll("gw-jitcorr-" + unique());
+		UUID sessionId = UUID.randomUUID();
+		assertThat(authorize(gateway, identity, nodeId, "deploy", sessionId).getDecision())
+				.isEqualTo(Decision.DECISION_ALLOW);
+		sessionManagement.terminate(sessionId, "operator", "drill").block();
+
+		// The whole chain shares one correlation_id: the JIT request id.
+		List<AuditEvent> chain = auditStore.search(new AuditQuery(null, null, null, null, null, null, null, null, null,
+				null, null, Map.of(), grant.id(), List.of(), null, 100)).block().items();
+		assertThat(chain).allSatisfy(e -> assertThat(e.correlationId()).isEqualTo(grant.id()));
+		assertThat(chain.stream().map(AuditEvent::action).toList()).contains("jit.requested", "jit.approved",
+				"jit.activated", "authz.decision", "session.terminate");
 	}
 
 	@Test

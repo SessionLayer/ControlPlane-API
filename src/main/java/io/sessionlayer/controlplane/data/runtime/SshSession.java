@@ -25,6 +25,21 @@ public record SshSession(@Id UUID id, String identity, UUID nodeId, String nodeN
 		Instant endedAt, String endReason, @Version Long version, @CreatedDate Instant createdAt,
 		@LastModifiedDate Instant updatedAt) {
 
+	/**
+	 * The FR-AUD-9 correlation key that ties this session's audit events to the
+	 * causal chain that authorized it: the originating JIT request or break-glass
+	 * activation when present, else the session id itself (a standing chain begins
+	 * at the session). Every in-session producer (connect, recording, terminate,
+	 * replay) stamps this so one {@code correlation_id} search reconstructs the
+	 * whole approve → connect → run → replay path.
+	 */
+	public UUID correlationId() {
+		if (jitRequestId != null) {
+			return jitRequestId;
+		}
+		return breakglassActivationId != null ? breakglassActivationId : id;
+	}
+
 	public static SshSession create(String identity, UUID nodeId, String nodeName, String principal, UUID gatewayId,
 			String gatewayName, String accessModel, List<String> capabilities, UUID matchedRuleId,
 			String matchedRuleName, UUID jitRequestId, UUID breakglassActivationId, Long policyEpoch,

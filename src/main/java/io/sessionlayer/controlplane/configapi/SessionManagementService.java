@@ -1,6 +1,7 @@
 package io.sessionlayer.controlplane.configapi;
 
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
@@ -101,11 +102,14 @@ public class SessionManagementService {
 			Mono<AccessLock> persisted = tx
 					.transactional(
 							accessLocks.save(lock)
-									.flatMap(
-											saved -> audit
-													.record(actor, session.id().toString(), "session.terminate",
-															"success", session.id(), session.nodeId(), detail)
-													.thenReturn(saved)));
+									.flatMap(saved -> audit
+											.record(AuditRecord
+													.builder(actor, session.id().toString(), "session.terminate",
+															"success")
+													.session(session.id()).node(session.nodeId()).detail(detail)
+													.accessModel(session.accessModel())
+													.correlationId(session.correlationId()).build())
+											.thenReturn(saved)));
 			return persisted.doOnNext(lockFeedHub::publishAdded).thenReturn(session);
 		});
 	}

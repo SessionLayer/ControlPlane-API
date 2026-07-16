@@ -8,6 +8,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.grpc.ManagedChannel;
 import io.netty.handler.ssl.SslContext;
+import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditQuery;
 import io.sessionlayer.controlplane.authz.ConnectAuthorizationService;
 import io.sessionlayer.controlplane.authz.DecisionContextVerifier;
 import io.sessionlayer.controlplane.ca.CaRotationService;
@@ -21,6 +23,8 @@ import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
+import io.sessionlayer.controlplane.data.runtime.AuditEvent;
+import io.sessionlayer.controlplane.data.runtime.AuditEventRepository;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeHostKey;
 import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
@@ -42,6 +46,7 @@ import java.security.interfaces.ECPublicKey;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -74,6 +79,118 @@ class AuthorizeIT extends AbstractMtlsIT {
 	private AccessLockRepository accessLocks;
 	@Autowired
 	private SshSessionRepository sshSessions;
+	@Autowired
+	private AuditEventStore auditStore;
+	@Autowired
+	private AuditEventRepository auditEvents;
+
+	// Part B (S20, FR-AUD-8/9): a real allow stamps EVERY searchable audit
+	// dimension on the connect decision row, and the RBAC node-label scope filter —
+	// inert while node_labels was null — now genuinely narrows.
+	@Test
+	void allowPopulatesEverySearchableAuditDimensionAndScopeFilters() {
+		String identity = "audit-" + unique();
+		UUID nodeId = seedProdNode(); // resolved labels {env:prod}
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell", "exec", "sftp"));
+		EnrolledGateway gateway = enroll("gw-auditdim-" + unique());
+		UUID sessionId = UUID.randomUUID();
+
+		AuthorizeResponse response = authorize(gateway, request(identity, nodeId, "deploy", "10.0.0.5", sessionId));
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+
+		AuditEvent connect = auditEvents.findBySessionId(sessionId).collectList().block().stream()
+				.filter(e -> "authz.decision".equals(e.action()) && "success".equals(e.outcome())).findFirst()
+				.orElseThrow();
+		assertThat(connect.sourceIp()).isEqualTo("10.0.0.5");
+		assertThat(connect.accessModel()).isEqualTo("standing");
+		assertThat(connect.capabilities()).containsExactlyInAnyOrder("shell", "exec", "sftp");
+		assertThat(connect.nodeLabels().get("env").stringValue()).isEqualTo("prod");
+		// A standing chain begins at the session, so correlation_id == session id.
+		assertThat(connect.correlationId()).isEqualTo(sessionId);
+
+		// Each dimension filters back to this session's connect row (scoped by session
+		// to isolate from sibling tests sharing the container).
+		assertThat(searchIds(dim(sessionId, q -> q.sourceIp("10.0.0.5")))).contains(connect.id());
+		assertThat(searchIds(dim(sessionId, q -> q.accessModel("standing")))).contains(connect.id());
+		assertThat(searchIds(dim(sessionId, q -> q.capability("exec")))).contains(connect.id());
+		assertThat(searchIds(dim(sessionId, q -> q.nodeLabels(Map.of("env", "prod"))))).contains(connect.id());
+		// correlation_id (== session id here) is unique, so it returns exactly this
+		// row.
+		assertThat(searchIds(dim(null, q -> q.correlationId(sessionId)))).containsExactly(connect.id());
+
+		// The label scope filter now engages on real data: an env=prod-scoped auditor
+		// sees the row; an env=staging-scoped auditor does not (fail closed).
+		assertThat(searchIds(dim(sessionId, q -> q.scopeGrants(List.of(labelScope("env", "prod"))))))
+				.contains(connect.id());
+		assertThat(searchIds(dim(sessionId, q -> q.scopeGrants(List.of(labelScope("env", "staging")))))).isEmpty();
+	}
+
+	private List<UUID> searchIds(AuditQuery query) {
+		return auditStore.search(query).block().items().stream().map(AuditEvent::id).toList();
+	}
+
+	// A single-dimension query over an otherwise-empty filter set; a small mutator
+	// sets the one column under test (keeps the 16-arg AuditQuery readable).
+	private static AuditQuery dim(UUID sessionId, java.util.function.Consumer<DimBuilder> mutator) {
+		DimBuilder b = new DimBuilder(sessionId);
+		mutator.accept(b);
+		return b.build();
+	}
+
+	private static final class DimBuilder {
+		private final UUID sessionId;
+		private String sourceIp;
+		private String accessModel;
+		private String capability;
+		private Map<String, String> nodeLabels = Map.of();
+		private UUID correlationId;
+		private List<tools.jackson.databind.JsonNode> scopeGrants = List.of();
+
+		private DimBuilder(UUID sessionId) {
+			this.sessionId = sessionId;
+		}
+
+		DimBuilder sourceIp(String v) {
+			this.sourceIp = v;
+			return this;
+		}
+
+		DimBuilder accessModel(String v) {
+			this.accessModel = v;
+			return this;
+		}
+
+		DimBuilder capability(String v) {
+			this.capability = v;
+			return this;
+		}
+
+		DimBuilder nodeLabels(Map<String, String> v) {
+			this.nodeLabels = v;
+			return this;
+		}
+
+		DimBuilder correlationId(UUID v) {
+			this.correlationId = v;
+			return this;
+		}
+
+		DimBuilder scopeGrants(List<tools.jackson.databind.JsonNode> v) {
+			this.scopeGrants = v;
+			return this;
+		}
+
+		AuditQuery build() {
+			return new AuditQuery(null, null, null, null, sessionId, null, sourceIp, null, null, capability,
+					accessModel, nodeLabels, correlationId, scopeGrants, null, 50);
+		}
+	}
+
+	private static tools.jackson.databind.JsonNode labelScope(String key, String value) {
+		ObjectNode scope = JSON.objectNode();
+		scope.set("node_labels", JSON.objectNode().put(key, value));
+		return scope;
+	}
 
 	@Test
 	void allowReturnsSignedContextAndAMintedTokenThatSigns() throws Exception {

@@ -1,6 +1,7 @@
 package io.sessionlayer.controlplane.recording;
 
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.Uuids;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
@@ -121,10 +122,9 @@ public class RecordingRegistrationService {
 					String objectKey = objectKey(session.id(), recordingId);
 					RecordingRef ref = RecordingRef.begin(recordingId, session.id(), objectKey, keyRef, wormMode,
 							retentionUntil);
-					return recordings.save(ref)
-							.then(audit.record(session.identity(), token.principal(), "recording.begin", "success",
-									session.id(), session.nodeId(),
-									beginDetail(caller, recordingId, objectKey, wormMode, keyRef)))
+					return recordings.save(ref).then(audit.record(
+							sessionEvent(session, session.identity(), token.principal(), "recording.begin", "success")
+									.detail(beginDetail(caller, recordingId, objectKey, wormMode, keyRef)).build()))
 							.thenReturn(new RecordingRegistration(recordingId, objectKey, wormMode,
 									new CustomerKeyMaterial(keyRef, publicKey, algorithm)));
 				}));
@@ -151,10 +151,9 @@ public class RecordingRegistrationService {
 							? ref.retentionUntil()
 							: Instant.now().plus(Duration.ofDays(1));
 					return worm.ensureReady().then(worm.presignUpload(ref.objectKey(), ref.wormMode(), retainUntil))
-							.flatMap(upload -> audit
-									.record(session.identity(), recordingId.toString(), "recording.upload", "success",
-											session.id(), session.nodeId(),
-											uploadDetail(callerGatewayId, recordingId, ref.objectKey()))
+							.flatMap(upload -> audit.record(sessionEvent(session, session.identity(),
+									recordingId.toString(), "recording.upload", "success")
+									.detail(uploadDetail(callerGatewayId, recordingId, ref.objectKey())).build())
 									.thenReturn(upload));
 				}));
 		return body.onErrorResume(
@@ -197,9 +196,10 @@ public class RecordingRegistrationService {
 					}
 					RecordingRef finalized = ref.finalized(head, digest, size, status);
 					return recordings.save(finalized).then(writeTransferAudit(session, sftpAudit))
-							.then(audit.record(session.identity(), recordingId.toString(), "recording.finalize",
-									finalizeOutcome(status), session.id(), session.nodeId(),
-									finalizeDetail(callerGatewayId, recordingId, status, byteLen, digest, head)))
+							.then(audit.record(sessionEvent(session, session.identity(), recordingId.toString(),
+									"recording.finalize", finalizeOutcome(status))
+									.detail(finalizeDetail(callerGatewayId, recordingId, status, byteLen, digest, head))
+									.build()))
 							.thenReturn(status);
 				}));
 		return tx.transactional(body);
@@ -213,9 +213,19 @@ public class RecordingRegistrationService {
 			return Mono.empty();
 		}
 		return Flux.fromIterable(sftpAudit).map(SftpAuditPolicy::normalize)
-				.concatMap(entry -> audit.record(session.identity(), entry.path(), "sftp." + entry.operation(),
-						"success", session.id(), session.nodeId(), transferDetail(entry)))
+				.concatMap(entry -> audit.record(
+						sessionEvent(session, session.identity(), entry.path(), "sftp." + entry.operation(), "success")
+								.detail(transferDetail(entry)).build()))
 				.then();
+	}
+
+	// Every in-session recording event inherits the session's access model + the
+	// FR-AUD-9 correlation key, so one correlation_id search returns the recording
+	// (run/replay) alongside the connect + JIT approval that authorized it.
+	private static AuditRecord.Builder sessionEvent(SshSession session, String actor, String subject, String action,
+			String outcome) {
+		return AuditRecord.builder(actor, subject, action, outcome).session(session.id()).node(session.nodeId())
+				.accessModel(session.accessModel()).correlationId(session.correlationId());
 	}
 
 	// Best-effort, OUT-OF-BAND failure record: recording is mandatory, so a failed

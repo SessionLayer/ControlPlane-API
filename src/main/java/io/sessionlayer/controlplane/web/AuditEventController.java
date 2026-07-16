@@ -39,13 +39,13 @@ import tools.jackson.databind.ObjectMapper;
  * ({@link AuditEventSearchService}).
  *
  * <p>
- * Every filter/scope dimension is implemented + tested here, but the current S9
- * write path only populates {@code actor}/{@code subject}/{@code action}/
- * {@code outcome}/{@code session_id}/{@code node_id}. The richer snapshot
- * columns ({@code source_ip}, {@code access_model}, {@code capabilities},
- * {@code node_labels}, {@code correlation_id}) are query- and scope-ready in
- * the schema but not yet populated by any writer — a documented write-side
- * follow-up (S18 is read-side only).
+ * Every filter/scope dimension is populated by the connect/JIT/break-glass/
+ * recording/session producers (S20 write-path backfill, FR-AUD-8/9): the
+ * snapshot columns {@code source_ip}, {@code access_model},
+ * {@code capabilities}, {@code node_labels} and {@code correlation_id} are
+ * searchable, and one {@code correlation_id} reconstructs a whole approve →
+ * connect → run → replay chain. The RBAC node-label scope filter therefore now
+ * genuinely narrows.
  */
 @RestController
 public class AuditEventController implements AuditEventsApi {

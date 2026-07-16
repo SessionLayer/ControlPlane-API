@@ -2,6 +2,7 @@ package io.sessionlayer.controlplane.recording;
 
 import io.r2dbc.spi.Row;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
@@ -175,8 +176,11 @@ public class RecordingAccessService {
 		if (ref.wormMode() != null) {
 			detail.put("worm_mode", ref.wormMode());
 		}
-		return audit.record(subject.identity(), ref.id().toString(), action, "success", ref.sessionId(),
-				session.nodeId(), detail);
+		// Replay/export inherit the session's access model + FR-AUD-9 correlation key,
+		// so a correlation_id search reconstructs the chain through to the replay.
+		return audit.record(AuditRecord.builder(subject.identity(), ref.id().toString(), action, "success")
+				.session(ref.sessionId()).node(session.nodeId()).detail(detail).accessModel(session.accessModel())
+				.correlationId(session.correlationId()).build());
 	}
 
 	private Mono<RecordingRef> loadRef(UUID recordingId) {
