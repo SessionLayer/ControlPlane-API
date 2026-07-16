@@ -2,13 +2,16 @@ package io.sessionlayer.controlplane.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.platform.PlatformPermissions;
 import io.sessionlayer.controlplane.support.AbstractConfigApiIT;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 
 /**
@@ -18,6 +21,18 @@ import org.springframework.http.MediaType;
  * The template the other Session 17 config CRUD ITs follow.
  */
 class RuleCrudIT extends AbstractConfigApiIT {
+
+	@Autowired
+	private DpRuleRepository rules;
+
+	// dp_rule is DECISION-PATH config; keep the shared container clean so a
+	// leftover
+	// rule can never perturb another suite's authorization decision (test
+	// isolation).
+	@AfterEach
+	void resetRules() {
+		rules.deleteAll().block();
+	}
 
 	private Map<String, Object> ruleBody(String name, int ttl, String effect) {
 		return Map.of("name", name, "identitySelector", Map.of("identities", List.of("alice")), "nodeLabelSelector",

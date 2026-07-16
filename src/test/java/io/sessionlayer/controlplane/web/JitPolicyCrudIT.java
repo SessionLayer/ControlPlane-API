@@ -2,13 +2,16 @@ package io.sessionlayer.controlplane.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.sessionlayer.controlplane.data.config.JitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.platform.PlatformPermissions;
 import io.sessionlayer.controlplane.support.AbstractConfigApiIT;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 
 /**
@@ -18,6 +21,18 @@ import org.springframework.http.MediaType;
  * pagination, optimistic concurrency, and Idempotency-Key replay.
  */
 class JitPolicyCrudIT extends AbstractConfigApiIT {
+
+	@Autowired
+	private JitPolicyRepository jitPolicies;
+
+	// jit_policy is a DECISION-PATH config the shared-container JIT-request submit
+	// (JitCrudIT) label-matches; a leftover policy matching that suite's env=prod
+	// node would hijack the match. Reset the table after each test to stay
+	// isolated.
+	@AfterEach
+	void resetJitPolicies() {
+		jitPolicies.deleteAll().block();
+	}
 
 	private Map<String, Object> body(String name, int ttl) {
 		return Map.of("name", name, "targetSelector", Map.of("env", Map.of("op", "eq", "value", "prod")),

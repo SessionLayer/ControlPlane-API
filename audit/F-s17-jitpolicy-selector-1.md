@@ -38,3 +38,13 @@ Defense in depth — prevent the bad config AND tolerate any that already exists
 
 Verified: `JitCrudIT` + `JitPolicyCrudIT` + `RuleCrudIT` green together; the invalid shape now returns `422`
 pre-commit and never persists.
+
+## Follow-up (second CI round): test isolation
+Once the selector fix made JIT submit succeed, a SECOND CI run surfaced a related test-isolation flake:
+`JitCrudIT`'s fixture node is labelled `env=prod` (as well as `jitzone`), and `JitPolicyCrudIT` leaks
+`{"env":{"op":"eq","value":"prod"}}` policies into the shared Testcontainers Postgres — so
+`matchingPolicy` (first-by-name across ALL policies) sometimes selected `JitPolicyCrudIT`'s policy for
+`JitCrudIT`'s request, giving it the wrong approval chain → the approve step got a 403 "not an approver for
+the next chain level". Fixed: `JitPolicyCrudIT` (and defensively `RuleCrudIT`) now `@AfterEach`-reset their
+decision-path config tables (`jit_policy`/`dp_rule`), mirroring `CaCrudIT` — a CRUD suite must not leave
+decision-affecting rows in the shared container. Verified-Fixed.
