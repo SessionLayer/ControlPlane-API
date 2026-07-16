@@ -8,11 +8,11 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
- * Renders {@link ApiProblemException} from the Session 17 management controllers
- * as RFC 9457 {@code application/problem+json} (FR-API-1). Handles only that one
- * app-specific type, so it never changes any other endpoint's error handling
- * (mirrors the scoped {@link NodeExceptionHandler}). The {@code type} URI
- * disambiguates the machine-readable problem class.
+ * Renders {@link ApiProblemException} from the Session 17 management
+ * controllers as RFC 9457 {@code application/problem+json} (FR-API-1). Handles
+ * only that one app-specific type, so it never changes any other endpoint's
+ * error handling (mirrors the scoped {@link NodeExceptionHandler}). The
+ * {@code type} URI disambiguates the machine-readable problem class.
  */
 @RestControllerAdvice
 class ConfigApiExceptionHandler {

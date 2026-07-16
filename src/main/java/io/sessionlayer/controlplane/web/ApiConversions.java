@@ -6,14 +6,16 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import org.springframework.web.server.ServerWebExchange;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Small conversions between the generated API models and the R2DBC entities used
- * across the Session 17 config controllers: free-form {@code jsonb} selectors
- * ({@code Map<String,Object>} &lt;-&gt; {@link JsonNode}), capability enums
- * &lt;-&gt; {@code text[]}, and {@link Instant} &lt;-&gt; {@link OffsetDateTime}.
+ * Small conversions between the generated API models and the R2DBC entities
+ * used across the Session 17 config controllers: free-form {@code jsonb}
+ * selectors ({@code Map<String,Object>} &lt;-&gt; {@link JsonNode}), capability
+ * enums &lt;-&gt; {@code text[]}, and {@link Instant} &lt;-&gt;
+ * {@link OffsetDateTime}.
  */
 public final class ApiConversions {
 
@@ -43,5 +45,14 @@ public final class ApiConversions {
 
 	public static OffsetDateTime toOffset(Instant instant) {
 		return instant == null ? null : instant.atOffset(ZoneOffset.UTC);
+	}
+
+	/** The request method + path, used to scope an {@code Idempotency-Key}. */
+	public static String method(ServerWebExchange exchange) {
+		return exchange.getRequest().getMethod().name();
+	}
+
+	public static String path(ServerWebExchange exchange) {
+		return exchange.getRequest().getPath().value();
 	}
 }

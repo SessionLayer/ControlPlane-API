@@ -15,10 +15,10 @@ import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTest
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 /**
- * Base for the Session 17 config-management CRUD ITs: the {@link AbstractAuthIT}
- * container + a bearer token minted for a fresh service account granted an exact
- * set of platform permissions ({@link #tokenWith}), mirroring the per-suite
- * helper the S10/S16 CRUD ITs each inlined.
+ * Base for the Session 17 config-management CRUD ITs: the
+ * {@link AbstractAuthIT} container + a bearer token minted for a fresh service
+ * account granted an exact set of platform permissions ({@link #tokenWith}),
+ * mirroring the per-suite helper the S10/S16 CRUD ITs each inlined.
  */
 @AutoConfigureWebTestClient
 public abstract class AbstractConfigApiIT extends AbstractAuthIT {
@@ -36,7 +36,10 @@ public abstract class AbstractConfigApiIT extends AbstractAuthIT {
 	@Autowired
 	private RoleBindingRepository bindings;
 
-	/** Mint a bearer token for a new service account granted exactly {@code permissions}. */
+	/**
+	 * Mint a bearer token for a new service account granted exactly
+	 * {@code permissions}.
+	 */
 	protected String tokenWith(String saName, String... permissions) {
 		ServiceAccount sa = serviceAccounts
 				.save(ServiceAccount.create(saName, "test", "client_secret", null, null, "api")).block();

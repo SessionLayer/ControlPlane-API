@@ -19,8 +19,8 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * The {@code Idempotency-Key} replay layer applied across the mutating surface
  * (FR-API-1). Scope is (principal, method, path, key); a retry within the TTL
- * replays the first recorded response, so a create is never repeated. A reuse of
- * the key with a DIFFERENT request body is a {@code 422} (never a wrong-body
+ * replays the first recorded response, so a create is never repeated. A reuse
+ * of the key with a DIFFERENT request body is a {@code 422} (never a wrong-body
  * replay). The store is an upsert so an expired entry is overwritten cleanly.
  *
  * <p>
@@ -73,8 +73,8 @@ public class IdempotencyService {
 				.flatMap(existing -> existing.requestFingerprint().equals(fingerprint)
 						? Mono.just(replay(existing, responseType))
 						: Mono.<ResponseEntity<T>>error(ApiProblemException.idempotencyConflict()))
-				.switchIfEmpty(Mono.defer(() -> action
-						.flatMap(response -> store(key, principal, method, path, fingerprint, response, now)
+				.switchIfEmpty(Mono.defer(
+						() -> action.flatMap(response -> store(key, principal, method, path, fingerprint, response, now)
 								.thenReturn(response))));
 	}
 

@@ -17,10 +17,10 @@ import reactor.core.publisher.Mono;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Config CRUD for data-plane rules (`config.dp_rule`, FR-API-2/5). Invalid config
- * is rejected PRE-COMMIT ({@code 422}); a duplicate name / stale version is a
- * {@code 409}. Every mutation is audited atomically with the write. The exemplar
- * the other Session 17 config services follow.
+ * Config CRUD for data-plane rules (`config.dp_rule`, FR-API-2/5). Invalid
+ * config is rejected PRE-COMMIT ({@code 422}); a duplicate name / stale version
+ * is a {@code 409}. Every mutation is audited atomically with the write. The
+ * exemplar the other Session 17 config services follow.
  */
 @Service
 public class RuleConfigService {
@@ -52,8 +52,8 @@ public class RuleConfigService {
 			JsonNode sourceIpCondition, List<String> principals, int ttlSeconds, List<String> capabilities,
 			String effect) {
 		validate(ttlSeconds, principals);
-		DpRule rule = DpRule.create(name, identitySelector, nodeLabelSelector, sourceIpCondition, principals, ttlSeconds,
-				capabilities, effect, ORIGIN_API);
+		DpRule rule = DpRule.create(name, identitySelector, nodeLabelSelector, sourceIpCondition, principals,
+				ttlSeconds, capabilities, effect, ORIGIN_API);
 		return persist(rule, actor, "rule.create", name);
 	}
 
@@ -77,9 +77,10 @@ public class RuleConfigService {
 	}
 
 	private Mono<DpRule> persist(DpRule rule, String actor, String action, String name) {
-		Mono<DpRule> body = rules.save(rule).flatMap(saved -> audit
-				.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
-				.thenReturn(saved));
+		Mono<DpRule> body = rules.save(rule)
+				.flatMap(saved -> audit
+						.record(actor, saved.id().toString(), action, "success", null, null, Map.of("name", name))
+						.thenReturn(saved));
 		return tx.transactional(body)
 				.onErrorMap(OptimisticLockingFailureException.class,
 						e -> ApiProblemException.conflict("the rule was modified concurrently (stale version)"))

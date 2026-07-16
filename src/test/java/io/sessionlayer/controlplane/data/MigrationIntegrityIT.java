@@ -33,7 +33,8 @@ class MigrationIntegrityIT extends AbstractDataIT {
 		// fingerprint-pin overlap column, mirroring V15's gateway pinning — no table);
 		// S13 adds V20 (access models: the 3 break-glass stores + the activation
 		// enrichment columns + the breakglass:manage permission). S17 adds V21 (origin
-		// CHECK tightened to api|ui|default — no table) + V22 (runtime.idempotency_key).
+		// CHECK tightened to api|ui|default — no table) + V22
+		// (runtime.idempotency_key).
 		assertThat(maxVersion).isEqualTo(22);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")

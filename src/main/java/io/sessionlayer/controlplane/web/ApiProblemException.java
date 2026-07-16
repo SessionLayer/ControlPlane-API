@@ -4,10 +4,10 @@ import java.util.UUID;
 
 /**
  * A management-API failure that renders as an RFC 9457 problem
- * ({@link ConfigApiExceptionHandler}). Config CRUD services throw this to reject
- * invalid config <b>pre-commit</b> (FR-API-5) and to signal not-found/conflict
- * without leaking a stack trace. Carries no secret/entity material — only a
- * short human-readable detail.
+ * ({@link ConfigApiExceptionHandler}). Config CRUD services throw this to
+ * reject invalid config <b>pre-commit</b> (FR-API-5) and to signal
+ * not-found/conflict without leaking a stack trace. Carries no secret/entity
+ * material — only a short human-readable detail.
  */
 public class ApiProblemException extends RuntimeException {
 

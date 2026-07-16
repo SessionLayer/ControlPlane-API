@@ -33,8 +33,8 @@ class RuleCrudIT extends AbstractConfigApiIT {
 
 		client.post().uri("/v1/rules").header("Authorization", "Bearer " + token)
 				.contentType(MediaType.APPLICATION_JSON).bodyValue(ruleBody(name, 3600, "allow")).exchange()
-				.expectStatus().isCreated().expectBody().jsonPath("$.id").isNotEmpty().jsonPath("$.name").isEqualTo(name)
-				.jsonPath("$.origin").isEqualTo("api").jsonPath("$.effect").isEqualTo("allow")
+				.expectStatus().isCreated().expectBody().jsonPath("$.id").isNotEmpty().jsonPath("$.name")
+				.isEqualTo(name).jsonPath("$.origin").isEqualTo("api").jsonPath("$.effect").isEqualTo("allow")
 				.jsonPath("$.version").isEqualTo(0);
 
 		client.get().uri("/v1/rules").header("Authorization", "Bearer " + token).exchange().expectStatus().isOk()

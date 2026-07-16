@@ -14,12 +14,12 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
 /**
- * Cursor (keyset) pagination for the management collections (FR-API-1). Ordering
- * is by the entity's UUIDv7 {@code id}, which is time-ordered, so a page is
- * stable under concurrent inserts (no OFFSET drift): the next page starts
- * strictly after the last id. The cursor is an opaque base64url of that id; an
- * unparseable cursor is a {@code 400}. One extra row is fetched to decide whether
- * a {@code nextCursor} exists.
+ * Cursor (keyset) pagination for the management collections (FR-API-1).
+ * Ordering is by the entity's UUIDv7 {@code id}, which is time-ordered, so a
+ * page is stable under concurrent inserts (no OFFSET drift): the next page
+ * starts strictly after the last id. The cursor is an opaque base64url of that
+ * id; an unparseable cursor is a {@code 400}. One extra row is fetched to
+ * decide whether a {@code nextCursor} exists.
  */
 @Component
 public class CursorPages {

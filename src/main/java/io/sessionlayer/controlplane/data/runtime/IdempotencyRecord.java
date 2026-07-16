@@ -12,7 +12,8 @@ import org.springframework.data.relational.core.mapping.Table;
  * RUNTIME · {@code runtime.idempotency_key} — the recorded response for one
  * {@code Idempotency-Key} scoped to (principal, method, path) (FR-API-1). A
  * retry within {@code expiresAt} replays {@code responseStatus}/{@code
- * responseBody}; a reuse with a different {@code requestFingerprint} is rejected.
+ * responseBody}; a reuse with a different {@code requestFingerprint} is
+ * rejected.
  */
 @Table(schema = "runtime", name = "idempotency_key")
 public record IdempotencyRecord(@Id UUID id, String principal, String method, String path, String idempotencyKey,
