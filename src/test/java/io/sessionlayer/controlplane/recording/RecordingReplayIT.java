@@ -63,18 +63,22 @@ class RecordingReplayIT extends AbstractRecordingIT {
 
 		String svc = "svc-rec-replay-" + unique();
 		String token = tokenWith(svc, PlatformPermissions.RECORDING_REPLAY);
-		SignedUrl signed = client.post().uri("/v1/recordings/" + ref.id() + "/replay")
+		var result = client.post().uri("/v1/recordings/" + ref.id() + "/replay")
 				.header("Authorization", "Bearer " + token).exchange().expectStatus().isOk().expectBody(SignedUrl.class)
-				.returnResult().getResponseBody();
+				.returnResult();
+		SignedUrl signed = result.getResponseBody();
 
 		assertThat(signed.getMethod()).isEqualTo("GET");
 		long ttlSeconds = signed.getExpiresAt().toInstant().getEpochSecond() - Instant.now().getEpochSecond();
 		assertThat(ttlSeconds).isBetween(240L, 360L); // ~5-minute default, short-lived
 
-		// The CP returned only a URL; fetching it yields the SAME ciphertext we stored
-		// —
-		// proving the object stays customer-key encrypted and the CP never decrypted
-		// it.
+		// The CP response carries ONLY a URL + expiry — never recording bytes or key
+		// material (the CP holds no customer private key).
+		String body = new String(result.getResponseBodyContent());
+		assertThat(body).doesNotContain(new String(ciphertext));
+
+		// Fetching the URL yields the SAME opaque ciphertext we stored — the object
+		// stays customer-key encrypted and the CP never decrypted it.
 		assertThat(fetch(signed.getUrl().toString())).isEqualTo(ciphertext);
 
 		List<AuditEvent> events = auditEvents.findByActor(svc).collectList().block();

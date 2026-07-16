@@ -155,4 +155,19 @@ class RecordingStoreSeamTest {
 	void retentionDefaultIsAtLeastTwelveMonths() {
 		assertThat(OperatorSettings.defaults().recordingRetentionDays()).isGreaterThanOrEqualTo(365);
 	}
+
+	@Test
+	void cpConfigHoldsOnlyTheCustomerPublicKeyNoPrivateKey() {
+		// The CP CANNOT decrypt a recording: operator_settings carries only the
+		// customer
+		// PUBLIC key (DER SPKI); there is no private-/secret-key field anywhere in the
+		// config surface, so the replay/export URLs can only ever point at ciphertext.
+		List<String> components = java.util.Arrays.stream(OperatorSettings.class.getRecordComponents())
+				.map(java.lang.reflect.RecordComponent::getName).toList();
+		assertThat(components).contains("recordingCustomerPublicKey");
+		assertThat(components).noneMatch(name -> {
+			String lower = name.toLowerCase(java.util.Locale.ROOT);
+			return lower.contains("privatekey") || lower.contains("privkey") || lower.contains("secretkey");
+		});
+	}
 }
