@@ -94,10 +94,10 @@ public class RecordingRetentionService {
 	// mark the row pruned, and audit. Per-row failures are logged, never fatal.
 	public Mono<Void> prune(String trigger) {
 		Instant now = Instant.now();
-		return db.sql("SELECT id, object_key FROM runtime.recording_prunable(:cutoff)").bind("cutoff", now)
-				.map((row, meta) -> new Prunable(row.get("id", UUID.class), row.get("object_key", String.class))).all()
-				.concatMap(prunable -> pruneOne(prunable, now).onErrorResume(error -> {
-					LOG.warn("retention prune of recording {} failed; retrying next cycle", prunable.id(), error);
+		return db.sql("SELECT id FROM runtime.recording_prunable(:cutoff)").bind("cutoff", now)
+				.map((row, meta) -> row.get("id", UUID.class)).all()
+				.concatMap(id -> pruneOne(id, now).onErrorResume(e -> {
+					LOG.warn("retention prune of recording {} failed; retrying next cycle", id, e);
 					return Mono.empty();
 				})).then().doOnSuccess(v -> LOG.debug("recording retention prune ({}) complete", trigger))
 				.onErrorResume(error -> {
@@ -110,9 +110,14 @@ public class RecordingRetentionService {
 	// is a system sentinel (the stream's actor column is NOT NULL).
 	private static final String RETENTION_ACTOR = "system:retention";
 
-	private Mono<Void> pruneOne(Prunable prunable, Instant now) {
-		return recordingStore.deleteObject(prunable.objectKey(), "governance").then(recordings.findById(prunable.id()))
-				.flatMap(ref -> recordings.save(ref.pruned("retention", null, now)))
+	// Re-read the row before erasing: skip one a concurrent governance delete
+	// already
+	// pruned (TOCTOU vs the prunable query), and pass its actual worm mode so the
+	// store's compliance refusal still applies if the SQL filter ever regressed.
+	private Mono<Void> pruneOne(UUID recordingId, Instant now) {
+		return recordings.findById(recordingId).filter(ref -> ref.prunedAt() == null)
+				.flatMap(ref -> recordingStore.deleteObject(ref.objectKey(), ref.wormMode())
+						.then(recordings.save(ref.pruned("retention", null, now))))
 				.flatMap(saved -> audit.record(RETENTION_ACTOR, saved.id().toString(), "recording.prune", "success",
 						saved.sessionId(), null, Map.of("delete_mode", "retention")))
 				.then();
@@ -126,8 +131,5 @@ public class RecordingRetentionService {
 	private Mono<RecordingRef> loadRef(UUID recordingId) {
 		return recordings.findById(recordingId)
 				.switchIfEmpty(Mono.error(ApiProblemException.notFound("recording", recordingId)));
-	}
-
-	private record Prunable(UUID id, String objectKey) {
 	}
 }
