@@ -35,6 +35,15 @@ import tools.jackson.databind.ObjectMapper;
  * Read-only over the stream — the tamper-evidence chain stays verifiable; the
  * only write is the FR-PADM-3 audit of the access itself
  * ({@link AuditEventSearchService}).
+ *
+ * <p>
+ * Every filter/scope dimension is implemented + tested here, but the current S9
+ * write path only populates {@code actor}/{@code subject}/{@code action}/
+ * {@code outcome}/{@code session_id}/{@code node_id}. The richer snapshot
+ * columns ({@code source_ip}, {@code access_model}, {@code capabilities},
+ * {@code node_labels}, {@code correlation_id}) are query- and scope-ready in
+ * the schema but not yet populated by any writer — a documented write-side
+ * follow-up (S18 is read-side only).
  */
 @RestController
 public class AuditEventController implements AuditEventsApi {
