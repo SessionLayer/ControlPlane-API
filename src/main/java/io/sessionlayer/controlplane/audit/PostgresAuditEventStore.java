@@ -3,6 +3,7 @@ package io.sessionlayer.controlplane.audit;
 import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.data.runtime.AuditEventRepository;
 import io.sessionlayer.controlplane.web.CursorPages;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -10,6 +11,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -40,8 +43,14 @@ import tools.jackson.databind.node.ObjectNode;
 @Service
 public class PostgresAuditEventStore implements AuditEventStore {
 
+	private static final Logger LOG = LoggerFactory.getLogger(PostgresAuditEventStore.class);
+
 	/** Transaction-scoped advisory-lock key serializing the chain ("SL_AUD_C"). */
 	private static final long CHAIN_LOCK = 0x53_4C_5F_41_55_44_5F_43L;
+
+	// Off-box shipping must never stall the audited request: bound the forward so a
+	// hung/slow forwarder can't add unbounded latency (it fails best-effort instead).
+	private static final Duration FORWARD_TIMEOUT = Duration.ofSeconds(5);
 
 	private static final String LATEST_HASH = "SELECT record_hash FROM runtime.audit_event "
 			+ "WHERE record_hash IS NOT NULL ORDER BY seq DESC LIMIT 1";
@@ -101,9 +110,15 @@ public class PostgresAuditEventStore implements AuditEventStore {
 				.flatMap(prevHash -> events
 						.save(event.withChain(prevHash, AuditRecordHash.recordHash(prevHash, event))));
 		// Ship off-box only AFTER the row commits, and never let a forward failure
-		// roll back or surface on the audited action (best-effort, §15/NFR-5).
+		// roll back or surface on the audited action (best-effort, §15/NFR-5). A
+		// failure/timeout is logged loudly (the event is already durably committed) —
+		// never swallowed silently.
 		return tx.transactional(chainedInsert)
-				.flatMap(saved -> forwarder.forward(saved).onErrorResume(e -> Mono.empty()).thenReturn(saved)).then();
+				.flatMap(saved -> forwarder.forward(saved).timeout(FORWARD_TIMEOUT).onErrorResume(error -> {
+					LOG.warn("audit off-box forward failed for {} (event is committed): {}", saved.id(),
+							error.toString());
+					return Mono.empty();
+				}).thenReturn(saved)).then();
 	}
 
 	@Override

@@ -5,6 +5,7 @@ import io.sessionlayer.controlplane.data.config.PlatformRole;
 import io.sessionlayer.controlplane.data.config.PlatformRoleRepository;
 import io.sessionlayer.controlplane.data.config.RoleBinding;
 import io.sessionlayer.controlplane.data.config.RoleBindingRepository;
+import io.sessionlayer.controlplane.platform.PlatformScopes;
 import io.sessionlayer.controlplane.web.ApiProblemException;
 import io.sessionlayer.controlplane.web.CursorPages;
 import java.util.Map;
@@ -54,12 +55,14 @@ public class RoleBindingConfigService {
 	}
 
 	public Mono<RoleBinding> create(String actor, UUID roleId, String subjectKind, String subject, JsonNode scope) {
+		requireValidScope(scope);
 		return requireRole(roleId)
 				.then(persist(null, RoleBinding.create(roleId, subjectKind, subject, scope, ORIGIN_API), actor,
 						"role_binding.create", subject));
 	}
 
 	public Mono<RoleBinding> update(UUID id, String actor, Long expectedVersion, JsonNode scope) {
+		requireValidScope(scope);
 		return get(id).flatMap(existing -> {
 			requireVersion(expectedVersion, existing.version());
 			RoleBinding updated = new RoleBinding(existing.id(), existing.roleId(), existing.subjectKind(),
@@ -97,6 +100,17 @@ public class RoleBindingConfigService {
 						e -> ApiProblemException.conflict("the role binding was modified concurrently (stale version)"))
 				.onErrorMap(DataIntegrityViolationException.class, e -> ApiProblemException
 						.conflict("a binding for subject '" + subject + "' on this role already exists"));
+	}
+
+	// A scope that is present but imposes no effective facet (degenerate/typo'd) is
+	// rejected pre-commit so it can never be stored: it would cover nothing (fail
+	// closed) yet read as "scoped" — a footgun that silently locks a grant out and,
+	// on the audit read path, previously diverged between search and get-by-id.
+	private static void requireValidScope(JsonNode scope) {
+		if (!PlatformScopes.isValid(scope)) {
+			throw ApiProblemException.validation(
+					"scope must be omitted or impose an effective node_labels/users/time facet");
+		}
 	}
 
 	private static void requireVersion(Long expected, Long actual) {
