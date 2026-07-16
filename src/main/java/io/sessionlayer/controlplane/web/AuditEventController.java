@@ -14,6 +14,8 @@ import io.sessionlayer.controlplane.platform.PlatformAuthorization;
 import io.sessionlayer.controlplane.platform.PlatformAuthorization.ScopeGrant;
 import io.sessionlayer.controlplane.platform.PlatformPermissions;
 import io.sessionlayer.controlplane.security.CurrentAuthentication;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,13 +54,15 @@ public class AuditEventController implements AuditEventsApi {
 	private final PlatformAuthorization platformAuthorization;
 	private final CurrentAuthentication currentAuthentication;
 	private final ObjectMapper objectMapper;
+	private final AuditSearchProperties properties;
 
 	public AuditEventController(AuditEventSearchService search, PlatformAuthorization platformAuthorization,
-			CurrentAuthentication currentAuthentication, ObjectMapper objectMapper) {
+			CurrentAuthentication currentAuthentication, ObjectMapper objectMapper, AuditSearchProperties properties) {
 		this.search = search;
 		this.platformAuthorization = platformAuthorization;
 		this.currentAuthentication = currentAuthentication;
 		this.objectMapper = objectMapper;
+		this.properties = properties;
 	}
 
 	@Override
@@ -71,9 +75,10 @@ public class AuditEventController implements AuditEventsApi {
 					if (!grant.granted()) {
 						return forbidden();
 					}
+					Window window = resolveWindow(from == null ? null : from.toInstant(),
+							to == null ? null : to.toInstant());
 					AuditQuery query = new AuditQuery(actor, subject, action, outcome, sessionId, nodeId, sourceIp,
-							from == null ? null : from.toInstant(), to == null ? null : to.toInstant(),
-							capability == null ? null : capability.getValue(),
+							window.from(), window.to(), capability == null ? null : capability.getValue(),
 							accessModel == null ? null : accessModel.getValue(), parseLabels(nodeLabel), correlationId,
 							scopeGrants(grant), cursor, CursorPages.clamp(limit));
 					return search.search(query, caller.identity()).map(page -> ResponseEntity.ok(toPage(page)));
@@ -121,6 +126,41 @@ public class AuditEventController implements AuditEventsApi {
 			}
 		}
 		return labels;
+	}
+
+	// Bound the scan (SESSION §8): give every search a lower time bound so the
+	// partitioned audit_event table can prune. An explicit range wider than the max
+	// is rejected (422 — a semantic bound on well-formed input); an unfiltered
+	// search
+	// defaults to the recent window; a range within the max passes through
+	// unchanged
+	// (no surprise for the auditor).
+	private Window resolveWindow(Instant from, Instant to) {
+		Duration max = properties.getMaxWindow();
+		if (from != null && to != null) {
+			if (Duration.between(from, to).compareTo(max) > 0) {
+				throw tooWide(max);
+			}
+			return new Window(from, to);
+		}
+		Instant now = Instant.now();
+		if (from != null) {
+			if (Duration.between(from, now).compareTo(max) > 0) {
+				throw tooWide(max);
+			}
+			return new Window(from, null); // open to now, already bounded below by from
+		}
+		if (to != null) {
+			return new Window(to.minus(max), to); // bound the backward side to the max window
+		}
+		return new Window(now.minus(properties.getDefaultWindow()), null);
+	}
+
+	private static ApiProblemException tooWide(Duration max) {
+		return ApiProblemException.validation("audit search time window exceeds the maximum of " + max);
+	}
+
+	private record Window(Instant from, Instant to) {
 	}
 
 	private AuditEventPage toPage(AuditPage page) {

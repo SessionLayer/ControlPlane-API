@@ -14,8 +14,10 @@ import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.machine.MachineIdentityService;
 import io.sessionlayer.controlplane.platform.PlatformPermissions;
 import io.sessionlayer.controlplane.support.AbstractConfigApiIT;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,10 +42,13 @@ import tools.jackson.databind.node.ObjectNode;
 class AuditEventSearchIT extends AbstractConfigApiIT {
 
 	private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
-	private static final Instant T1 = Instant.parse("2026-07-16T10:00:00Z");
-	private static final Instant T2 = Instant.parse("2026-07-16T11:00:00Z");
-	private static final Instant T3 = Instant.parse("2026-07-16T12:00:00Z");
-	private static final Instant T4 = Instant.parse("2026-07-16T13:00:00Z");
+	// Relative to now (hours ago) so seeded events always fall inside the default
+	// audit-search window (F8) regardless of the wall-clock date the suite runs on.
+	private static final Instant NOW = Instant.now().truncatedTo(ChronoUnit.MICROS);
+	private static final Instant T1 = NOW.minus(Duration.ofHours(4));
+	private static final Instant T2 = NOW.minus(Duration.ofHours(3));
+	private static final Instant T3 = NOW.minus(Duration.ofHours(2));
+	private static final Instant T4 = NOW.minus(Duration.ofHours(1));
 
 	@Autowired
 	private AuditEventStore store;
@@ -159,6 +164,31 @@ class AuditEventSearchIT extends AbstractConfigApiIT {
 		String scoped = scopedToken("svc-audit-timescope-" + run, scope, PlatformPermissions.AUDIT_READ);
 		assertThat(ids(query(scoped, "correlationId", run.toString()))).containsExactly(inside.id());
 		assertThat(ids(query(scoped, "correlationId", run.toString()))).doesNotContain(before.id());
+	}
+
+	@Test
+	void degenerateScopeMatchesNothingAndSearchAndGetAgree() {
+		// A present-but-degenerate scope facet ({"node_labels":{}}) constrains nothing,
+		// so it must cover NOTHING (fail closed). The search predicate (AuditSearchSql)
+		// and the single-event scope check (PlatformScopes.covers via
+		// AuditScopeMatcher)
+		// MUST agree — else a scoped auditor reads via GET /{id} an event the search
+		// hid.
+		UUID run = UUID.randomUUID();
+		String tag = run.toString().substring(0, 8);
+		AuditEvent event = seed("u-" + tag, null, "scope.degenerate", "success", run, null, null, null, null, null,
+				labels("env", "prod"), T3);
+
+		ObjectNode scope = JSON.objectNode();
+		scope.set("node_labels", JSON.objectNode()); // empty object => no effective constraint
+		String scoped = scopedToken("svc-audit-degenerate-" + run, scope, PlatformPermissions.AUDIT_READ);
+		assertThat(ids(query(scoped, "correlationId", run.toString()))).isEmpty();
+		assertThat(getStatus(scoped, event.id())).isEqualTo(404);
+
+		// The event genuinely exists — an unrestricted auditor gets it — so the scoped
+		// 404 is a scope denial, not a missing row.
+		String unrestricted = tokenWith("svc-audit-degen-all-" + run, PlatformPermissions.AUDIT_READ);
+		assertThat(getStatus(unrestricted, event.id())).isEqualTo(200);
 	}
 
 	@Test
@@ -292,6 +322,11 @@ class AuditEventSearchIT extends AbstractConfigApiIT {
 					+ " body=" + (body == null ? "" : new String(body, java.nio.charset.StandardCharsets.UTF_8)));
 		}
 		return objectMapper.readTree(body);
+	}
+
+	private int getStatus(String token, UUID id) {
+		return client.get().uri("/v1/audit-events/" + id).header("Authorization", "Bearer " + token).exchange()
+				.expectBody().returnResult().getStatus().value();
 	}
 
 	private List<JsonNode> items(JsonNode page) {
