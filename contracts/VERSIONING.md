@@ -323,6 +323,33 @@ guard were front-loaded in S2/S3/S10). `buf breaking`-clean vs `main`.
    (`node:enroll`/`node:quarantine`/`node:remove`) + audited. Adding paths/schemas
    is an additive, backward-compatible OpenAPI change within URI major **v1**.
 
+**Session Seventeen completed + FROZE the OpenAPI surface — additive OpenAPI only
+(gRPC stays `1.1`, wire stays `1.0`, URI major stays `v1`, `info.version` stays
+`0.1.0`).** No protobuf/wire change, so `buf breaking` is untouched. Two migrations
+(`V21`, `V22`) — neither is a contract-version event.
+
+1. **Full config-resource CRUD** — `rules`, `roles`, `role-bindings`, `cas`
+   (+ `rotate`), `service-accounts`, `node-policies`, `capability-defs`,
+   `jit-policies`, `breakglass-policies` — plus runtime `sessions` (list/get/
+   terminate). Adding paths/schemas/tags is additive within URI major **v1**;
+   controllers implement the **generated** interfaces (the drift gate). Each is
+   platform-RBAC gated + audited, invalid config rejected pre-commit (`422`,
+   FR-API-5). `cas` NEVER exposes private key material.
+2. **The API conventions (FR-API-1)** are realised across the new surface: cursor
+   (keyset) pagination on collections (`cursor`/`limit` params + `*Page` envelopes
+   with `nextCursor`), an `Idempotency-Key` header on mutating operations (retry-safe
+   replay; a same-key-different-body reuse is a `422`), and RFC 9457
+   `application/problem+json` errors with stable `type` URIs.
+3. **The COMPLETE-CONTRACT FREEZE.** `recordings` (list/get + replay/export
+   signed-URL) and `audit-events` (search/get) are authored now as the **frozen
+   contract** and return `501` until **Session 18** implements the behaviour behind
+   them. After this session the OpenAPI contract is **complete**, so the Dashboard
+   (Session 19) can be built in parallel against a finalized typed client.
+4. **`origin` provenance** narrowed (`V21`): the config `origin` CHECK is tightened
+   to `IN ('api','ui','default')` — external config automation was descoped (owner
+   decision); config is UI + API over Postgres (D11). The column and the config/
+   runtime schema split are retained.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

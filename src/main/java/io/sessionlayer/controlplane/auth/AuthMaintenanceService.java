@@ -14,9 +14,10 @@ import reactor.core.publisher.Mono;
 /**
  * Reaps the transient authentication rows so they do not grow unbounded:
  * expired OIDC login state, old rate-limit windows, past-expiry device flows,
- * and past-lifetime consumed client-assertion jtis. Runs on startup and hourly.
- * Only stale rows are deleted (a short grace preserves rows a live poll / audit
- * correlation may still touch). Failures are logged, never fatal. Gated by
+ * past-lifetime consumed client-assertion jtis, and expired idempotency-key
+ * records (S17). Runs on startup and hourly. Only stale rows are deleted (a
+ * short grace preserves rows a live poll / audit correlation may still touch).
+ * Failures are logged, never fatal. Gated by
  * {@code sessionlayer.auth.maintenance.enabled} (default on).
  */
 @Component
@@ -29,7 +30,8 @@ public class AuthMaintenanceService {
 			"DELETE FROM runtime.auth_rate_limit WHERE window_start < now() - interval '1 hour'",
 			"DELETE FROM runtime.oidc_login WHERE expires_at < now() - interval '1 hour'",
 			"DELETE FROM runtime.device_flow WHERE expires_at < now() - interval '1 day'",
-			"DELETE FROM runtime.otp WHERE expires_at < now() - interval '1 hour'"};
+			"DELETE FROM runtime.otp WHERE expires_at < now() - interval '1 hour'",
+			"DELETE FROM runtime.idempotency_key WHERE expires_at < now()"};
 
 	private final DatabaseClient db;
 

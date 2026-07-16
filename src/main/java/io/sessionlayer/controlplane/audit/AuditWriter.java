@@ -61,10 +61,37 @@ public class AuditWriter {
 	 */
 	public Mono<Void> record(String actor, String subject, String action, String outcome, UUID sessionId, UUID nodeId,
 			Map<String, String> detail) {
-		ObjectNode detailNode = objectMapper.createObjectNode();
+		return insert(actor, subject, action, outcome, sessionId, nodeId, detailNode(detail, null, null));
+	}
+
+	/**
+	 * Record a config-change event capturing before/after state (FR-PADM-3): a
+	 * create has only {@code after}, a delete only {@code before}, an update both.
+	 * The two objects are serialized into the {@code detail} jsonb, so the change
+	 * (not just the action) is auditable. They MUST be secret-free — config
+	 * resources expose references, never key material.
+	 */
+	public Mono<Void> recordChange(String actor, String subject, String action, Map<String, String> detail,
+			Object before, Object after) {
+		return insert(actor, subject, action, "success", null, null, detailNode(detail, before, after));
+	}
+
+	private ObjectNode detailNode(Map<String, String> detail, Object before, Object after) {
+		ObjectNode node = objectMapper.createObjectNode();
 		if (detail != null) {
-			detail.forEach((k, v) -> detailNode.put(k, v));
+			detail.forEach(node::put);
 		}
+		if (before != null) {
+			node.set("before", objectMapper.valueToTree(before));
+		}
+		if (after != null) {
+			node.set("after", objectMapper.valueToTree(after));
+		}
+		return node;
+	}
+
+	private Mono<Void> insert(String actor, String subject, String action, String outcome, UUID sessionId, UUID nodeId,
+			ObjectNode detailNode) {
 		// Truncate to microseconds so the value hashed equals the value that
 		// round-trips from the timestamptz column (the chain must recompute exactly).
 		Instant occurredAt = Instant.now().truncatedTo(ChronoUnit.MICROS);

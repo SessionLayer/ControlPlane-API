@@ -41,7 +41,7 @@ class DataModelSmokeIT extends AbstractDataIT {
 	@Test
 	void nodePolicyRoundTripsJsonbAndIsNewInsert() {
 		var labels = objectMapper.readTree("{\"env\":\"prod\",\"tier\":\"db\"}");
-		var policy = NodePolicy.create("policy-db", labels, "agent", null, null, "git");
+		var policy = NodePolicy.create("policy-db", labels, "agent", null, null, "api");
 
 		var saved = nodePolicies.save(policy).block();
 		assertThat(saved).isNotNull();
@@ -54,7 +54,7 @@ class DataModelSmokeIT extends AbstractDataIT {
 		assertThat(reread).isNotNull();
 		assertThat(reread.name()).isEqualTo("policy-db");
 		assertThat(reread.connectorKind()).isEqualTo("agent");
-		assertThat(reread.origin()).isEqualTo("git");
+		assertThat(reread.origin()).isEqualTo("api");
 		assertThat(reread.desiredLabels()).isEqualTo(labels); // jsonb -> JsonNode, order-independent equality
 	}
 
@@ -64,7 +64,7 @@ class DataModelSmokeIT extends AbstractDataIT {
 		var nodeSel = objectMapper.readTree("{\"env\":\"prod\"}");
 		var srcIp = objectMapper.readTree("{\"cidrs\":[\"10.0.0.0/8\"]}");
 		var rule = DpRule.create("rule-eng", idSel, nodeSel, srcIp, List.of("deploy", "dba"), 900,
-				List.of("shell", "exec", "sftp"), "allow", "git");
+				List.of("shell", "exec", "sftp"), "allow", "api");
 
 		var reread = dpRules.save(rule).flatMap(s -> dpRules.findById(s.id())).block();
 		assertThat(reread).isNotNull();

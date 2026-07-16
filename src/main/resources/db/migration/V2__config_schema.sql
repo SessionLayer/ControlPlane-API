@@ -1,10 +1,10 @@
--- V2 — CONFIG schema (Git-reconcilable entities). SessionLayer Control Plane.
+-- V2 — CONFIG schema (operator-authored desired state). SessionLayer Control Plane.
 --
--- Design §12A "Core data model" (CONFIG group) + §13 (config-vs-runtime boundary,
--- GitOps precedence) + FR-DATA-1. Every table here lives in the `config` schema and
--- carries an `origin` column so the S16 GitOps reconciler can disambiguate ownership
--- (git|api|ui|default) and revert Git-owned drift loudly. The reconciler touches
--- CONFIG only; RUNTIME (V3) is never reconciled.
+-- Design §12A "Core data model" (CONFIG group) + §13 (config-vs-runtime boundary)
+-- + FR-DATA-1. Every table here lives in the `config` schema and carries an `origin`
+-- column recording which admin surface last wrote the row (originally git|api|ui|
+-- default; V21 drops the legacy 'git' value once external config automation was
+-- descoped). CONFIG is desired state; RUNTIME (V3) is live operational state.
 --
 -- Conventions (see docs/DATA-MODEL.md):
 --   * PK = uuid, app-generated UUIDv7 (no DB extension needed).

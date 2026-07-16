@@ -79,30 +79,30 @@ class ConstraintsIT extends AbstractDataIT {
 	@Test
 	void badEffectRejected() {
 		expectRejected(dpRules.save(DpRule.create("bad-effect", obj(), obj(), null, List.of("deploy"), 300,
-				List.of("shell"), "maybe", "git")));
+				List.of("shell"), "maybe", "api")));
 	}
 
 	@Test
 	void capabilityNotInEnumRejected() {
 		expectRejected(dpRules.save(DpRule.create("bad-cap", obj(), obj(), null, List.of("deploy"), 300,
-				List.of("teleport"), "allow", "git")));
+				List.of("teleport"), "allow", "api")));
 	}
 
 	@Test
 	void nonPositiveTtlRejected() {
 		expectRejected(dpRules.save(
-				DpRule.create("bad-ttl", obj(), obj(), null, List.of("deploy"), 0, List.of("shell"), "allow", "git")));
+				DpRule.create("bad-ttl", obj(), obj(), null, List.of("deploy"), 0, List.of("shell"), "allow", "api")));
 	}
 
 	@Test
 	void badCaAlgorithmRejected() {
-		expectRejected(caConfigs.save(CaConfig.create("bad-algo", "host", "local", "ref", "rot13", "active", "git")));
+		expectRejected(caConfigs.save(CaConfig.create("bad-algo", "host", "local", "ref", "rot13", "active", "api")));
 	}
 
 	@Test
 	void badCaBackendRejected() {
 		expectRejected(
-				caConfigs.save(CaConfig.create("bad-backend", "user", "sqlite", "ref", "ecdsa-p256", "active", "git")));
+				caConfigs.save(CaConfig.create("bad-backend", "user", "sqlite", "ref", "ecdsa-p256", "active", "api")));
 	}
 
 	@Test
@@ -110,7 +110,7 @@ class ConstraintsIT extends AbstractDataIT {
 		// §2.5 belt-and-suspenders: a PEM private key must not land in a reference
 		// column.
 		expectRejected(caConfigs.save(CaConfig.create("pem-ca", "session", "local",
-				"-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----", "ecdsa-p256", "incoming", "git")));
+				"-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----", "ecdsa-p256", "incoming", "api")));
 	}
 
 	@Test
@@ -123,7 +123,7 @@ class ConstraintsIT extends AbstractDataIT {
 	void approvalChainLongerThanThreeRejected() {
 		var chain = objectMapper.readTree("[{\"kind\":\"email\",\"value\":\"a\"},{\"kind\":\"email\",\"value\":\"b\"},"
 				+ "{\"kind\":\"email\",\"value\":\"c\"},{\"kind\":\"email\",\"value\":\"d\"}]");
-		expectRejected(jitPolicies.save(JitPolicy.create("too-long", obj(), List.of(), 300, chain, "git")));
+		expectRejected(jitPolicies.save(JitPolicy.create("too-long", obj(), List.of(), 300, chain, "api")));
 	}
 
 	@Test
@@ -131,7 +131,7 @@ class ConstraintsIT extends AbstractDataIT {
 		// jsonb selectors must be objects (CHECK jsonb_typeof = 'object')
 		var arrayNode = objectMapper.readTree("[1,2,3]");
 		expectRejected(dpRules.save(DpRule.create("arr-sel", arrayNode, obj(), null, List.of("deploy"), 300,
-				List.of("shell"), "allow", "git")));
+				List.of("shell"), "allow", "api")));
 	}
 
 	@Test

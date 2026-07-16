@@ -32,8 +32,10 @@ class MigrationIntegrityIT extends AbstractDataIT {
 		// table); S12 adds V19 (agent_identity.prev_fingerprint — the renew-ahead
 		// fingerprint-pin overlap column, mirroring V15's gateway pinning — no table);
 		// S13 adds V20 (access models: the 3 break-glass stores + the activation
-		// enrichment columns + the breakglass:manage permission).
-		assertThat(maxVersion).isEqualTo(20);
+		// enrichment columns + the breakglass:manage permission). S17 adds V21 (origin
+		// CHECK tightened to api|ui|default — no table) + V22
+		// (runtime.idempotency_key).
+		assertThat(maxVersion).isEqualTo(22);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
@@ -55,13 +57,14 @@ class MigrationIntegrityIT extends AbstractDataIT {
 		// 22 (9 config + 13 runtime); S3 adds 8 -> 30; S4 (V14) adds 2 -> 32; S6 (V16)
 		// adds 3 runtime -> 35; S9 (V17) adds 1 runtime (recording_token) -> 36; S13
 		// (V20) adds 3 runtime (breakglass_credential, breakglass_offline_code,
-		// breakglass_token) -> 39 (12 config + 27 runtime). A drop fails it.
+		// breakglass_token) -> 39 (12 config + 27 runtime); S17 (V22) adds 1 runtime
+		// (idempotency_key) -> 40 (12 config + 28 runtime). A drop fails it.
 		Long tables = db
 				.sql("SELECT count(*) AS c FROM information_schema.tables "
 						+ "WHERE table_schema IN ('config','runtime') AND table_type = 'BASE TABLE' "
 						+ "AND NOT (table_schema = 'runtime' AND table_name LIKE 'audit\\_event\\_%')")
 				.map(row -> row.get("c", Long.class)).one().block();
-		assertThat(tables).isEqualTo(39L); // 12 config + 27 runtime
+		assertThat(tables).isEqualTo(40L); // 12 config + 28 runtime
 
 		// spot-check the reserved-name renames and the load-bearing tables actually
 		// landed
@@ -90,9 +93,8 @@ class MigrationIntegrityIT extends AbstractDataIT {
 
 	@Test
 	void runtimeTablesHaveNoOriginColumn() {
-		// The config-vs-runtime boundary is structural: runtime rows are never
-		// reconciled,
-		// so they carry no `origin` (FR-DATA-1 / FR-API-3).
+		// The config-vs-runtime boundary is structural: runtime rows are not config,
+		// so they carry no `origin` provenance (FR-DATA-1).
 		Long withOrigin = db
 				.sql("SELECT count(*) AS c FROM information_schema.columns "
 						+ "WHERE table_schema = 'runtime' AND column_name = 'origin'")

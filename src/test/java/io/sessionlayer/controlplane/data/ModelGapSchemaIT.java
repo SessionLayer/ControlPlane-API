@@ -112,7 +112,7 @@ class ModelGapSchemaIT extends AbstractDataIT {
 	@Test
 	void sessionLimitPolicyRoundTrips() {
 		var sel = objectMapper.readTree("{\"group\":\"contractors\"}");
-		var reread = sessionLimits.save(SessionLimitPolicy.create("contractors", sel, 2, 3600, 600, "git"))
+		var reread = sessionLimits.save(SessionLimitPolicy.create("contractors", sel, 2, 3600, 600, "api"))
 				.flatMap(s -> sessionLimits.findById(s.id())).block();
 		assertThat(reread.maxConcurrentSessions()).isEqualTo(2);
 		assertThat(reread.identitySelector()).isEqualTo(sel);

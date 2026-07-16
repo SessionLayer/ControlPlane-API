@@ -7,10 +7,9 @@
 -- the FR-BOOT-2 first-admin bootstrap self-disable flag.
 --
 -- Placement: CONFIG schema. These are operator-owned knobs (settings:write, a
--- CONFIG permission) and carry an `origin`. Two fields are runtime-managed and the
--- reconciler MUST NOT revert them (like access_lock is API-only): `bootstrap_*`
--- (set once when the first admin is provisioned, FR-BOOT-2) — documented in
--- docs/DATA-MODEL.md. Cold start writes this row at first boot.
+-- CONFIG permission) and carry an `origin`. Two fields are runtime-managed
+-- (`bootstrap_*`, set once when the first admin is provisioned, FR-BOOT-2) —
+-- documented in docs/DATA-MODEL.md. Cold start writes this row at first boot.
 --
 -- Singleton: enforced by a `singleton boolean UNIQUE CHECK (singleton)` so at most
 -- one row can ever exist (any second insert collides on the unique true value).
@@ -56,7 +55,7 @@ CREATE TABLE config.operator_settings (
     -- subject = a config-named OIDC subject, OR a printed-once credential whose HASH
     -- (never the raw value) is stored here. `bootstrap_completed` is the self-disable
     -- flag: once a platform admin exists the bootstrap path turns off. RUNTIME-managed
-    -- (the reconciler must not revert these two fields).
+    -- (operational state, not operator-editable config).
     bootstrap_admin_subject     text,
     bootstrap_credential_hash   text        CHECK (bootstrap_credential_hash IS NULL
                                             OR bootstrap_credential_hash NOT LIKE '%PRIVATE KEY%'),
@@ -69,4 +68,4 @@ CREATE TABLE config.operator_settings (
     created_at                  timestamptz NOT NULL DEFAULT now(),
     updated_at                  timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE config.operator_settings IS 'F-DM-9: singleton cluster settings (KEK ref, default CA backend, retention/WORM/OTP/session-limit defaults, FR-BOOT-2 bootstrap self-disable). Cold start reads/writes this. bootstrap_* fields are runtime-managed (reconciler must not revert).';
+COMMENT ON TABLE config.operator_settings IS 'F-DM-9: singleton cluster settings (KEK ref, default CA backend, retention/WORM/OTP/session-limit defaults, FR-BOOT-2 bootstrap self-disable). Cold start reads/writes this. bootstrap_* fields are runtime-managed (operational state, not config).';

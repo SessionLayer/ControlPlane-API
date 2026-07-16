@@ -35,7 +35,7 @@ ALTER ROLE cp_runtime WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS
 -- 2. Schema usage (no CREATE — cannot add objects to either schema).
 GRANT USAGE ON SCHEMA config, runtime TO cp_runtime;
 
--- 3. CONFIG: full CRUD (reconciler-scoped write + cold-start writes ca_config /
+-- 3. CONFIG: full CRUD (UI/API config writes + cold-start writes ca_config /
 --    operator_settings). No DDL.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO cp_runtime;
 

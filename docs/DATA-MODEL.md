@@ -14,31 +14,35 @@
 ## 1. The load-bearing boundary: CONFIG vs RUNTIME (structural)
 
 The single most important property of this schema is the **config-vs-runtime partition** (Design §13,
-FR-DATA-1), because the GitOps reconciler (S16) relies on it for safety: the reconciler touches **CONFIG
-only** and must **never** touch RUNTIME (locks, sessions, grants, issuance records, presence…).
+FR-DATA-1). CONFIG is desired-state managed by admins via **UI + API over Postgres** (the single source of
+truth, D11); RUNTIME is live operational state (locks, sessions, grants, issuance records, presence…) that is
+never operator-authored config.
+
+> **Scope note (owner decision 2026-07-15):** the design once envisaged an external config-automation client
+> as a third admin surface over this boundary; that is **descoped** — config is managed via UI + API only. The
+> boundary itself is retained (it is a general safety property, and it backs the non-owner `cp_runtime` role),
+> and the `origin` column stays as `api|ui|default` provenance.
 
 **Decision — make the boundary structural with two Postgres schemas:**
 
-| | Postgres schema | Reconciled by GitOps? | `origin` column? |
+| | Postgres schema | Class | `origin` column? |
 |---|---|---|---|
-| **CONFIG** | `config` | Yes (Git-reconcilable) | **Yes**, on every table |
-| **RUNTIME** | `runtime` | **Never** | No |
+| **CONFIG** | `config` | Operator-authored desired state | **Yes**, on every table |
+| **RUNTIME** | `runtime` | Live operational state | No |
 
 Rationale for two schemas (over a single schema with a naming convention):
-- The boundary becomes **enforceable by Postgres role grants** later: S16 can run its reconciler under a role
-  with write access to `config.*` and only read (or no) access to `runtime.*`, so a reconciler bug *cannot*
-  physically mutate a lock or a session. A naming convention gives no such guarantee.
-- It is **self-documenting**: `runtime.access_lock` tells any reader "the reconciler may not touch this".
+- The boundary is **enforceable by Postgres role grants**: the `cp_runtime` role is non-owner and least-priv,
+  and the two-schema split makes "runtime writes only under the restricted role" a structural property.
+- It is **self-documenting**: `runtime.access_lock` tells any reader "this is runtime state, not config".
 - Flyway's `flyway_schema_history` stays in `public` (the connection default schema); we never place app
   tables in `public`.
 
 **`lock` is RUNTIME and API-only.** `runtime.access_lock` carries no `origin` column and is documented
-API-only (FR-API-3): a committed `Lock` kind MUST be rejected by the reconciler. "Deny now and keep it" is a
-first-class runtime Lock, never a Git edit to a role.
+API-only (FR-DATA-1): "deny now and keep it" is a first-class runtime Lock, never a config edit to a role.
 
 **`origin` on every config row:** `origin text NOT NULL DEFAULT 'default' CHECK (origin IN
-('git','api','ui','default'))` (FR-DATA-1, FR-API-4). It disambiguates ownership within CONFIG so Git-owned
-drift can be reverted loudly.
+('api','ui','default'))` (FR-DATA-1; tightened from the original four-value CHECK by `V21` once external
+config automation was descoped). It records which admin surface last wrote the row.
 
 ---
 
@@ -148,7 +152,7 @@ migration. The authoritative value sets (later sessions MUST stay aligned):
   *what was decided* (a matched `dp_rule`, a `jit_policy`, a resolved principal, a capability set, a policy
   epoch) by copying the decision inputs/outputs onto the runtime row: `matched_rule_id uuid` (a **plain uuid,
   no FK**) + resolved `principal`, `capabilities`, `access_model`, `policy_epoch`, `grant_expiry`. Config rows
-  are mutable and Git-reconcilable (edited/removed); audit and session history must stay complete and truthful
+  are mutable config (edited/removed via UI + API); audit and session history must stay complete and truthful
   **after** the producing config is gone.
 - **Snapshot the config *name*, not just the id.** A dangling opaque UUID is not legible history. So every
   snapshot ref stores the human-readable name alongside the id: `ssh_session.matched_rule_name`,
@@ -180,7 +184,7 @@ not cascade-erase a recording's object key / encryption-key reference / hash-cha
   holder of the app's DB role if that role *owns* the table (an owner can `ALTER TABLE … DISABLE TRIGGER` /
   `DROP`) or is a superuser (`SET session_replication_role = replica` silences origin triggers). Closing that
   requires the runtime to connect as a **non-owner, non-superuser role granted only `INSERT, SELECT`** on
-  `runtime.audit_event`, plus reconciler-scoped schema grants for the config/runtime boundary — the S15/S16
+  `runtime.audit_event`, plus least-privilege schema grants for the config/runtime boundary — the S15/S16
   deployment-hardening layer. This session provides the structural boundary + the trigger; the role split is
   the documented follow-up. (Do **not** run the runtime as the table owner or as a superuser in production.)
 - **Hash chain (S9): columns + a deterministic order.** `audit_event.prev_hash` / `record_hash` (row chain)
@@ -285,7 +289,7 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 
 ## 11. Config-vs-runtime table map (the authoritative list)
 
-**CONFIG (`config` schema, Git-reconcilable, each row has `origin`):**
+**CONFIG (`config` schema, operator-authored desired state, each row has `origin`):**
 
 | Table | Purpose (Design §12A / FR) |
 |---|---|
@@ -299,7 +303,7 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 | `config.breakglass_policy` | Break-glass config: recording-strict, alert target, review requirement, auth path (FR-ACC-6). |
 | `config.service_account` | Machine-consumer **definition** (issued creds are runtime) (FR-AUTH-12). |
 
-**RUNTIME (`runtime` schema, never reconciled):**
+**RUNTIME (`runtime` schema, live operational state, no `origin`):**
 
 | Table | Purpose (Design §12A / FR) |
 |---|---|
@@ -310,12 +314,13 @@ All other §12A names are safe and kept verbatim (`node`, `presence`, `pin`, `ot
 | `runtime.join_token` | Token **hash** (never raw), scope, single-use, expiry, `consumed_at` (Design §8.1, FR-JOIN-2). |
 | `runtime.ssh_session` | The `session` entity: identity, node, principal, gateway, access model, times + **decision snapshot** (FR-DATA-2). |
 | `runtime.recording_ref` | 1:1 with `ssh_session`, object-store key, encryption-key **ref**, hash-chain head (FR-DATA-2, FR-AUD-3). |
-| `runtime.access_lock` | The `lock` entity: target selector, mode, ttl, reason, created_by. **API-only** (FR-API-3). |
+| `runtime.access_lock` | The `lock` entity: target selector, mode, ttl, reason, created_by. **API-only runtime** (FR-DATA-1). |
 | `runtime.jit_request` | FR-ACC-2 state machine, requester, approver-chain progress, reason, two clocks. |
 | `runtime.breakglass_activation` | Principal, reason, alert ref, review status (FR-ACC-6). |
 | `runtime.pin` | Pubkey fingerprint, identity, source-cidr, principals, expiry (Design §5.5). |
 | `runtime.otp` | OTP **hash** (never raw), identity, allowed principals, source-cidr, expiry, `used` (Design §5.4). |
-| `runtime.audit_event` | Actor, subject, action, outcome, UTC time, correlation id. **Append-only, zero FKs** (§4.6, FR-AUD-9). |
+| `runtime.idempotency_key` | (`V22`, S17) The recorded response for one `Idempotency-Key` scoped to (principal, method, path); bounded by `expires_at`, swept by `AuthMaintenanceService` (FR-API-1). |
+| `runtime.audit_event` | Actor, subject, action, outcome, UTC time, correlation id, `detail` (incl. config **before/after**, FR-PADM-3). **Append-only, zero FKs** (§4.6, FR-AUD-9). |
 
 ---
 
@@ -372,8 +377,8 @@ since `cp_runtime` is refused by privilege first). Credentials via env; nothing 
 ### 13.3 Model-gap schema (`V6`,`V8`,`V9`,`V10`,`V12`, closes `F-model-deferrals-1`)
 - `config.operator_settings` (`V6`) — **singleton** (`singleton boolean UNIQUE CHECK`): KEK ref, default CA
   backend, retention/WORM/OTP/session-limit defaults, FR-BOOT-2 bootstrap self-disable flag. Cold start reads/writes
-  it. The `bootstrap_*` fields are runtime-managed (the reconciler must not revert them, like `access_lock` is
-  API-only).
+  it. The `bootstrap_*` fields are runtime-managed (operational state, not operator-editable config, like
+  `access_lock` is API-only).
 - `recording_ref` (`V8`) — `retention_until`, `legal_hold`, `status`, `format`, `content_digest`; `content_digest`
   is write-once (V4 trigger extended); `recording_prunable(cutoff)` returns only governance + past-retention +
   non-legal-hold recordings (compliance/legal-held are never prunable).
@@ -391,7 +396,7 @@ since `cp_runtime` is refused by privilege first). Credentials via env; nothing 
   `jit_request` (`decided_by`/`decision_reason`) so a quarantine/lock/decision is self-describing.
 - `runtime.ca_key_material` (`V12`, FR-CA-8) — KEK-wrapped local CA private key (**ciphertext only**) + public
   material; the KEK is env-sourced, never in the DB, so a datastore-only compromise yields ciphertext it cannot
-  unwrap. RUNTIME (generated secret, never reconciled); snapshot ref to `config.ca_config.key_reference =
+  unwrap. RUNTIME (generated secret, not config); snapshot ref to `config.ca_config.key_reference =
   local:<id>`.
 
 ### 13.4 JIT `approvals` shape — a decision, not a defer (F-DM-16)
@@ -455,7 +460,7 @@ S5 builds the two authorization systems and the connect-time decision **entirely
 no migration is added (the next free version stays **V16**). What S5 fills in is the *interpretation* of the
 `jsonb` selectors S2 said it would only "store + round-trip + shape-validate" (§5), plus the runtime writes the
 decision produces. The selector shapes below are the **contract the evaluator now enforces**; later sessions and
-GitOps validation must stay aligned.
+config validation must stay aligned.
 
 ### 15.1 Data-plane RBAC selector shapes (`config.dp_rule`, read by the evaluator)
 - **`identity_selector`** — `{"identities": [..], "groups": [..], "all": <bool>}`. Matches if the resolved
@@ -670,7 +675,7 @@ delete path.
 Session Ten adds the incident-response **lock CRUD** + the actively-pushed lock
 deny-list (Design §6.3/§8.3/§8.4; FR-CHAN-3, FR-LOCK-1/2). One migration, `V18`; the
 next free version is **V19**. It adds **no new table** — the lock is the existing
-`runtime.access_lock` (`V3`, API-only, never reconciled).
+`runtime.access_lock` (`V3`, API-only runtime state, not config).
 
 ### 19.1 `platform_role.permissions` CHECK widened (`V18`)
 

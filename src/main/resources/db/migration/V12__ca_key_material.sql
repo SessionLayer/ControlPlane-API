@@ -8,7 +8,7 @@
 -- unwrap. `config.ca_config.key_reference` = 'local:<this row id>'.
 --
 -- Placement: RUNTIME. This is generated operational secret material (like issued
--- credentials), never Git-reconciled; the reconciler must not touch it. It references
+-- credentials), RUNTIME not config. It references
 -- config.ca_config by a SNAPSHOT id (no hard FK across runtime->config), consistent
 -- with the model. Cleaned up with its config by ca_config_id lookup.
 

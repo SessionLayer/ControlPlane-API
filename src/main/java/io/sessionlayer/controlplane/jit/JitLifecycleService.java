@@ -103,8 +103,20 @@ public class JitLifecycleService {
 
 	private Mono<JitPolicy> matchingPolicy(Node node) {
 		Map<String, String> labels = labelsOf(node.resolvedLabels());
-		return policies.findAll().filter(policy -> Selectors.labelMatches(policy.targetSelector(), labels))
+		return policies.findAll().filter(policy -> matchesNode(policy, labels))
 				.sort((a, b) -> a.name().compareTo(b.name())).next();
+	}
+
+	// Fail closed on a malformed policy selector (matches the S5 evaluator's
+	// posture): one bad jit_policy row must not throw and 500 every submit.
+	private static boolean matchesNode(JitPolicy policy, Map<String, String> labels) {
+		try {
+			return Selectors.labelMatches(policy.targetSelector(), labels);
+		} catch (RuntimeException malformed) {
+			LOG.warn("skipping jit_policy {} with an unparseable target selector: {}", policy.name(),
+					malformed.getMessage());
+			return false;
+		}
 	}
 
 	private Mono<JitRequest> rejectSubmit(String requester, UUID targetNodeId, String note) {
