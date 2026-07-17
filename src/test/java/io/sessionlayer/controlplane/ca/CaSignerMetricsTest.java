@@ -15,9 +15,9 @@ import reactor.test.StepVerifier;
 
 /**
  * NFR-3: when no active CA of the requested kind exists, {@code activeSigner}
- * fails closed with {@link NoSignerAvailable} (never a wrong-key signer) AND the
- * availability SLI records the fail-closed as {@code outcome=unavailable} — the
- * "signer-down fails closed, measured" gate, without Docker.
+ * fails closed with {@link NoSignerAvailable} (never a wrong-key signer) AND
+ * the availability SLI records the fail-closed as {@code outcome=unavailable} —
+ * the "signer-down fails closed, measured" gate, without Docker.
  */
 class CaSignerMetricsTest {
 

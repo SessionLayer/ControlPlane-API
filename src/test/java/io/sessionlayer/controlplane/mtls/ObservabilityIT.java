@@ -96,14 +96,16 @@ class ObservabilityIT extends AbstractMtlsIT {
 				SignContext.newBuilder().setSessionId(sessionId.toString()).build());
 		assertThat(signed.getCertificateLine()).startsWith("ecdsa-sha2-nistp256-cert-v01@openssh.com");
 
-		// Both CP spans are children of the SAME Gateway-injected trace/span → one trace.
+		// Both CP spans are children of the SAME Gateway-injected trace/span → one
+		// trace.
 		SpanData authorizeSpan = awaitSpan("cp.authorize");
 		assertThat(authorizeSpan.getTraceId()).isEqualTo(TRACE_ID);
 		assertThat(authorizeSpan.getParentSpanId()).isEqualTo(SPAN_ID);
 		assertThat(attr(authorizeSpan, "sessionlayer.session_id")).isEqualTo(sessionId.toString());
 		assertThat(attr(authorizeSpan, "sessionlayer.outcome")).isEqualTo("allow");
 		assertThat(attr(authorizeSpan, "sessionlayer.access_model")).isEqualTo("standing");
-		// A standing chain's correlation_id == the session id (pivot to audit/recording).
+		// A standing chain's correlation_id == the session id (pivot to
+		// audit/recording).
 		assertThat(attr(authorizeSpan, "sessionlayer.correlation_id")).isEqualTo(sessionId.toString());
 
 		SpanData certSpan = awaitSpan("cp.cert_sign");
@@ -112,13 +114,13 @@ class ObservabilityIT extends AbstractMtlsIT {
 		assertThat(attr(certSpan, "sessionlayer.cert_kind")).isEqualTo("session");
 		assertThat(attr(certSpan, "sessionlayer.outcome")).isEqualTo("success");
 
-		// No-content gate: NO span attribute value carries the session/recording token or
-		// the subject key material — spans carry IDs/enums/outcomes only. (Guard blanks:
+		// No-content gate: NO span attribute value carries the session/recording token
+		// or
+		// the subject key material — spans carry IDs/enums/outcomes only. (Guard
+		// blanks:
 		// an empty secret would make doesNotContain("") vacuously fail.)
-		List<String> secrets = java.util.stream.Stream
-				.of(authorized.getSessionToken(), authorized.getRecordingToken(),
-						Base64.getEncoder().encodeToString(subjectKey))
-				.filter(s -> s != null && !s.isBlank()).toList();
+		List<String> secrets = java.util.stream.Stream.of(authorized.getSessionToken(), authorized.getRecordingToken(),
+				Base64.getEncoder().encodeToString(subjectKey)).filter(s -> s != null && !s.isBlank()).toList();
 		assertThat(secrets).isNotEmpty();
 		for (SpanData span : spans.getFinishedSpanItems()) {
 			for (Object value : span.getAttributes().asMap().values()) {
@@ -150,7 +152,8 @@ class ObservabilityIT extends AbstractMtlsIT {
 		assertThat(meters.get("sessionlayer.session.establishment").tag("outcome", "allow").timer().count())
 				.isGreaterThan(0);
 		// The cert-sign leg timer.
-		assertThat(meters.get("sessionlayer.cert.sign").tag("kind", "session").tag("outcome", "success").timer().count())
+		assertThat(
+				meters.get("sessionlayer.cert.sign").tag("kind", "session").tag("outcome", "success").timer().count())
 				.isGreaterThan(0);
 		// NFR-3: an available session signer was measured (fail-closed unavailable is
 		// proven in CaSignerMetricsTest without Docker).
@@ -165,7 +168,8 @@ class ObservabilityIT extends AbstractMtlsIT {
 				gateway.keyPair().getPrivate());
 		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
 		try {
-			return AuthorizationGrpc.newBlockingStub(channel).withInterceptors(traceparentInjector()).authorize(request);
+			return AuthorizationGrpc.newBlockingStub(channel).withInterceptors(traceparentInjector())
+					.authorize(request);
 		} finally {
 			shutdown(channel);
 		}
@@ -189,7 +193,8 @@ class ObservabilityIT extends AbstractMtlsIT {
 		}
 	}
 
-	// The Gateway would inject W3C context on every CP RPC; here a fixed traceparent.
+	// The Gateway would inject W3C context on every CP RPC; here a fixed
+	// traceparent.
 	private static ClientInterceptor traceparentInjector() {
 		return new ClientInterceptor() {
 			@Override

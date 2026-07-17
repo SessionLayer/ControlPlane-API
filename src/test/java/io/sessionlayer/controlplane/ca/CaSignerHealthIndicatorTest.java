@@ -22,8 +22,8 @@ class CaSignerHealthIndicatorTest {
 		when(signers.activeSigner("session")).thenReturn(Mono.just(mock(SshCertSigner.class)));
 
 		StepVerifier.create(new CaSignerHealthIndicator(signers).health())
-				.assertNext(health -> org.assertj.core.api.Assertions.assertThat(health.getStatus())
-						.isEqualTo(Status.UP))
+				.assertNext(
+						health -> org.assertj.core.api.Assertions.assertThat(health.getStatus()).isEqualTo(Status.UP))
 				.verifyComplete();
 	}
 
