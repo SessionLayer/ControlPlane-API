@@ -28,3 +28,9 @@ replay_pid*
 
 # jqwik property-test failure database (local, not committed)
 .jqwik-database
+
+# Release supply-chain artifacts (S22): SBOM + cosign outputs, CI-produced
+bom.json
+*.cdx.json
+*.sig
+*.sigstore.json
