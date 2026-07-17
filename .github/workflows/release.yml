@@ -1,0 +1,109 @@
+# Supply-chain release pipeline (S22): SBOM + SLSA provenance + keyless Sigstore
+# signature + a reproducibility gate for the release jar. Separate from `ci.yml`
+# (the required `gate` check) — this runs only on a `v*` tag push. Actions are
+# SHA-pinned; the trailing comment records the human tag. See
+# ../../Docs/sessions/twentytwo/SUPPLY-CHAIN.md.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # gh release create/upload
+      id-token: write # keyless cosign + provenance via ambient GitHub OIDC
+      attestations: write # actions/attest-build-provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Fix the archive timestamp to the tagged commit so the jar is byte-reproducible.
+      - name: Pin reproducible build timestamp
+        run: echo "BUILD_TS=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
+
+      - name: Build release jar
+        run: ./mvnw -B -ntp -DskipTests -Dproject.build.outputTimestamp="$BUILD_TS" package
+
+      - name: Resolve artifact paths
+        run: |
+          JAR=$(ls target/controlplane-*.jar | grep -v '\.original$' | head -n1)
+          VER=${GITHUB_REF_NAME#v}
+          echo "JAR=$JAR" >> "$GITHUB_ENV"
+          echo "SBOM=controlplane-${VER}-sbom.cdx.json" >> "$GITHUB_ENV"
+
+      # Part D: rebuild in a clean tree and assert an identical digest.
+      - name: Reproducibility gate
+        run: |
+          sha256sum "$JAR" | awk '{print $1}' > first.sha256
+          ./mvnw -B -ntp -DskipTests -Dproject.build.outputTimestamp="$BUILD_TS" clean package
+          sha256sum "$JAR" | awk '{print $1}' > second.sha256
+          if ! diff -q first.sha256 second.sha256 >/dev/null; then
+            echo "::error::release jar is not reproducible ($(cat first.sha256) != $(cat second.sha256))"
+            exit 1
+          fi
+          echo "reproducible sha256: $(cat first.sha256)"
+
+      # Part A: CycloneDX 1.6 JSON. Version resolves from the pom plugin declaration.
+      - name: Generate SBOM
+        run: |
+          ./mvnw -B -ntp -DskipTests org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
+          cp target/bom.json "$SBOM"
+          jq -e '.bomFormat=="CycloneDX" and .specVersion=="1.6" and (.components|length>0)' "$SBOM" >/dev/null
+
+      # Part B: SLSA v1 provenance over the jar + SBOM (Rekor-logged Sigstore bundle).
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: |
+            ${{ env.JAR }}
+            ${{ env.SBOM }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+
+      # Part C: keyless blob signature over the jar + SBOM. No key at rest; the
+      # signing identity is this workflow's GitHub OIDC (Fulcio-issued short-lived
+      # cert). Emits .sig + .pem + the Sigstore bundle.
+      - name: Sign artifact and SBOM
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          for f in "$JAR" "$SBOM"; do
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              --bundle "${f}.sigstore.json" \
+              "$f"
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" \
+            "$JAR" "${JAR}.sig" "${JAR}.pem" "${JAR}.sigstore.json" \
+            "$SBOM" "${SBOM}.sig" "${SBOM}.pem" "${SBOM}.sigstore.json" \
+            "${{ steps.attest.outputs.bundle-path }}" \
+            --clobber
