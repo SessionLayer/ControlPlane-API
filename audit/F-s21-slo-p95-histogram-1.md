@@ -30,3 +30,9 @@ CA-availability) are documented there and next to the meters.
 `ObservabilityIT.sloMetricsAreEmittedForTheEstablishmentAndSigningPaths` now
 asserts `timer.takeSnapshot().histogramCounts()` is non-empty for both timers
 (the `_bucket` series that `histogram_quantile()` needs).
+
+Evidence status: the config change (`application.properties`) and the new
+assertion are the static proof `review-cp-rel` can confirm. The full local
+`mvnw verify` was intentionally stopped to free the shared 2-core build lock for
+Gateway's build, so **CI is the authoritative gate** for this IT — flip to
+ROUND_FINAL is gated on CI green, not a local run.

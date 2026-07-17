@@ -39,3 +39,8 @@ no-content invariant holds, exporter truly off-by-default):
 `ObservabilityIT` (widened no-content gate over spans+events+metric-tags;
 `source=request` SLI assertion) + `CaSignerMetricsTest` (asserts `source=request`
 and `source=probe` are metered distinctly, both fail-closed `unavailable`).
+
+Evidence status: `CaSignerMetricsTest` passes green locally (Surefire, no
+Docker). The `ObservabilityIT` assertions run under CI — the local full verify
+was stopped to free the shared build lock, so **CI is the authoritative gate**
+for the IT.
