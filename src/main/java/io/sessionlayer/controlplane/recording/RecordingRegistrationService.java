@@ -4,6 +4,7 @@ import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.Uuids;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
+import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
 import io.sessionlayer.controlplane.data.runtime.RecordingRefRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
@@ -25,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Registers, issues upload credentials for, and finalizes session recordings
@@ -55,17 +57,20 @@ public class RecordingRegistrationService {
 	private final OperatorSettingsRepository operatorSettings;
 	private final SshSessionRepository sshSessions;
 	private final RecordingRefRepository recordings;
+	private final NodeRepository nodes;
 	private final RecordingStore worm;
 	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
 
 	public RecordingRegistrationService(RecordingTokenService recordingTokens,
 			OperatorSettingsRepository operatorSettings, SshSessionRepository sshSessions,
-			RecordingRefRepository recordings, RecordingStore worm, AuditEventStore audit, TransactionalOperator tx) {
+			RecordingRefRepository recordings, NodeRepository nodes, RecordingStore worm, AuditEventStore audit,
+			TransactionalOperator tx) {
 		this.recordingTokens = recordingTokens;
 		this.operatorSettings = operatorSettings;
 		this.sshSessions = sshSessions;
 		this.recordings = recordings;
+		this.nodes = nodes;
 		this.worm = worm;
 		this.audit = audit;
 		this.tx = tx;
@@ -122,11 +127,12 @@ public class RecordingRegistrationService {
 					String objectKey = objectKey(session.id(), recordingId);
 					RecordingRef ref = RecordingRef.begin(recordingId, session.id(), objectKey, keyRef, wormMode,
 							retentionUntil);
-					return recordings.save(ref).then(audit.record(
-							sessionEvent(session, session.identity(), token.principal(), "recording.begin", "success")
+					return nodeLabels(session.nodeId()).flatMap(labels -> recordings.save(ref)
+							.then(audit.record(sessionEvent(session, labels, session.identity(), token.principal(),
+									"recording.begin", "success")
 									.detail(beginDetail(caller, recordingId, objectKey, wormMode, keyRef)).build()))
 							.thenReturn(new RecordingRegistration(recordingId, objectKey, wormMode,
-									new CustomerKeyMaterial(keyRef, publicKey, algorithm)));
+									new CustomerKeyMaterial(keyRef, publicKey, algorithm))));
 				}));
 	}
 
@@ -150,11 +156,12 @@ public class RecordingRegistrationService {
 					Instant retainUntil = ref.retentionUntil() != null
 							? ref.retentionUntil()
 							: Instant.now().plus(Duration.ofDays(1));
-					return worm.ensureReady().then(worm.presignUpload(ref.objectKey(), ref.wormMode(), retainUntil))
-							.flatMap(upload -> audit.record(sessionEvent(session, session.identity(),
+					return nodeLabels(session.nodeId()).flatMap(labels -> worm.ensureReady()
+							.then(worm.presignUpload(ref.objectKey(), ref.wormMode(), retainUntil))
+							.flatMap(upload -> audit.record(sessionEvent(session, labels, session.identity(),
 									recordingId.toString(), "recording.upload", "success")
 									.detail(uploadDetail(callerGatewayId, recordingId, ref.objectKey())).build())
-									.thenReturn(upload));
+									.thenReturn(upload)));
 				}));
 		return body.onErrorResume(
 				error -> failureAudit("recording.upload", callerGatewayId, error).then(Mono.error(error)));
@@ -195,12 +202,13 @@ public class RecordingRegistrationService {
 										"recording already finalized"));
 					}
 					RecordingRef finalized = ref.finalized(head, digest, size, status);
-					return recordings.save(finalized).then(writeTransferAudit(session, sftpAudit))
-							.then(audit.record(sessionEvent(session, session.identity(), recordingId.toString(),
+					return nodeLabels(session.nodeId()).flatMap(labels -> recordings.save(finalized)
+							.then(writeTransferAudit(session, labels, sftpAudit))
+							.then(audit.record(sessionEvent(session, labels, session.identity(), recordingId.toString(),
 									"recording.finalize", finalizeOutcome(status))
 									.detail(finalizeDetail(callerGatewayId, recordingId, status, byteLen, digest, head))
 									.build()))
-							.thenReturn(status);
+							.thenReturn(status));
 				}));
 		return tx.transactional(body);
 	}
@@ -208,24 +216,46 @@ public class RecordingRegistrationService {
 	// One audit_event per decoded SFTP/SCP operation (FR-AUD-1), metadata only,
 	// normalized/validated at the boundary, correlated by session_id (FR-AUD-9).
 	// Sequential (concatMap) — one tx connection.
-	private Mono<Void> writeTransferAudit(SshSession session, List<FileTransferAuditEntry> sftpAudit) {
+	private Mono<Void> writeTransferAudit(SshSession session, Map<String, String> nodeLabels,
+			List<FileTransferAuditEntry> sftpAudit) {
 		if (sftpAudit == null || sftpAudit.isEmpty()) {
 			return Mono.empty();
 		}
 		return Flux.fromIterable(sftpAudit).map(SftpAuditPolicy::normalize)
-				.concatMap(entry -> audit.record(
-						sessionEvent(session, session.identity(), entry.path(), "sftp." + entry.operation(), "success")
-								.detail(transferDetail(entry)).build()))
+				.concatMap(entry -> audit.record(sessionEvent(session, nodeLabels, session.identity(), entry.path(),
+						"sftp." + entry.operation(), "success").detail(transferDetail(entry)).build()))
 				.then();
 	}
 
-	// Every in-session recording event inherits the session's access model + the
-	// FR-AUD-9 correlation key, so one correlation_id search returns the recording
-	// (run/replay) alongside the connect + JIT approval that authorized it.
-	private static AuditRecord.Builder sessionEvent(SshSession session, String actor, String subject, String action,
-			String outcome) {
+	// Every in-session recording event inherits the session's access model, its
+	// node-label snapshot and the FR-AUD-9 correlation key, so one correlation_id
+	// search returns the recording (run/replay) alongside the connect + JIT
+	// approval
+	// that authorized it — for a node-label-scoped auditor too
+	// (F-audit-chainscope-1).
+	private static AuditRecord.Builder sessionEvent(SshSession session, Map<String, String> nodeLabels, String actor,
+			String subject, String action, String outcome) {
 		return AuditRecord.builder(actor, subject, action, outcome).session(session.id()).node(session.nodeId())
-				.accessModel(session.accessModel()).correlationId(session.correlationId());
+				.accessModel(session.accessModel()).nodeLabels(nodeLabels).correlationId(session.correlationId());
+	}
+
+	// The session's node label snapshot for its audit events (one read; empty when
+	// the session has no node).
+	private Mono<Map<String, String>> nodeLabels(UUID nodeId) {
+		if (nodeId == null) {
+			return Mono.just(Map.of());
+		}
+		return nodes.findById(nodeId).map(node -> labelsOf(node.resolvedLabels())).defaultIfEmpty(Map.of());
+	}
+
+	private static Map<String, String> labelsOf(JsonNode resolvedLabels) {
+		Map<String, String> labels = new HashMap<>();
+		if (resolvedLabels != null && resolvedLabels.isObject()) {
+			for (var entry : resolvedLabels.properties()) {
+				labels.put(entry.getKey(), entry.getValue().asString());
+			}
+		}
+		return labels;
 	}
 
 	// Best-effort, OUT-OF-BAND failure record: recording is mandatory, so a failed

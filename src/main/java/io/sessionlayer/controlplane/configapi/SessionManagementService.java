@@ -4,18 +4,21 @@ import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
+import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.grpc.LockFeedHub;
 import io.sessionlayer.controlplane.web.ApiProblemException;
 import io.sessionlayer.controlplane.web.CursorPages;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.data.relational.core.query.Criteria;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -31,6 +34,7 @@ public class SessionManagementService {
 	private final SshSessionRepository sessions;
 	private final CursorPages cursorPages;
 	private final AccessLockRepository accessLocks;
+	private final NodeRepository nodes;
 	private final LockFeedHub lockFeedHub;
 	private final AuditEventStore audit;
 	private final TransactionalOperator tx;
@@ -38,11 +42,12 @@ public class SessionManagementService {
 	private final SessionManagementProperties properties;
 
 	public SessionManagementService(SshSessionRepository sessions, CursorPages cursorPages,
-			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditEventStore audit, TransactionalOperator tx,
-			ObjectMapper objectMapper, SessionManagementProperties properties) {
+			AccessLockRepository accessLocks, NodeRepository nodes, LockFeedHub lockFeedHub, AuditEventStore audit,
+			TransactionalOperator tx, ObjectMapper objectMapper, SessionManagementProperties properties) {
 		this.sessions = sessions;
 		this.cursorPages = cursorPages;
 		this.accessLocks = accessLocks;
+		this.nodes = nodes;
 		this.lockFeedHub = lockFeedHub;
 		this.audit = audit;
 		this.tx = tx;
@@ -82,7 +87,7 @@ public class SessionManagementService {
 			return Mono.error(
 					ApiProblemException.validation("reason must be at most " + MAX_REASON_LENGTH + " characters"));
 		}
-		return get(id).flatMap(session -> {
+		return get(id).flatMap(session -> nodeLabels(session.nodeId()).flatMap(labels -> {
 			Instant now = Instant.now();
 			// Bounded so a terminate is a decisive teardown, not a standing ban: long
 			// enough that a briefly-disconnected Gateway still tears the session down on
@@ -107,10 +112,30 @@ public class SessionManagementService {
 													.builder(actor, session.id().toString(), "session.terminate",
 															"success")
 													.session(session.id()).node(session.nodeId()).detail(detail)
-													.accessModel(session.accessModel())
+													.accessModel(session.accessModel()).nodeLabels(labels)
 													.correlationId(session.correlationId()).build())
 											.thenReturn(saved)));
 			return persisted.doOnNext(lockFeedHub::publishAdded).thenReturn(session);
-		});
+		}));
+	}
+
+	// The session's node label snapshot for its terminate audit event (one read;
+	// empty when the session has no node), so a node-label-scoped auditor's
+	// correlation_id search returns the teardown too (F-audit-chainscope-1).
+	private Mono<Map<String, String>> nodeLabels(UUID nodeId) {
+		if (nodeId == null) {
+			return Mono.just(Map.of());
+		}
+		return nodes.findById(nodeId).map(node -> labelsOf(node.resolvedLabels())).defaultIfEmpty(Map.of());
+	}
+
+	private static Map<String, String> labelsOf(JsonNode resolvedLabels) {
+		Map<String, String> labels = new HashMap<>();
+		if (resolvedLabels != null && resolvedLabels.isObject()) {
+			for (var entry : resolvedLabels.properties()) {
+				labels.put(entry.getKey(), entry.getValue().asString());
+			}
+		}
+		return labels;
 	}
 }

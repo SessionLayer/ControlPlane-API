@@ -58,6 +58,26 @@ class SessionSigningIT extends AbstractMtlsIT {
 		assertThat(principalsOf(response.getCertificateBlob().toByteArray())).containsExactly("deploy");
 	}
 
+	// F-inner-cert-source-address-1: even when the session token carries a
+	// source-address, the node-facing inner cert MUST omit it — the node validates
+	// source-address against the Gateway's peer IP, not the client's, so a
+	// client-IP
+	// pin breaks any multi-host / NAT deployment.
+	@Test
+	void mintedInnerCertOmitsSourceAddress() {
+		EnrolledGateway gateway = enroll("gw-nosrcaddr");
+		String token = signingTokens.mint(gateway.gatewayId(), UUID.randomUUID(), UUID.randomUUID(), "deploy",
+				List.of("shell"), "10.0.0.0/8").block();
+
+		KeyPair inner = MtlsTestSupport.generateEcKeyPair();
+		SignSessionCertificateResponse response = sign(gateway, token,
+				MtlsTestSupport.opensshPublicKeyBlob((ECPublicKey) inner.getPublic()), null);
+
+		// The inner cert carries no critical options at all (source-address was the
+		// only one); source-IP enforcement stays on the outer leg + Authorize.
+		assertThat(criticalOptionsOf(response.getCertificateBlob().toByteArray())).isEmpty();
+	}
+
 	@Test
 	void crossGatewayTokenIsRejected() {
 		EnrolledGateway owner = enroll("gw-owner");
@@ -150,6 +170,22 @@ class SessionSigningIT extends AbstractMtlsIT {
 		reader.readString(); // extensions
 		reader.readString(); // reserved
 		return reader.readString(); // signature key
+	}
+
+	// The cert's critical-options field (11th field) — empty for the inner cert
+	// (F-inner-cert-source-address-1: source-address was its only option).
+	private static byte[] criticalOptionsOf(byte[] certBlob) {
+		SshReader reader = new SshReader(certBlob);
+		for (int i = 0; i < 4; i++) {
+			reader.readString(); // cert-type, nonce, curve, Q
+		}
+		reader.readUint64(); // serial
+		reader.readUint32(); // type
+		reader.readString(); // key id
+		reader.readString(); // principals
+		reader.readUint64(); // valid after
+		reader.readUint64(); // valid before
+		return reader.readString(); // critical options
 	}
 
 	private static List<String> principalsOf(byte[] certBlob) {

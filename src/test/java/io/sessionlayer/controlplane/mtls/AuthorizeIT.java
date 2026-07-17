@@ -125,6 +125,28 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(searchIds(dim(sessionId, q -> q.scopeGrants(List.of(labelScope("env", "staging")))))).isEmpty();
 	}
 
+	// F-audit-ip-inet-abbrev-1: "16909060" passes InetAddress's inet_aton-style
+	// parse but Postgres ::inet REJECTS it; the strict auditableIp validator drops
+	// it to NULL so the best-effort DENY audit INSERT does not violate the
+	// source_ip
+	// CHECK and the decision-log row is NOT lost (FR-AUD-7).
+	@Test
+	void denyWithNonInetSourceIpStillWritesTheDecisionRow() {
+		String identity = "denyip-" + unique();
+		UUID nodeId = seedProdNode(); // no allow seeded → NO_MATCHING_ALLOW deny
+		EnrolledGateway gateway = enroll("gw-denyip-" + unique());
+
+		AuthorizeResponse response = authorize(gateway,
+				request(identity, nodeId, "deploy", "16909060", UUID.randomUUID()));
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_DENY);
+
+		AuditEvent deny = auditStore.search(new AuditQuery(null, identity, "authz.decision", "denied", null, null, null,
+				null, null, null, null, Map.of(), null, List.of(), null, 50)).block().items().stream().findFirst()
+				.orElseThrow();
+		assertThat(deny.sourceIp()).isNull(); // dropped from the column (not a ::inet literal)
+		assertThat(deny.detail().get("source_ip").stringValue()).isEqualTo("16909060"); // forensics retained in detail
+	}
+
 	private List<UUID> searchIds(AuditQuery query) {
 		return auditStore.search(query).block().items().stream().map(AuditEvent::id).toList();
 	}

@@ -121,6 +121,17 @@ class JitAuthorizeIT extends AbstractMtlsIT {
 		assertThat(chain).allSatisfy(e -> assertThat(e.correlationId()).isEqualTo(grant.id()));
 		assertThat(chain.stream().map(AuditEvent::action).toList()).contains("jit.requested", "jit.approved",
 				"jit.activated", "authz.decision", "session.terminate");
+
+		// F-audit-chainscope-1: a node-label-scoped auditor (env=prod) reconstructs the
+		// WHOLE chain by correlationId — not just the connect — now that every producer
+		// stamps node_labels. (Before the fix, NULL @> '{"env":"prod"}' dropped every
+		// non-connect event.)
+		ObjectNode envScope = JSON.objectNode();
+		envScope.set("node_labels", JSON.objectNode().put("env", "prod"));
+		List<AuditEvent> scoped = auditStore.search(new AuditQuery(null, null, null, null, null, null, null, null, null,
+				null, null, Map.of(), grant.id(), List.of(envScope), null, 100)).block().items();
+		assertThat(scoped.stream().map(AuditEvent::action).toList()).contains("jit.requested", "jit.approved",
+				"authz.decision", "session.terminate");
 	}
 
 	@Test

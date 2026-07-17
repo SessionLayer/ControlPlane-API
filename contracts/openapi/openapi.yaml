@@ -5340,6 +5340,13 @@ components:
           format: uuid
         sourceIp:
           type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: The session's capability snapshot (FR-AUD-8 search dimension).
+        nodeLabels:
+          $ref: '#/components/schemas/LabelMap'
         detail:
           $ref: '#/components/schemas/Selector'
       additionalProperties: false

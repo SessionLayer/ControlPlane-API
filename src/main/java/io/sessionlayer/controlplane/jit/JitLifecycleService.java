@@ -122,9 +122,10 @@ public class JitLifecycleService {
 	}
 
 	private Mono<JitRequest> rejectSubmit(String requester, UUID targetNodeId, String note) {
-		return audit
-				.record(AuditRecord.builder(requester, null, "jit.requested", "denied").node(targetNodeId)
-						.detail(detail("reason", note)).accessModel(MODEL_JIT).build())
+		return nodeLabels(targetNodeId)
+				.flatMap(labels -> audit
+						.record(AuditRecord.builder(requester, null, "jit.requested", "denied").node(targetNodeId)
+								.detail(detail("reason", note)).accessModel(MODEL_JIT).nodeLabels(labels).build()))
 				.then(Mono.error(new JitException(JitException.Reason.NOT_REQUESTABLE, NOT_REQUESTABLE_MSG)));
 	}
 
@@ -418,12 +419,25 @@ public class JitLifecycleService {
 	// it
 	// authorizes stamps the same value (its ssh_session.jit_request_id), so one
 	// correlation_id search returns requested → approved → connect → run → replay.
+	// The node-label snapshot is stamped too so a node-label-scoped auditor sees
+	// the
+	// approval events, not just the connect (FR-AUD-8, F-audit-chainscope-1).
 	private Mono<Void> auditTransition(JitRequest request, String action, String outcome, Map<String, String> detail) {
 		Map<String, String> full = new HashMap<>(detail);
 		full.put("state", request.state());
 		full.put("jit_request_id", request.id().toString());
-		return audit.record(AuditRecord.builder(request.requester(), request.principal(), action, outcome)
-				.node(request.targetNodeId()).detail(full).accessModel(MODEL_JIT).correlationId(request.id()).build());
+		return nodeLabels(request.targetNodeId()).flatMap(labels -> audit.record(AuditRecord
+				.builder(request.requester(), request.principal(), action, outcome).node(request.targetNodeId())
+				.detail(full).accessModel(MODEL_JIT).nodeLabels(labels).correlationId(request.id()).build()));
+	}
+
+	// The target node's label snapshot for an audit event (one read; empty when the
+	// node is absent — an unknown-node reject still audits with no labels).
+	private Mono<Map<String, String>> nodeLabels(UUID nodeId) {
+		if (nodeId == null) {
+			return Mono.just(Map.of());
+		}
+		return nodes.findById(nodeId).map(node -> labelsOf(node.resolvedLabels())).defaultIfEmpty(Map.of());
 	}
 
 	private static Map<String, String> stateDetail(JitRequest request) {

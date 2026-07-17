@@ -225,6 +225,24 @@ class AuditEventSearchIT extends AbstractConfigApiIT {
 		assertThat(getStatus(none, event.id())).isEqualTo(403);
 	}
 
+	// FR-AUD-8 completeness: an auditor can filter by capability/node-label, so a
+	// returned event must also PROJECT them (not just source_ip/correlation_id).
+	@Test
+	void returnedEventProjectsCapabilitiesAndNodeLabels() {
+		UUID run = UUID.randomUUID();
+		String tag = run.toString().substring(0, 8);
+		seed("u-" + tag, null, "proj.dims", "success", run, null, null, null, "standing", List.of("shell", "sftp"),
+				labels("env", "prod"), T3);
+
+		String token = tokenWith("svc-audit-proj-" + run, PlatformPermissions.AUDIT_READ);
+		JsonNode item = items(query(token, "correlationId", run.toString())).get(0);
+
+		List<String> caps = new ArrayList<>();
+		item.get("capabilities").forEach(c -> caps.add(c.asString()));
+		assertThat(caps).containsExactlyInAnyOrder("shell", "sftp");
+		assertThat(item.get("nodeLabels").get("env").asString()).isEqualTo("prod");
+	}
+
 	@Test
 	void correlatedStreamReconstructsApproveConnectRunReplay() {
 		// The primary correlation key in this codebase is session_id — connect/run/

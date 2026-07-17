@@ -175,7 +175,25 @@ public class AuditEventController implements AuditEventsApi {
 		resource.setNodeId(event.nodeId());
 		resource.setCorrelationId(event.correlationId());
 		resource.setSourceIp(event.sourceIp());
+		// FR-AUD-8 completeness: expose the capability + node-label dimensions the
+		// auditor can already filter on, so a returned event is readable, not just
+		// searchable (access_model remains in detail).
+		resource.setCapabilities(event.capabilities());
+		resource.setNodeLabels(labelMap(event.nodeLabels()));
 		resource.setDetail(ApiConversions.toMap(objectMapper, event.detail()));
 		return resource;
+	}
+
+	private static Map<String, String> labelMap(JsonNode node) {
+		if (node == null || !node.isObject()) {
+			return null;
+		}
+		Map<String, String> labels = new LinkedHashMap<>();
+		for (Map.Entry<String, JsonNode> entry : node.properties()) {
+			if (entry.getValue() != null && entry.getValue().isString()) {
+				labels.put(entry.getKey(), entry.getValue().stringValue());
+			}
+		}
+		return labels;
 	}
 }

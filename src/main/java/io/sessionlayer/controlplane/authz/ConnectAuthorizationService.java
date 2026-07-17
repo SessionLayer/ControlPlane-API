@@ -303,13 +303,12 @@ public class ConnectAuthorizationService {
 					policy == null ? null : policy.id(), policy == null ? null : policy.name(), request.sourceIp(),
 					node.id(), "breakglass_token:" + token.id(), now);
 			Mono<BreakglassActivation> persisted = tx.transactional(breakglassActivations.save(activation)
-					.flatMap(saved -> audit
-							.record(AuditRecord
-									.builder(request.identity(), request.requestedPrincipal(), "breakglass.activation",
-											"success")
-									.session(sessionId).node(node.id()).detail(activationDetail(saved))
-									.sourceIp(auditableIp(request.sourceIp())).accessModel(MODEL_BREAKGLASS)
-									.correlationId(saved.id()).build())
+					.flatMap(saved -> audit.record(AuditRecord
+							.builder(request.identity(), request.requestedPrincipal(), "breakglass.activation",
+									"success")
+							.session(sessionId).node(node.id()).detail(activationDetail(saved))
+							.sourceIp(auditableIp(request.sourceIp())).accessModel(MODEL_BREAKGLASS)
+							.nodeLabels(labelsOf(node.resolvedLabels())).correlationId(saved.id()).build())
 							.thenReturn(saved)));
 			// The high-priority alert already fired at authentication (ResolveBreakglass*),
 			// so this path does NOT re-alert; the persisted activation is the durable,
@@ -606,11 +605,14 @@ public class ConnectAuthorizationService {
 		});
 	}
 
-	// source_ip carries a DB CHECK (is_ip_or_cidr); a value that is not a numeric
-	// IP literal is dropped from the COLUMN (kept in detail for forensics) so a
-	// malformed source can never fail the audit insert and roll back an allow.
+	// source_ip carries a DB CHECK (is_ip_or_cidr == ::inet); a value that ::inet
+	// would reject is dropped from the COLUMN (kept in detail for forensics) so a
+	// malformed source can never fail the audit insert — which on the allow path
+	// would roll the connect back to a fail-closed deny, and on the deny path would
+	// lose the decision-log row. AuditSourceIp is strict AND non-resolving (no DNS
+	// on the event loop).
 	private static String auditableIp(String sourceIp) {
-		return sourceIp != null && Cidrs.isAddress(sourceIp) ? sourceIp : null;
+		return AuditSourceIp.isCanonicalLiteral(sourceIp) ? sourceIp : null;
 	}
 
 	private static String actor(UUID callerGatewayId) {

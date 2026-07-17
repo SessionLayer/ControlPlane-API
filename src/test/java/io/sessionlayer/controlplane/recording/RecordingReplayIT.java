@@ -91,6 +91,9 @@ class RecordingReplayIT extends AbstractRecordingIT {
 			assertThat(e.action()).isEqualTo("recording.replay");
 			assertThat(e.correlationId()).isEqualTo(sessionId);
 			assertThat(e.accessModel()).isEqualTo("standing");
+			// F-audit-chainscope-1: the node-label snapshot is stamped so a label-scoped
+			// auditor's correlation_id search returns the replay, not just the connect.
+			assertThat(e.nodeLabels().get("env").stringValue()).isEqualTo("prod");
 		});
 	}
 
