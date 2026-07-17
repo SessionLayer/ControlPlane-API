@@ -68,11 +68,11 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 				request.getIdentityGroupsList(), parseUuid(request.getNodeId()), blankToNull(request.getNodeName()),
 				blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
 				parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()));
-		// Establishment SLO (NFR-4) times the CP machine work; the span (§14) makes it a
+		// Establishment SLO (NFR-4) times the CP machine work; the span (§14) makes it
+		// a
 		// child of the Gateway root. Both carry correlation only — never content.
-		Mono<AuthorizeResponse> result = tracing
-				.traceAuthorize(traceParent, blankToNull(request.getSessionId()), blankToNull(request.getNodeId()),
-						metrics.timeEstablishment(decision))
+		Mono<AuthorizeResponse> result = tracing.traceAuthorize(traceParent, blankToNull(request.getSessionId()),
+				blankToNull(request.getNodeId()), metrics.timeEstablishment(decision))
 				.map(AuthorizationService::toResponse);
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "Authorize");
 	}

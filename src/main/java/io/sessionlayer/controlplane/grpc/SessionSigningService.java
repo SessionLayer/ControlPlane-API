@@ -51,8 +51,8 @@ public class SessionSigningService extends SessionSigningGrpc.SessionSigningImpl
 		String presentedFingerprint = CertificateFingerprints.sha256Hex(peer.certificate());
 		io.opentelemetry.context.Context traceParent = CpTracing.OTEL_PARENT.get();
 		String sessionId = request.hasContext() ? request.getContext().getSessionId() : null;
-		Mono<SignedInnerCert> signed = Mono.fromCallable(() -> toContext(request)).flatMap(
-				context -> signing.sign(peer.gatewayId(), presentedFingerprint, request.getSessionToken(),
+		Mono<SignedInnerCert> signed = Mono.fromCallable(() -> toContext(request))
+				.flatMap(context -> signing.sign(peer.gatewayId(), presentedFingerprint, request.getSessionToken(),
 						request.getSubjectPublicKey().toByteArray(), context));
 		Mono<SignSessionCertificateResponse> result = tracing
 				.traceCertSign(traceParent, "session", sessionId, metrics.timeCertSign("session", signed))

@@ -56,8 +56,7 @@ public class TracingConfiguration {
 			@Value("${management.otlp.tracing.export.enabled:false}") boolean exportEnabled,
 			@Value("${management.tracing.sampling.probability:1.0}") double sampleProbability,
 			ObjectProvider<SpanProcessor> extraProcessors) {
-		Resource resource = Resource.getDefault()
-				.merge(Resource.create(Attributes.of(SERVICE_NAME, serviceName)));
+		Resource resource = Resource.getDefault().merge(Resource.create(Attributes.of(SERVICE_NAME, serviceName)));
 		// parentBased: honour the Gateway root's sampling decision when it propagates
 		// one; the ratio only governs a CP-ROOTED span (an RPC with no traceparent).
 		SdkTracerProviderBuilder tracerProvider = SdkTracerProvider.builder().setResource(resource)
@@ -65,7 +64,8 @@ public class TracingConfiguration {
 		if (exportEnabled) {
 			OtlpTraceExporter.forEndpoint(otlpEndpoint).ifPresentOrElse(
 					exporter -> tracerProvider.addSpanProcessor(BatchSpanProcessor.builder(exporter).build()),
-					() -> LOG.warn("OTLP trace export enabled but no management.otlp.tracing.endpoint set — exporter off"));
+					() -> LOG.warn(
+							"OTLP trace export enabled but no management.otlp.tracing.endpoint set — exporter off"));
 		} else {
 			LOG.info("OTLP trace exporter disabled (management.otlp.tracing.export.enabled=false); "
 					+ "spans are created but not exported off-box");

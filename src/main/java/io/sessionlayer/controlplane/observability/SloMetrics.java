@@ -47,12 +47,17 @@ public class SloMetrics {
 		this.registry = registry;
 	}
 
-	/** Time the CP-side session-establishment path (the {@code Authorize} machine work). */
+	/**
+	 * Time the CP-side session-establishment path (the {@code Authorize} machine
+	 * work).
+	 */
 	public Mono<ConnectDecision> timeEstablishment(Mono<ConnectDecision> source) {
 		return Mono.defer(() -> {
 			long start = System.nanoTime();
-			return source.doOnNext(decision -> recordEstablishment(start, decision.allowed() ? "allow" : "deny",
-					modelOf(decision))).doOnError(error -> recordEstablishment(start, OUTCOME_ERROR, "none"))
+			return source
+					.doOnNext(decision -> recordEstablishment(start, decision.allowed() ? "allow" : "deny",
+							modelOf(decision)))
+					.doOnError(error -> recordEstablishment(start, OUTCOME_ERROR, "none"))
 					.doOnCancel(() -> recordEstablishment(start, "cancelled", "none"));
 		});
 	}

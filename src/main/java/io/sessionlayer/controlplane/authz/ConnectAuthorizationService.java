@@ -397,8 +397,8 @@ public class ConnectAuthorizationService {
 							sourceIp))
 					.flatMap(sessionToken -> recordingTokens
 							.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, sourceIp)
-							.flatMap(recordingToken -> audit.record(auditRecord).thenReturn(
-									ConnectDecision.allow(signed, sessionToken, recordingToken, nodeConnection, trace))));
+							.flatMap(recordingToken -> audit.record(auditRecord).thenReturn(ConnectDecision
+									.allow(signed, sessionToken, recordingToken, nodeConnection, trace))));
 			return tx.transactional(allowed);
 		});
 	}

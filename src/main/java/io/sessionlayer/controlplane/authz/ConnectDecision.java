@@ -13,13 +13,15 @@ import java.util.UUID;
  * <p>
  * {@link #trace} carries the non-content correlation the {@code cp.authorize}
  * span + the establishment SLO metric stamp (access model, node id, and the
- * {@code correlation_id} pivot to the audit/recording chain — never any content).
- * It is present on allow and null on deny.
+ * {@code correlation_id} pivot to the audit/recording chain — never any
+ * content). It is present on allow and null on deny.
  */
 public record ConnectDecision(boolean allowed, SignedDecisionContext signedContext, String sessionToken,
 		String recordingToken, NodeConnectionInfo nodeConnection, TraceInfo trace) {
 
-	/** Safe span/metric correlation for an allow (IDs + the access-model enum only). */
+	/**
+	 * Safe span/metric correlation for an allow (IDs + the access-model enum only).
+	 */
 	public record TraceInfo(String accessModel, UUID nodeId, UUID correlationId) {
 	}
 

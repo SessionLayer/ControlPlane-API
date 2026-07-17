@@ -66,12 +66,18 @@ public final class CpTracing {
 		this.propagator = openTelemetry.getPropagators().getTextMapPropagator();
 	}
 
-	/** Extract the Gateway's {@code traceparent}/{@code tracestate} from gRPC metadata. */
+	/**
+	 * Extract the Gateway's {@code traceparent}/{@code tracestate} from gRPC
+	 * metadata.
+	 */
 	public Context extractParent(Metadata headers) {
 		return propagator.extract(Context.root(), headers, METADATA_GETTER);
 	}
 
-	/** Wrap the connect decision in {@code cp.authorize}, correlated by session/correlation id. */
+	/**
+	 * Wrap the connect decision in {@code cp.authorize}, correlated by
+	 * session/correlation id.
+	 */
 	public Mono<ConnectDecision> traceAuthorize(Context parent, String sessionId, String requestNodeId,
 			Mono<ConnectDecision> source) {
 		Span span = tracer.spanBuilder(CP_AUTHORIZE).setSpanKind(SpanKind.SERVER).setParent(orRoot(parent)).startSpan();
@@ -81,7 +87,10 @@ public final class CpTracing {
 				.doFinally(signal -> span.end());
 	}
 
-	/** Wrap a certificate signing (session inner cert or gateway host cert) in {@code cp.cert_sign}. */
+	/**
+	 * Wrap a certificate signing (session inner cert or gateway host cert) in
+	 * {@code cp.cert_sign}.
+	 */
 	public <T> Mono<T> traceCertSign(Context parent, String kind, String sessionId, Mono<T> source) {
 		Span span = tracer.spanBuilder(CP_CERT_SIGN).setSpanKind(SpanKind.SERVER).setParent(orRoot(parent)).startSpan();
 		span.setAttribute(CERT_KIND, kind);

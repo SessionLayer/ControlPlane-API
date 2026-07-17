@@ -15,9 +15,9 @@ import reactor.core.publisher.Mono;
  * short TTL so the probe never hammers the datastore.
  *
  * <p>
- * Like {@code WormHealthIndicator} it does <b>not</b> gate readiness by default:
- * a session-CA rotation gap is serious, but deregistering every CP (auth /
- * RBAC / audit-query too) on it would defeat incident response, and the
+ * Like {@code WormHealthIndicator} it does <b>not</b> gate readiness by
+ * default: a session-CA rotation gap is serious, but deregistering every CP
+ * (auth / RBAC / audit-query too) on it would defeat incident response, and the
  * availability <i>metric</i> ({@code sessionlayer.ca.signer}) is the SLI that
  * alerts. An operator can opt in by adding {@code caSigner} to
  * {@code management.endpoint.health.group.readiness.include}, or disable this
@@ -45,7 +45,8 @@ public class CaSignerHealthIndicator implements ReactiveHealthIndicator {
 			return Mono.just(snapshot);
 		}
 		return signers.activeSigner("session").thenReturn(Health.up().build())
-				.onErrorResume(error -> Mono.just(Health.outOfService().withDetail("caSigner", "no active signer").build()))
+				.onErrorResume(
+						error -> Mono.just(Health.outOfService().withDetail("caSigner", "no active signer").build()))
 				.doOnNext(health -> {
 					this.cached = health;
 					this.cachedUntilNanos = System.nanoTime() + CACHE_TTL.toNanos();
