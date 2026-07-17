@@ -111,6 +111,23 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
+		<!-- ============ OpenTelemetry distributed tracing (S21 Part C, §14) ============ -->
+		<!--
+		  One trace stock-client -> Gateway -> CP (authorize + cert-sign) -> node,
+		  W3C-context-propagated over the CP<->GW gRPC plane (OTEL-CONTRACT). Versions
+		  are Boot-managed (spring-boot-dependencies imports the micrometer-tracing +
+		  opentelemetry BOMs) — do NOT hand-pin. The OTLP exporter is OFF unless
+		  management.otlp.tracing.endpoint is set (see application.yml); with no endpoint
+		  only local Logback runs, unchanged.
+		-->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-tracing-bridge-otel</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-exporter-otlp</artifactId>
+		</dependency>
 		<!-- jakarta.validation used by the OpenAPI-generated request/response models. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
