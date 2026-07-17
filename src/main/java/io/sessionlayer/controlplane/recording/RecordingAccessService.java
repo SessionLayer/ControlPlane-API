@@ -2,6 +2,7 @@ package io.sessionlayer.controlplane.recording;
 
 import io.r2dbc.spi.Row;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
@@ -157,7 +158,7 @@ public class RecordingAccessService {
 						ApiProblemException.conflict("recording is not replayable (status " + ref.status() + ")"));
 			}
 			return recordingStore.presignDownload(ref.objectKey(), properties.getSignedUrlTtl())
-					.flatMap(access -> auditAccess(subject, ref, session, auditAction).thenReturn(access));
+					.flatMap(access -> auditAccess(subject, ref, session, labels, auditAction).thenReturn(access));
 		});
 	}
 
@@ -169,14 +170,19 @@ public class RecordingAccessService {
 				.defaultIfEmpty(Map.of());
 	}
 
-	private Mono<Void> auditAccess(PlatformSubject subject, RecordingRef ref, SshSession session, String action) {
+	private Mono<Void> auditAccess(PlatformSubject subject, RecordingRef ref, SshSession session,
+			Map<String, String> nodeLabels, String action) {
 		Map<String, String> detail = new LinkedHashMap<>();
 		detail.put("identity", session.identity());
 		if (ref.wormMode() != null) {
 			detail.put("worm_mode", ref.wormMode());
 		}
-		return audit.record(subject.identity(), ref.id().toString(), action, "success", ref.sessionId(),
-				session.nodeId(), detail);
+		// Replay/export inherit the session's access model, node-label snapshot and
+		// FR-AUD-9 correlation key, so a (node-label-scoped) correlation_id search
+		// reconstructs the chain through to the replay — not just the connect event.
+		return audit.record(AuditRecord.builder(subject.identity(), ref.id().toString(), action, "success")
+				.session(ref.sessionId()).node(session.nodeId()).detail(detail).accessModel(session.accessModel())
+				.nodeLabels(nodeLabels).correlationId(session.correlationId()).build());
 	}
 
 	private Mono<RecordingRef> loadRef(UUID recordingId) {

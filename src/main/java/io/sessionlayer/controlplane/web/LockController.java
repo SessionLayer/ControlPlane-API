@@ -3,6 +3,7 @@ package io.sessionlayer.controlplane.web;
 import io.sessionlayer.controlplane.api.LocksApi;
 import io.sessionlayer.controlplane.api.model.CreateLockRequest;
 import io.sessionlayer.controlplane.api.model.LockList;
+import io.sessionlayer.controlplane.api.model.LockMode;
 import io.sessionlayer.controlplane.api.model.LockResource;
 import io.sessionlayer.controlplane.api.model.LockTarget;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
@@ -71,7 +72,9 @@ public class LockController implements LocksApi {
 			Integer ttlSeconds = LockIngestValidation.normalizeTtl(req.getTtlSeconds());
 			Instant now = Instant.now();
 			Instant expiresAt = ttlSeconds == null ? null : now.plusSeconds(ttlSeconds);
-			AccessLock lock = AccessLock.create(selector, "strict", ttlSeconds, expiresAt, req.getReason(),
+			// Absent mode defaults to strict (backward-compatible with pre-mode clients).
+			String mode = req.getMode() == null ? "strict" : req.getMode().getValue();
+			AccessLock lock = AccessLock.create(selector, mode, ttlSeconds, expiresAt, req.getReason(),
 					subject.identity());
 			Map<String, String> detail = new HashMap<>();
 			detail.put("target", LockIngestValidation.summarize(selector));
@@ -125,6 +128,7 @@ public class LockController implements LocksApi {
 	private static LockResource toResource(AccessLock lock) {
 		LockResource resource = new LockResource(lock.id(), toApiTarget(lock.targetSelector()), lock.reason(),
 				toOffset(lock.createdAt()));
+		resource.setMode(lock.mode() == null ? LockMode.STRICT : LockMode.fromValue(lock.mode()));
 		resource.setExpiresAt(lock.expiresAt() == null ? null : toOffset(lock.expiresAt()));
 		resource.setCreatedBy(lock.createdBy());
 		return resource;

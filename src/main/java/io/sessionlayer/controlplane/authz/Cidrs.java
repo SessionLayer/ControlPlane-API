@@ -53,14 +53,15 @@ public final class Cidrs {
 	private static byte[] address(String literal) {
 		String trimmed = literal.trim();
 		// Reject hostnames explicitly: only numeric literals are valid here, so a
-		// value that is not a literal must fail closed rather than trigger a DNS
-		// lookup (which InetAddress.getByName would do).
+		// value that is not a literal must fail closed. InetAddress.ofLiteral parses an
+		// IP literal WITHOUT any name lookup (JDK 22+) — unlike getByName, which would
+		// do a BLOCKING DNS resolution for a non-literal on the reactive event loop.
 		if (!isNumericLiteral(trimmed)) {
 			throw new IllegalArgumentException("not a numeric IP literal: " + literal);
 		}
 		try {
-			return InetAddress.getByName(trimmed).getAddress();
-		} catch (Exception malformed) {
+			return InetAddress.ofLiteral(trimmed).getAddress();
+		} catch (RuntimeException malformed) {
 			throw new IllegalArgumentException("malformed IP literal: " + literal, malformed);
 		}
 	}

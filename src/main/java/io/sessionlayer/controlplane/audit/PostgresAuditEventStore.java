@@ -72,15 +72,15 @@ public class PostgresAuditEventStore implements AuditEventStore {
 	}
 
 	@Override
-	public Mono<Void> record(String actor, String subject, String action, String outcome, UUID sessionId, UUID nodeId,
-			Map<String, String> detail) {
-		return insert(actor, subject, action, outcome, sessionId, nodeId, detailNode(detail, null, null));
+	public Mono<Void> record(AuditRecord record) {
+		return insert(record, detailNode(record.detail(), null, null));
 	}
 
 	@Override
 	public Mono<Void> recordChange(String actor, String subject, String action, Map<String, String> detail,
 			Object before, Object after) {
-		return insert(actor, subject, action, "success", null, null, detailNode(detail, before, after));
+		return insert(AuditRecord.of(actor, subject, action, "success", null, null, detail),
+				detailNode(detail, before, after));
 	}
 
 	private ObjectNode detailNode(Map<String, String> detail, Object before, Object after) {
@@ -97,13 +97,25 @@ public class PostgresAuditEventStore implements AuditEventStore {
 		return node;
 	}
 
-	private Mono<Void> insert(String actor, String subject, String action, String outcome, UUID sessionId, UUID nodeId,
-			ObjectNode detailNode) {
+	// A node-label snapshot is stored as a jsonb OBJECT; an absent/empty map stays
+	// null (matches the immortal null history + the "no labels known" deny path)
+	// rather than an empty object, so a label-scoped auditor never matches it.
+	private ObjectNode labelsNode(Map<String, String> labels) {
+		if (labels == null || labels.isEmpty()) {
+			return null;
+		}
+		ObjectNode node = objectMapper.createObjectNode();
+		labels.forEach(node::put);
+		return node;
+	}
+
+	private Mono<Void> insert(AuditRecord rec, ObjectNode detailNode) {
 		// Truncate to microseconds so the value hashed equals the value that
 		// round-trips from the timestamptz column (the chain must recompute exactly).
 		Instant occurredAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
-		AuditEvent event = AuditEvent.create(occurredAt, actor, subject, action, outcome, null, sessionId, nodeId, null,
-				null, null, null, detailNode);
+		AuditEvent event = AuditEvent.create(occurredAt, rec.actor(), rec.subject(), rec.action(), rec.outcome(),
+				rec.correlationId(), rec.sessionId(), rec.nodeId(), labelsNode(rec.nodeLabels()), rec.sourceIp(),
+				rec.accessModel(), rec.capabilities(), detailNode);
 		Mono<AuditEvent> chainedInsert = db.sql("SELECT pg_advisory_xact_lock(:k)").bind("k", CHAIN_LOCK).fetch()
 				.rowsUpdated()
 				.then(db.sql(LATEST_HASH).map((row, meta) -> row.get("record_hash", String.class)).first()

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.grpc.v1.Lock;
+import io.sessionlayer.controlplane.grpc.v1.LockMode;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,28 @@ class LockCodecTest {
 	void nullExpiryMapsToZero() {
 		AccessLock lock = AccessLock.create(JSON.objectNode().put("all", true), "strict", null, null, "x", "admin");
 		assertThat(LockCodec.toProto(lock).getExpiresAtEpochSeconds()).isZero();
+	}
+
+	// S20: the additive `mode` field reaches the Gateway (previously absent → every
+	// pushed lock read as a teardown). A persisted lock is always strict or
+	// best_effort; an unknown/null value fails safe to STRICT.
+	@Test
+	void carriesBestEffortModeOnTheWire() {
+		AccessLock lock = AccessLock.create(JSON.objectNode().put("all", true), "best_effort", null, null, "soft",
+				"admin");
+		assertThat(LockCodec.toProto(lock).getMode()).isEqualTo(LockMode.LOCK_MODE_BEST_EFFORT);
+	}
+
+	@Test
+	void carriesStrictModeOnTheWire() {
+		AccessLock lock = AccessLock.create(JSON.objectNode().put("all", true), "strict", null, null, "hard", "admin");
+		assertThat(LockCodec.toProto(lock).getMode()).isEqualTo(LockMode.LOCK_MODE_STRICT);
+	}
+
+	@Test
+	void unknownModeFailsSafeToStrict() {
+		AccessLock lock = AccessLock.create(JSON.objectNode().put("all", true), null, null, null, "x", "admin");
+		assertThat(LockCodec.toProto(lock).getMode()).isEqualTo(LockMode.LOCK_MODE_STRICT);
 	}
 
 	@Test

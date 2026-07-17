@@ -3428,6 +3428,16 @@ components:
           type: boolean
           description: Whether the approving browser source correlated with the SSH source (§5.2).
       additionalProperties: false
+    LockMode:
+      type: string
+      title: Lock Mode
+      description: |
+        Lock enforcement mode (Design §8.3). `strict` tears down matching live
+        sessions and blocks new ones; `best_effort` blocks new issuance but does
+        not forcibly tear down an already-established session.
+      enum:
+        - strict
+        - best_effort
     LockTarget:
       type: object
       title: Lock Target
@@ -3478,6 +3488,9 @@ components:
         reason:
           type: string
           description: Operator/audit reason (mandatory). Never disclosed to the SSH user (§7.1).
+        mode:
+          $ref: '#/components/schemas/LockMode'
+          description: Enforcement mode; omitted defaults to `strict` (backward-compatible).
         ttlSeconds:
           type: integer
           format: int64
@@ -3499,6 +3512,9 @@ components:
           $ref: '#/components/schemas/LockTarget'
         reason:
           type: string
+        mode:
+          $ref: '#/components/schemas/LockMode'
+          description: Enforcement mode (`strict` or `best_effort`).
         expiresAt:
           type: string
           format: date-time
@@ -5324,6 +5340,13 @@ components:
           format: uuid
         sourceIp:
           type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: The session's capability snapshot (FR-AUD-8 search dimension).
+        nodeLabels:
+          $ref: '#/components/schemas/LabelMap'
         detail:
           $ref: '#/components/schemas/Selector'
       additionalProperties: false

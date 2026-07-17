@@ -8,6 +8,7 @@ import io.sessionlayer.controlplane.data.config.RoleBinding;
 import io.sessionlayer.controlplane.data.config.RoleBindingRepository;
 import io.sessionlayer.controlplane.data.config.ServiceAccount;
 import io.sessionlayer.controlplane.data.config.ServiceAccountRepository;
+import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.data.runtime.AuditEventRepository;
 import io.sessionlayer.controlplane.machine.MachineIdentityService;
@@ -43,6 +44,8 @@ class LockCrudIT extends AbstractAuthIT {
 	RoleBindingRepository bindings;
 	@Autowired
 	AuditEventRepository auditEvents;
+	@Autowired
+	AccessLockRepository accessLocks;
 
 	@Test
 	void createValidatesPersistsAndAudits() {
@@ -60,6 +63,30 @@ class LockCrudIT extends AbstractAuthIT {
 				.expectBody().jsonPath("$.locks").isArray();
 		List<AuditEvent> audit = auditEvents.findByActor(admin).collectList().block();
 		assertThat(audit).anySatisfy(e -> assertThat(e.action()).isEqualTo("lock.create"));
+	}
+
+	// S20 Part C: the additive `mode` field. An explicit best_effort is persisted +
+	// returned; an omitted mode defaults to strict (backward-compatible).
+	@Test
+	void createHonoursModeAndDefaultsToStrict() {
+		String admin = "svc-lock-mode-" + UUID.randomUUID();
+		String token = tokenWith(admin, PlatformPermissions.LOCK_WRITE, PlatformPermissions.LOCK_READ);
+
+		Map<?, ?> created = client.post().uri("/v1/locks").header("Authorization", "Bearer " + token)
+				.contentType(MediaType.APPLICATION_JSON)
+				.bodyValue(Map.of("target", Map.of("identities", List.of("carol")), "reason", "soft", "mode",
+						"best_effort"))
+				.exchange().expectStatus().isCreated().returnResult(Map.class).getResponseBody().blockFirst();
+		assertThat(created.get("mode")).isEqualTo("best_effort");
+		// Persisted through the DB, not just echoed back.
+		UUID id = UUID.fromString(created.get("id").toString());
+		assertThat(accessLocks.findById(id).block().mode()).isEqualTo("best_effort");
+
+		// Omitting mode defaults to strict.
+		client.post().uri("/v1/locks").header("Authorization", "Bearer " + token)
+				.contentType(MediaType.APPLICATION_JSON)
+				.bodyValue(Map.of("target", Map.of("identities", List.of("dave")), "reason", "hard")).exchange()
+				.expectStatus().isCreated().expectBody().jsonPath("$.mode").isEqualTo("strict");
 	}
 
 	@Test

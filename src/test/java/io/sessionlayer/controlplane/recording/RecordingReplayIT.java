@@ -81,8 +81,20 @@ class RecordingReplayIT extends AbstractRecordingIT {
 		// stays customer-key encrypted and the CP never decrypted it.
 		assertThat(fetch(signed.getUrl().toString())).isEqualTo(ciphertext);
 
+		// The replay event carries the session-scoped dimensions (S20): its
+		// correlation_id is the session's chain key (== the session id for this
+		// standing
+		// session), so a correlation_id search returns the replay alongside the
+		// connect.
 		List<AuditEvent> events = auditEvents.findByActor(svc).collectList().block();
-		assertThat(events).anySatisfy(e -> assertThat(e.action()).isEqualTo("recording.replay"));
+		assertThat(events).anySatisfy(e -> {
+			assertThat(e.action()).isEqualTo("recording.replay");
+			assertThat(e.correlationId()).isEqualTo(sessionId);
+			assertThat(e.accessModel()).isEqualTo("standing");
+			// F-audit-chainscope-1: the node-label snapshot is stamped so a label-scoped
+			// auditor's correlation_id search returns the replay, not just the connect.
+			assertThat(e.nodeLabels().get("env").stringValue()).isEqualTo("prod");
+		});
 	}
 
 	@Test

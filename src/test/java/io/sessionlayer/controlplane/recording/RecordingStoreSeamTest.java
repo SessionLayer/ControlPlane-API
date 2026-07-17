@@ -11,7 +11,9 @@ import static org.mockito.Mockito.when;
 import io.r2dbc.spi.Row;
 import io.r2dbc.spi.RowMetadata;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
+import io.sessionlayer.controlplane.audit.AuditEventStore.AuditRecord;
 import io.sessionlayer.controlplane.data.config.OperatorSettings;
+import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
 import io.sessionlayer.controlplane.data.runtime.RecordingRefRepository;
@@ -28,11 +30,13 @@ import java.util.List;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.r2dbc.core.RowsFetchSpec;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import tools.jackson.databind.node.JsonNodeFactory;
 
 /**
  * Proves the {@link RecordingStore} seam is real (owner requirement): the CP's
@@ -68,27 +72,34 @@ class RecordingStoreSeamTest {
 		return governanceRef(id, sessionId, objectKey).finalized(null, null, null, "finalized");
 	}
 
-	private SshSession session(UUID sessionId) {
+	private SshSession session(UUID sessionId, UUID nodeId) {
 		SshSession base = SshSession.create("alice", null, null, "deploy", null, null, "standing", List.of("shell"),
 				null, null, null, null, null, null, Instant.now());
-		return new SshSession(sessionId, base.identity(), null, null, base.principal(), null, null, base.accessModel(),
-				base.capabilities(), null, null, null, null, null, null, base.startedAt(), null, null, null, null,
-				null);
+		return new SshSession(sessionId, base.identity(), nodeId, null, base.principal(), null, null,
+				base.accessModel(), base.capabilities(), null, null, null, null, null, null, base.startedAt(), null,
+				null, null, null, null);
+	}
+
+	private Node nodeWithLabels(String key, String value) {
+		return Node.create("node-" + UUID.randomUUID(), null, JsonNodeFactory.instance.objectNode().put(key, value),
+				"agent", "active", "healthy", null, null);
 	}
 
 	@Test
 	void replayIssuesTheDoublesSignedUrlThroughTheInterface() {
 		UUID id = UUID.randomUUID();
 		UUID sessionId = UUID.randomUUID();
+		Node node = nodeWithLabels("env", "prod");
 		String objectKey = "recordings/" + sessionId + "/" + id + ".cast.enc";
 		store.seed(objectKey);
 		when(recordings.findById(id)).thenReturn(Mono.just(finalizedRef(id, sessionId, objectKey)));
-		when(sessions.findById(sessionId)).thenReturn(Mono.just(session(sessionId)));
+		when(sessions.findById(sessionId)).thenReturn(Mono.just(session(sessionId, node.id())));
+		when(nodes.findById(node.id())).thenReturn(Mono.just(node));
 		when(authorization.resolveScopeGrant(any(), any()))
 				.thenReturn(Mono.just(PlatformAuthorization.ScopeGrant.all()));
 		when(authorization.authorize(any(), any(), any()))
 				.thenReturn(Mono.just(new PlatformDecision(true, PlatformDecision.Reason.ALLOWED, null, null)));
-		when(audit.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(Mono.empty());
+		when(audit.record(any(AuditRecord.class))).thenReturn(Mono.empty());
 
 		PresignedAccess presigned = access.replay(admin, id).block();
 
@@ -96,8 +107,20 @@ class RecordingStoreSeamTest {
 		assertThat(presigned.method()).isEqualTo("GET");
 		long now = Instant.now().getEpochSecond();
 		assertThat(presigned.expiresAtEpochSeconds()).isBetween(now + 240, now + 360);
-		verify(audit).record(eq("admin"), eq(id.toString()), eq("recording.replay"), eq("success"), eq(sessionId),
-				any(), any());
+		// S20: the replay audit carries the session-scoped dimensions (correlation_id,
+		// access_model, node_labels) so a (node-label-scoped) correlation_id search
+		// reaches the replay — not just the connect (F-audit-chainscope-1).
+		ArgumentCaptor<AuditRecord> auditRecord = ArgumentCaptor.forClass(AuditRecord.class);
+		verify(audit).record(auditRecord.capture());
+		AuditRecord recorded = auditRecord.getValue();
+		assertThat(recorded.actor()).isEqualTo("admin");
+		assertThat(recorded.subject()).isEqualTo(id.toString());
+		assertThat(recorded.action()).isEqualTo("recording.replay");
+		assertThat(recorded.outcome()).isEqualTo("success");
+		assertThat(recorded.sessionId()).isEqualTo(sessionId);
+		assertThat(recorded.correlationId()).isEqualTo(sessionId); // standing session
+		assertThat(recorded.accessModel()).isEqualTo("standing");
+		assertThat(recorded.nodeLabels()).containsEntry("env", "prod");
 	}
 
 	@Test

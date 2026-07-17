@@ -15,9 +15,18 @@ import java.util.TreeSet;
  * (FR-CA-5): a short-lived user cert whose principal is the RBAC-resolved Linux
  * login, whose {@code key_id = session_id + identity} (so the node's own
  * {@code sshd} log records the human behind a shared account), backdated for
- * clock skew, with {@code source-address} pinned and only the granted
- * extensions added (default-deny; {@code agent-forward}/{@code x11} off unless
- * granted).
+ * clock skew, and only the granted extensions added (default-deny;
+ * {@code agent-forward}/{@code x11} off unless granted).
+ *
+ * <p>
+ * {@code source-address} is included only when a caller passes one, but the
+ * <b>node-facing production mint passes none</b>
+ * (F-inner-cert-source-address-1): the node validates {@code source-address}
+ * against the <b>Gateway's</b> peer IP (the inner-leg TCP source), not the SSH
+ * client's, so a client-IP pin would reject the valid cert on any multi-host /
+ * NAT deployment. Source-IP enforcement stays on the outer leg + the Authorize
+ * decision (§5.6, FR-AUTHZ-1). The param is retained for the signer's
+ * critical-option encoding tests.
  *
  * <p>
  * Session Three builds and proves this capability; the per-connection issuance

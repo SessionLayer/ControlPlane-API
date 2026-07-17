@@ -107,8 +107,14 @@ public class SessionCertificateService {
 		// login). key_id = session_id + identity (Design §12.2 / FR-CA-5).
 		String principal = token.principal();
 		Set<String> capabilities = new HashSet<>(token.capabilities());
+		// F-inner-cert-source-address-1: the node-facing inner cert carries NO
+		// source-address. The node validates a cert's source-address against the
+		// GATEWAY's peer IP (the inner leg's TCP source), not the SSH client's, so
+		// pinning the client IP here rejects the valid cert in any multi-host / NAT /
+		// bridged deployment. Source-IP enforcement lives on the OUTER leg + the
+		// Authorize decision (FR-AUTHZ-1, §5.6), which see the real client IP.
 		CertificateParameters params = CertificateProfiles.innerLegSessionCert(token.sessionId().toString(), principal,
-				principal, token.sourceAddress(), capabilities, serial(token.id()), Instant.now());
+				principal, null, capabilities, serial(token.id()), Instant.now());
 		OpenSshCertificate cert = signer.signCertificate(new CertificateRequest(subjectKey, params));
 		return new SignedInnerCert(cert.certificateLine(), cert.blob(), cert.keyId(),
 				params.validAfter().getEpochSecond(), params.validBefore().getEpochSecond());

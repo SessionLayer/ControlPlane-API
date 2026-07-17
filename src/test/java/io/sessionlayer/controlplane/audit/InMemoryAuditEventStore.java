@@ -30,13 +30,12 @@ public final class InMemoryAuditEventStore implements AuditEventStore {
 	private final JsonMapper mapper = JsonMapper.builder().build();
 
 	@Override
-	public synchronized Mono<Void> record(String actor, String subject, String action, String outcome, UUID sessionId,
-			UUID nodeId, Map<String, String> detail) {
+	public synchronized Mono<Void> record(AuditRecord rec) {
 		ObjectNode node = mapper.createObjectNode();
-		if (detail != null) {
-			detail.forEach(node::put);
+		if (rec.detail() != null) {
+			rec.detail().forEach(node::put);
 		}
-		return append(actor, subject, action, outcome, sessionId, nodeId, node);
+		return append(rec, node);
 	}
 
 	@Override
@@ -52,17 +51,26 @@ public final class InMemoryAuditEventStore implements AuditEventStore {
 		if (after != null) {
 			node.set("after", mapper.valueToTree(after));
 		}
-		return append(actor, subject, action, "success", null, null, node);
+		return append(AuditRecord.of(actor, subject, action, "success", null, null, detail), node);
 	}
 
-	private Mono<Void> append(String actor, String subject, String action, String outcome, UUID sessionId, UUID nodeId,
-			ObjectNode detail) {
+	private Mono<Void> append(AuditRecord rec, ObjectNode detail) {
 		Instant occurredAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
-		AuditEvent event = AuditEvent.create(occurredAt, actor, subject, action, outcome, null, sessionId, nodeId, null,
-				null, null, null, detail);
+		AuditEvent event = AuditEvent.create(occurredAt, rec.actor(), rec.subject(), rec.action(), rec.outcome(),
+				rec.correlationId(), rec.sessionId(), rec.nodeId(), labelsNode(rec.nodeLabels()), rec.sourceIp(),
+				rec.accessModel(), rec.capabilities(), detail);
 		String prevHash = events.isEmpty() ? AuditRecordHash.GENESIS : events.get(events.size() - 1).recordHash();
 		events.add(event.withChain(prevHash, AuditRecordHash.recordHash(prevHash, event)));
 		return Mono.empty();
+	}
+
+	private JsonNode labelsNode(Map<String, String> labels) {
+		if (labels == null || labels.isEmpty()) {
+			return null;
+		}
+		ObjectNode node = mapper.createObjectNode();
+		labels.forEach(node::put);
+		return node;
 	}
 
 	@Override

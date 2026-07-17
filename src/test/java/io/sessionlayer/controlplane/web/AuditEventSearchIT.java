@@ -203,6 +203,46 @@ class AuditEventSearchIT extends AbstractConfigApiIT {
 				.isForbidden();
 	}
 
+	// GET /v1/audit-events/{id} (implemented on main; not a 501): a scoped caller
+	// whose grant COVERS the event reads it (200); an absent id is an
+	// indistinguishable 404 for a permitted caller; no audit:read grant is 403.
+	@Test
+	void getByIdHonoursScopeAbsenceAndGrant() {
+		UUID run = UUID.randomUUID();
+		String tag = run.toString().substring(0, 8);
+		AuditEvent event = seed("u-" + tag, null, "scope.get", "success", run, null, null, null, null, null,
+				labels("env", "prod"), T3);
+
+		ObjectNode inScope = JSON.objectNode();
+		inScope.set("node_labels", JSON.objectNode().put("env", "prod"));
+		String scoped = scopedToken("svc-audit-getins-" + run, inScope, PlatformPermissions.AUDIT_READ);
+		assertThat(getStatus(scoped, event.id())).isEqualTo(200);
+
+		String all = tokenWith("svc-audit-getabsent-" + run, PlatformPermissions.AUDIT_READ);
+		assertThat(getStatus(all, UUID.randomUUID())).isEqualTo(404);
+
+		String none = tokenWith("svc-audit-getnograntget-" + run);
+		assertThat(getStatus(none, event.id())).isEqualTo(403);
+	}
+
+	// FR-AUD-8 completeness: an auditor can filter by capability/node-label, so a
+	// returned event must also PROJECT them (not just source_ip/correlation_id).
+	@Test
+	void returnedEventProjectsCapabilitiesAndNodeLabels() {
+		UUID run = UUID.randomUUID();
+		String tag = run.toString().substring(0, 8);
+		seed("u-" + tag, null, "proj.dims", "success", run, null, null, null, "standing", List.of("shell", "sftp"),
+				labels("env", "prod"), T3);
+
+		String token = tokenWith("svc-audit-proj-" + run, PlatformPermissions.AUDIT_READ);
+		JsonNode item = items(query(token, "correlationId", run.toString())).get(0);
+
+		List<String> caps = new ArrayList<>();
+		item.get("capabilities").forEach(c -> caps.add(c.asString()));
+		assertThat(caps).containsExactlyInAnyOrder("shell", "sftp");
+		assertThat(item.get("nodeLabels").get("env").asString()).isEqualTo("prod");
+	}
+
 	@Test
 	void correlatedStreamReconstructsApproveConnectRunReplay() {
 		// The primary correlation key in this codebase is session_id — connect/run/
