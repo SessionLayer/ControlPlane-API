@@ -80,7 +80,14 @@ public class SessionCertificateService {
 						denial -> audit
 								.record(callerGatewayId == null ? "unknown" : callerGatewayId.toString(), null,
 										"session.sign", "denied", null, null, Map.of("reason", denial.reason().name()))
-								.then(Mono.error(denial)));
+								.then(Mono.error(denial)))
+				// A signer-unavailable (NFR-3 fail-closed) is not a GatewayRequestException;
+				// audit it distinctly so a CA-availability incident is forensically visible.
+				.onErrorResume(CaSignerService.NoSignerAvailable.class,
+						unavailable -> audit
+								.record(callerGatewayId == null ? "unknown" : callerGatewayId.toString(), null,
+										"session.sign", "denied", null, null, Map.of("reason", "ca_unavailable"))
+								.then(Mono.error(unavailable)));
 	}
 
 	// M6: the caller's identity must be active AND the presented client cert must

@@ -16,6 +16,8 @@ import io.sessionlayer.controlplane.grpc.v1.NodeConnection;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
 import io.sessionlayer.controlplane.mtls.MtlsProperties;
+import io.sessionlayer.controlplane.observability.CpTracing;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -33,15 +35,23 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 
 	private final ConnectAuthorizationService authorization;
 	private final MtlsProperties properties;
+	private final CpTracing tracing;
+	private final SloMetrics metrics;
 
-	public AuthorizationService(ConnectAuthorizationService authorization, MtlsProperties properties) {
+	public AuthorizationService(ConnectAuthorizationService authorization, MtlsProperties properties, CpTracing tracing,
+			SloMetrics metrics) {
 		this.authorization = authorization;
 		this.properties = properties;
+		this.tracing = tracing;
+		this.metrics = metrics;
 	}
 
 	@Override
 	public void authorize(AuthorizeRequest request, StreamObserver<AuthorizeResponse> observer) {
 		MtlsPeer peer = MtlsContext.peer();
+		// Read the extracted trace parent synchronously on the gRPC thread (it lives in
+		// the gRPC Context, not the reactive chain that runs off it).
+		io.opentelemetry.context.Context traceParent = CpTracing.OTEL_PARENT.get();
 		// The mTLS-required tier guarantees a resolved peer, but never NPE if it isn't:
 		// a null caller fails closed to a generic deny in the service (missing input).
 		UUID caller = peer == null ? null : peer.gatewayId();
@@ -54,11 +64,15 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		// node_name (field 9) is server-side authoritative when set: the CP resolves it
 		// via findByName and ignores node_id (§2.6/§11; closes
 		// F-ha-connect-nodename-1).
-		Mono<AuthorizeResponse> result = authorization
-				.authorize(caller, request.getIdentity(), request.getIdentityGroupsList(),
-						parseUuid(request.getNodeId()), blankToNull(request.getNodeName()),
-						blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
-						parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()))
+		Mono<ConnectDecision> decision = authorization.authorize(caller, request.getIdentity(),
+				request.getIdentityGroupsList(), parseUuid(request.getNodeId()), blankToNull(request.getNodeName()),
+				blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
+				parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()));
+		// Establishment SLO (NFR-4) times the CP machine work; the span (§14) makes it
+		// a
+		// child of the Gateway root. Both carry correlation only — never content.
+		Mono<AuthorizeResponse> result = tracing.traceAuthorize(traceParent, blankToNull(request.getSessionId()),
+				blankToNull(request.getNodeId()), metrics.timeEstablishment(decision))
 				.map(AuthorizationService::toResponse);
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "Authorize");
 	}

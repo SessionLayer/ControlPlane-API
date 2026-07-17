@@ -110,7 +110,13 @@ public class GatewayHostCertificateService {
 							null, null, Map.of("principals", String.join(",", principals), "not_after",
 									Long.toString(notAfter.getEpochSecond())))
 							.thenReturn(cert));
-		});
+		})
+				// Signer-unavailable (NFR-3 fail-closed) is not a GatewayRequestException;
+				// audit it distinctly so a CA-availability incident is forensically visible.
+				.onErrorResume(CaSignerService.NoSignerAvailable.class,
+						unavailable -> audit.record(identity.name(), identity.name(), "gateway.host_cert.sign",
+								"denied", null, null, Map.of("reason", "ca_unavailable"))
+								.then(Mono.error(unavailable)));
 	}
 
 	private static IssuedHostCertificate mint(SshCertSigner signer, String gatewayName, ECPublicKey hostKey,

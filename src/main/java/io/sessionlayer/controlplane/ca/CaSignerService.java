@@ -3,6 +3,7 @@ package io.sessionlayer.controlplane.ca;
 import io.sessionlayer.controlplane.data.config.CaConfig;
 import io.sessionlayer.controlplane.data.config.CaConfigRepository;
 import io.sessionlayer.controlplane.data.runtime.CaKeyMaterialRepository;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -20,12 +21,14 @@ public class CaSignerService {
 	private final CaConfigRepository caConfigs;
 	private final CaKeyMaterialRepository caKeyMaterials;
 	private final LocalCaFactory localCaFactory;
+	private final SloMetrics metrics;
 
 	public CaSignerService(CaConfigRepository caConfigs, CaKeyMaterialRepository caKeyMaterials,
-			LocalCaFactory localCaFactory) {
+			LocalCaFactory localCaFactory, SloMetrics metrics) {
 		this.caConfigs = caConfigs;
 		this.caKeyMaterials = caKeyMaterials;
 		this.localCaFactory = localCaFactory;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -38,11 +41,32 @@ public class CaSignerService {
 		}
 	}
 
-	/** The signer for the currently-active CA of a kind, or a fail-closed error. */
+	/**
+	 * The signer for the currently-active CA of a kind, or a fail-closed error. A
+	 * real cert-sign request; the NFR-3 availability SLI is measured over the
+	 * {@code request} population.
+	 */
 	public Mono<SshCertSigner> activeSigner(String kind) {
+		return activeSigner(kind, SloMetrics.SOURCE_REQUEST);
+	}
+
+	/**
+	 * As {@link #activeSigner(String)} but attributing the availability sample to
+	 * {@code source} ({@code request} = a real sign, {@code probe} = the health
+	 * indicator poll) so the NFR-3 SLI is not diluted by the periodic probe.
+	 */
+	public Mono<SshCertSigner> activeSigner(String kind, String source) {
+		// NFR-3 availability SLI: whether an active signer could be obtained. A missing
+		// CA / key material is NoSignerAvailable ("unavailable" = fail-closed, not an
+		// error); anything else is "error". Client-input rejections never reach here.
 		return caConfigs.findByCaKindAndRotationState(kind, "active")
 				.switchIfEmpty(Mono.error(new NoSignerAvailable("no active " + kind + " CA (fail closed)")))
-				.flatMap(this::signerFor);
+				.flatMap(this::signerFor).doOnSuccess(signer -> {
+					if (signer != null) {
+						metrics.recordSignerOutcome(kind, source, "available");
+					}
+				}).doOnError(error -> metrics.recordSignerOutcome(kind, source,
+						error instanceof NoSignerAvailable ? "unavailable" : "error"));
 	}
 
 	/**

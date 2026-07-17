@@ -15,6 +15,7 @@ import io.sessionlayer.controlplane.mtls.AgentIdentityUri;
 import io.sessionlayer.controlplane.mtls.GatewayIdentityUri;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
+import io.sessionlayer.controlplane.observability.CpTracing;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.List;
@@ -61,9 +62,11 @@ public final class AuthInterceptor implements ServerInterceptor {
 			AgentIdentityGrpc.getEnrollAgentMethod().getFullMethodName());
 
 	private final X509TrustManager trustManager;
+	private final CpTracing tracing;
 
-	public AuthInterceptor(X509TrustManager trustManager) {
+	public AuthInterceptor(X509TrustManager trustManager, CpTracing tracing) {
 		this.trustManager = trustManager;
+		this.tracing = tracing;
 	}
 
 	@Override
@@ -78,7 +81,10 @@ public final class AuthInterceptor implements ServerInterceptor {
 			return new ServerCall.Listener<>() {
 			};
 		}
-		Context context = Context.current().withValue(MtlsContext.PEER, peer);
+		// Attach the Gateway's W3C trace context (§14) so the handler's cp.* span is a
+		// child of the Gateway root — one trace across the CP<->GW gRPC plane.
+		Context context = Context.current().withValue(MtlsContext.PEER, peer).withValue(CpTracing.OTEL_PARENT,
+				tracing.extractParent(headers));
 		return Contexts.interceptCall(context, call, headers, next);
 	}
 
