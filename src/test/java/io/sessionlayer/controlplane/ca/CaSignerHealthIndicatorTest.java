@@ -4,6 +4,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import io.sessionlayer.controlplane.ca.CaSignerService.NoSignerAvailable;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.health.contributor.Status;
 import reactor.core.publisher.Mono;
@@ -19,7 +20,7 @@ class CaSignerHealthIndicatorTest {
 	@Test
 	void reportsUpWhenASignerIsAvailable() {
 		CaSignerService signers = mock(CaSignerService.class);
-		when(signers.activeSigner("session")).thenReturn(Mono.just(mock(SshCertSigner.class)));
+		when(signers.activeSigner("session", SloMetrics.SOURCE_PROBE)).thenReturn(Mono.just(mock(SshCertSigner.class)));
 
 		StepVerifier.create(new CaSignerHealthIndicator(signers).health())
 				.assertNext(
@@ -30,7 +31,8 @@ class CaSignerHealthIndicatorTest {
 	@Test
 	void reportsOutOfServiceWhenSignerDown() {
 		CaSignerService signers = mock(CaSignerService.class);
-		when(signers.activeSigner("session")).thenReturn(Mono.error(new NoSignerAvailable("no active session CA")));
+		when(signers.activeSigner("session", SloMetrics.SOURCE_PROBE))
+				.thenReturn(Mono.error(new NoSignerAvailable("no active session CA")));
 
 		StepVerifier.create(new CaSignerHealthIndicator(signers).health())
 				.assertNext(health -> org.assertj.core.api.Assertions.assertThat(health.getStatus())
