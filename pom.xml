@@ -281,6 +281,27 @@
 			<artifactId>s3</artifactId>
 		</dependency>
 
+		<!-- ================= Observability: SLO metrics + hand-wired SDK (S21) === -->
+		<!--
+		  The OTel tracer deps (micrometer-tracing-bridge-otel + opentelemetry-exporter-
+		  otlp) are declared next to the actuator starter above (S21 Part C 1/2). Here:
+		    - opentelemetry-sdk              : the SdkTracerProvider we hand-wire in
+		                                       TracingConfiguration (Boot 4.1 does not
+		                                       auto-configure tracing on this classpath).
+		    - micrometer-registry-prometheus : /actuator/prometheus for the NFR-3/NFR-4
+		                                       SLO metrics (Part D).
+		  All versions are Boot-BOM-managed (opentelemetry-bom + micrometer BOMs) — not
+		  hand-pinned.
+		-->
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-sdk</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
+
 		<!-- ============================ Tooling =============================== -->
 		<dependency>
 			<groupId>org.projectlombok</groupId>
@@ -350,6 +371,12 @@
 			<groupId>net.jqwik</groupId>
 			<artifactId>jqwik</artifactId>
 			<version>${jqwik.version}</version>
+			<scope>test</scope>
+		</dependency>
+		<!-- In-memory span exporter for the trace-propagation + no-content-in-telemetry gate. -->
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-sdk-testing</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

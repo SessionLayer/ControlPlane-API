@@ -3,6 +3,7 @@ package io.sessionlayer.controlplane.ca;
 import io.sessionlayer.controlplane.data.config.CaConfig;
 import io.sessionlayer.controlplane.data.config.CaConfigRepository;
 import io.sessionlayer.controlplane.data.runtime.CaKeyMaterialRepository;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -20,12 +21,14 @@ public class CaSignerService {
 	private final CaConfigRepository caConfigs;
 	private final CaKeyMaterialRepository caKeyMaterials;
 	private final LocalCaFactory localCaFactory;
+	private final SloMetrics metrics;
 
 	public CaSignerService(CaConfigRepository caConfigs, CaKeyMaterialRepository caKeyMaterials,
-			LocalCaFactory localCaFactory) {
+			LocalCaFactory localCaFactory, SloMetrics metrics) {
 		this.caConfigs = caConfigs;
 		this.caKeyMaterials = caKeyMaterials;
 		this.localCaFactory = localCaFactory;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -40,9 +43,17 @@ public class CaSignerService {
 
 	/** The signer for the currently-active CA of a kind, or a fail-closed error. */
 	public Mono<SshCertSigner> activeSigner(String kind) {
+		// NFR-3 availability SLI: whether an active signer could be obtained. A missing
+		// CA / key material is NoSignerAvailable ("unavailable" = fail-closed, not an
+		// error); anything else is "error". Client-input rejections never reach here.
 		return caConfigs.findByCaKindAndRotationState(kind, "active")
 				.switchIfEmpty(Mono.error(new NoSignerAvailable("no active " + kind + " CA (fail closed)")))
-				.flatMap(this::signerFor);
+				.flatMap(this::signerFor).doOnSuccess(signer -> {
+					if (signer != null) {
+						metrics.recordSignerOutcome(kind, "available");
+					}
+				}).doOnError(error -> metrics.recordSignerOutcome(kind,
+						error instanceof NoSignerAvailable ? "unavailable" : "error"));
 	}
 
 	/**

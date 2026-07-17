@@ -14,6 +14,8 @@ import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
 import io.sessionlayer.controlplane.mtls.MtlsProperties;
+import io.sessionlayer.controlplane.observability.CpTracing;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -31,10 +33,15 @@ public class SessionSigningService extends SessionSigningGrpc.SessionSigningImpl
 
 	private final SessionCertificateService signing;
 	private final MtlsProperties properties;
+	private final CpTracing tracing;
+	private final SloMetrics metrics;
 
-	public SessionSigningService(SessionCertificateService signing, MtlsProperties properties) {
+	public SessionSigningService(SessionCertificateService signing, MtlsProperties properties, CpTracing tracing,
+			SloMetrics metrics) {
 		this.signing = signing;
 		this.properties = properties;
+		this.tracing = tracing;
+		this.metrics = metrics;
 	}
 
 	@Override
@@ -42,9 +49,13 @@ public class SessionSigningService extends SessionSigningGrpc.SessionSigningImpl
 			StreamObserver<SignSessionCertificateResponse> observer) {
 		MtlsPeer peer = MtlsContext.peer();
 		String presentedFingerprint = CertificateFingerprints.sha256Hex(peer.certificate());
-		Mono<SignSessionCertificateResponse> result = Mono.fromCallable(() -> toContext(request))
-				.flatMap(context -> signing.sign(peer.gatewayId(), presentedFingerprint, request.getSessionToken(),
-						request.getSubjectPublicKey().toByteArray(), context))
+		io.opentelemetry.context.Context traceParent = CpTracing.OTEL_PARENT.get();
+		String sessionId = request.hasContext() ? request.getContext().getSessionId() : null;
+		Mono<SignedInnerCert> signed = Mono.fromCallable(() -> toContext(request)).flatMap(
+				context -> signing.sign(peer.gatewayId(), presentedFingerprint, request.getSessionToken(),
+						request.getSubjectPublicKey().toByteArray(), context));
+		Mono<SignSessionCertificateResponse> result = tracing
+				.traceCertSign(traceParent, "session", sessionId, metrics.timeCertSign("session", signed))
 				.map(SessionSigningService::toResponse);
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "SignSessionCertificate");
 	}

@@ -6,6 +6,7 @@ import io.grpc.netty.NettyServerBuilder;
 import io.sessionlayer.controlplane.ca.mtls.InternalMtlsCaService;
 import io.sessionlayer.controlplane.ca.mtls.X509CaBackend;
 import io.sessionlayer.controlplane.grpc.AuthInterceptor;
+import io.sessionlayer.controlplane.observability.CpTracing;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
@@ -42,16 +43,19 @@ public class GrpcMtlsServer implements SmartLifecycle {
 	private final MtlsProperties properties;
 	private final InternalMtlsCaService mtlsCa;
 	private final List<BindableService> services;
+	private final CpTracing tracing;
 
 	private volatile Server server;
 	private volatile ExecutorService handlerExecutor;
 	private volatile int port = -1;
 	private volatile boolean running;
 
-	public GrpcMtlsServer(MtlsProperties properties, InternalMtlsCaService mtlsCa, List<BindableService> services) {
+	public GrpcMtlsServer(MtlsProperties properties, InternalMtlsCaService mtlsCa, List<BindableService> services,
+			CpTracing tracing) {
 		this.properties = properties;
 		this.mtlsCa = mtlsCa;
 		this.services = services;
+		this.tracing = tracing;
 	}
 
 	@Override
@@ -70,7 +74,7 @@ public class GrpcMtlsServer implements SmartLifecycle {
 			MtlsProperties.Server serverProps = properties.getServer();
 			MtlsServerContext context = MtlsServerContext.create(backend, serverProps.getHostnames(),
 					properties.getCertBackdate());
-			AuthInterceptor interceptor = new AuthInterceptor(context.trustManager());
+			AuthInterceptor interceptor = new AuthInterceptor(context.trustManager(), tracing);
 
 			// Bounded handler pool so a request flood can't spawn unbounded threads;
 			// the CPU-heavy crypto/DB steps are additionally offloaded to Reactor's

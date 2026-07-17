@@ -390,13 +390,15 @@ public class ConnectAuthorizationService {
 			// ssh_session snapshot + the two single-use tokens + the allow audit are one
 			// transaction: a failure rolls all back, so a token is never minted without its
 			// session row (Design §12/§15). Audit last (it serializes on the chain lock).
+			ConnectDecision.TraceInfo trace = new ConnectDecision.TraceInfo(accessModel, node.id(),
+					session.correlationId());
 			Mono<ConnectDecision> allowed = sshSessions.save(session)
 					.then(tokens.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, capabilities,
 							sourceIp))
 					.flatMap(sessionToken -> recordingTokens
 							.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, sourceIp)
 							.flatMap(recordingToken -> audit.record(auditRecord).thenReturn(
-									ConnectDecision.allow(signed, sessionToken, recordingToken, nodeConnection))));
+									ConnectDecision.allow(signed, sessionToken, recordingToken, nodeConnection, trace))));
 			return tx.transactional(allowed);
 		});
 	}
