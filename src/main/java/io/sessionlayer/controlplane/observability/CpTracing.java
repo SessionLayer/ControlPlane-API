@@ -80,11 +80,18 @@ public final class CpTracing {
 	 */
 	public Mono<ConnectDecision> traceAuthorize(Context parent, String sessionId, String requestNodeId,
 			Mono<ConnectDecision> source) {
-		Span span = tracer.spanBuilder(CP_AUTHORIZE).setSpanKind(SpanKind.SERVER).setParent(orRoot(parent)).startSpan();
-		setIfPresent(span, SESSION_ID, sessionId);
-		setIfPresent(span, NODE_ID, requestNodeId);
-		return source.doOnNext(decision -> onDecision(span, decision)).doOnError(error -> markError(span, error))
-				.doFinally(signal -> span.end());
+		// Deferred so the span is started at SUBSCRIBE, not at assembly — a
+		// re-subscribe
+		// gets a fresh span instead of reusing an already-ended one (parity with
+		// SloMetrics.timeEstablishment).
+		return Mono.defer(() -> {
+			Span span = tracer.spanBuilder(CP_AUTHORIZE).setSpanKind(SpanKind.SERVER).setParent(orRoot(parent))
+					.startSpan();
+			setIfPresent(span, SESSION_ID, sessionId);
+			setIfPresent(span, NODE_ID, requestNodeId);
+			return source.doOnNext(decision -> onDecision(span, decision)).doOnError(error -> markError(span, error))
+					.doFinally(signal -> span.end());
+		});
 	}
 
 	/**
@@ -92,11 +99,14 @@ public final class CpTracing {
 	 * {@code cp.cert_sign}.
 	 */
 	public <T> Mono<T> traceCertSign(Context parent, String kind, String sessionId, Mono<T> source) {
-		Span span = tracer.spanBuilder(CP_CERT_SIGN).setSpanKind(SpanKind.SERVER).setParent(orRoot(parent)).startSpan();
-		span.setAttribute(CERT_KIND, kind);
-		setIfPresent(span, SESSION_ID, sessionId);
-		return source.doOnNext(value -> span.setAttribute(OUTCOME, "success"))
-				.doOnError(error -> markError(span, error)).doFinally(signal -> span.end());
+		return Mono.defer(() -> {
+			Span span = tracer.spanBuilder(CP_CERT_SIGN).setSpanKind(SpanKind.SERVER).setParent(orRoot(parent))
+					.startSpan();
+			span.setAttribute(CERT_KIND, kind);
+			setIfPresent(span, SESSION_ID, sessionId);
+			return source.doOnNext(value -> span.setAttribute(OUTCOME, "success"))
+					.doOnError(error -> markError(span, error)).doFinally(signal -> span.end());
+		});
 	}
 
 	private static void onDecision(Span span, ConnectDecision decision) {

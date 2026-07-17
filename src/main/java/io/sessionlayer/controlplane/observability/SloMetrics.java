@@ -36,6 +36,12 @@ public class SloMetrics {
 	static final String TAG_OUTCOME = "outcome";
 	static final String TAG_ACCESS_MODEL = "access_model";
 	static final String TAG_KIND = "kind";
+	// The CA-availability SLI population: a real cert-sign REQUEST vs the periodic
+	// health PROBE. Kept distinct so the NFR-3 99.9% is computed over real requests
+	// (the ~6/min probe baseline would otherwise mask partial degradation).
+	static final String TAG_SOURCE = "source";
+	public static final String SOURCE_REQUEST = "request";
+	public static final String SOURCE_PROBE = "probe";
 
 	static final String OUTCOME_AVAILABLE = "available";
 	static final String OUTCOME_UNAVAILABLE = "unavailable";
@@ -73,8 +79,9 @@ public class SloMetrics {
 	}
 
 	/** NFR-3 availability signal from {@code CaSignerService.activeSigner}. */
-	public void recordSignerOutcome(String kind, String outcome) {
-		Counter.builder(CA_SIGNER).tag(TAG_KIND, kind).tag(TAG_OUTCOME, outcome).register(registry).increment();
+	public void recordSignerOutcome(String kind, String source, String outcome) {
+		Counter.builder(CA_SIGNER).tag(TAG_KIND, kind).tag(TAG_SOURCE, source).tag(TAG_OUTCOME, outcome)
+				.register(registry).increment();
 	}
 
 	private void recordEstablishment(long startNanos, String outcome, String accessModel) {

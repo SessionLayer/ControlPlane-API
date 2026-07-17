@@ -32,8 +32,15 @@ class CaSignerMetricsTest {
 		CaSignerService service = new CaSignerService(configs, keys, factory, new SloMetrics(registry));
 
 		StepVerifier.create(service.activeSigner("session")).expectError(NoSignerAvailable.class).verify();
+		// A real request is measured under source=request (the NFR-3 SLI population).
+		assertThat(registry.get("sessionlayer.ca.signer").tag("kind", "session").tag("source", "request")
+				.tag("outcome", "unavailable").counter().count()).isEqualTo(1.0);
 
-		assertThat(registry.get("sessionlayer.ca.signer").tag("kind", "session").tag("outcome", "unavailable").counter()
-				.count()).isEqualTo(1.0);
+		// The health-probe poll is the SAME fail-closed but tagged source=probe, so it
+		// never dilutes the request SLI (F-s21 SLI-population fix).
+		StepVerifier.create(service.activeSigner("session", SloMetrics.SOURCE_PROBE))
+				.expectError(NoSignerAvailable.class).verify();
+		assertThat(registry.get("sessionlayer.ca.signer").tag("kind", "session").tag("source", "probe")
+				.tag("outcome", "unavailable").counter().count()).isEqualTo(1.0);
 	}
 }

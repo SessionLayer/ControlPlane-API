@@ -114,20 +114,32 @@ class ObservabilityIT extends AbstractMtlsIT {
 		assertThat(attr(certSpan, "sessionlayer.cert_kind")).isEqualTo("session");
 		assertThat(attr(certSpan, "sessionlayer.outcome")).isEqualTo("success");
 
-		// No-content gate: NO span attribute value carries the session/recording token
-		// or
-		// the subject key material — spans carry IDs/enums/outcomes only. (Guard
-		// blanks:
-		// an empty secret would make doesNotContain("") vacuously fail.)
-		List<String> secrets = java.util.stream.Stream.of(authorized.getSessionToken(), authorized.getRecordingToken(),
-				Base64.getEncoder().encodeToString(subjectKey)).filter(s -> s != null && !s.isBlank()).toList();
+		// No-content gate (OTEL-CONTRACT §5): NO telemetry string — a span name /
+		// attribute / EVENT (name + attrs) / status description, or a metric TAG —
+		// carries
+		// a token, key, source IP, or the cert. Scanning EVENTS is the point:
+		// recordException would write exception.message as an event (not an attribute)
+		// —
+		// the exact future regression this gate must catch. (Guard blanks: an empty
+		// secret
+		// would make doesNotContain("") vacuously fail.)
+		List<String> secrets = java.util.stream.Stream
+				.of(authorized.getSessionToken(), authorized.getRecordingToken(),
+						Base64.getEncoder().encodeToString(subjectKey), "10.0.0.5", signed.getCertificateLine())
+				.filter(s -> s != null && !s.isBlank()).toList();
 		assertThat(secrets).isNotEmpty();
+		List<String> telemetry = new java.util.ArrayList<>();
 		for (SpanData span : spans.getFinishedSpanItems()) {
-			for (Object value : span.getAttributes().asMap().values()) {
-				String rendered = String.valueOf(value);
-				secrets.forEach(secret -> assertThat(rendered).doesNotContain(secret));
-			}
+			telemetry.add(span.getName());
+			telemetry.add(span.getStatus() == null ? "" : span.getStatus().getDescription());
+			span.getAttributes().asMap().values().forEach(value -> telemetry.add(String.valueOf(value)));
+			span.getEvents().forEach(event -> {
+				telemetry.add(event.getName());
+				event.getAttributes().asMap().values().forEach(value -> telemetry.add(String.valueOf(value)));
+			});
 		}
+		meters.getMeters().forEach(meter -> meter.getId().getTags().forEach(tag -> telemetry.add(tag.getValue())));
+		telemetry.forEach(rendered -> secrets.forEach(secret -> assertThat(rendered).doesNotContain(secret)));
 	}
 
 	@Test
@@ -155,10 +167,20 @@ class ObservabilityIT extends AbstractMtlsIT {
 		assertThat(
 				meters.get("sessionlayer.cert.sign").tag("kind", "session").tag("outcome", "success").timer().count())
 				.isGreaterThan(0);
-		// NFR-3: an available session signer was measured (fail-closed unavailable is
-		// proven in CaSignerMetricsTest without Docker).
-		assertThat(meters.get("sessionlayer.ca.signer").tag("kind", "session").tag("outcome", "available").counter()
-				.count()).isGreaterThan(0);
+		// NFR-3: an available session signer was measured under the REQUEST population
+		// (health-probe polls are tagged source=probe so they don't dilute the SLI;
+		// fail-closed unavailable is proven in CaSignerMetricsTest without Docker).
+		assertThat(meters.get("sessionlayer.ca.signer").tag("kind", "session").tag("source", "request")
+				.tag("outcome", "available").counter().count()).isGreaterThan(0);
+
+		// F1: the establishment + cert-sign timers publish Prometheus histogram BUCKETS
+		// (the _bucket series) so histogram_quantile() can compute p95 — a plain Timer
+		// exports only _count/_sum/_max and the primary Part D p95 SLO would be
+		// unqueryable.
+		assertThat(meters.get("sessionlayer.session.establishment").tag("outcome", "allow").timer().takeSnapshot()
+				.histogramCounts()).isNotEmpty();
+		assertThat(meters.get("sessionlayer.cert.sign").tag("kind", "session").tag("outcome", "success").timer()
+				.takeSnapshot().histogramCounts()).isNotEmpty();
 	}
 
 	// ----- helpers -----

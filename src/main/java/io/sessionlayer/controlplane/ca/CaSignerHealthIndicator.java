@@ -1,5 +1,6 @@
 package io.sessionlayer.controlplane.ca;
 
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import java.time.Duration;
 import org.springframework.boot.health.autoconfigure.contributor.ConditionalOnEnabledHealthIndicator;
 import org.springframework.boot.health.contributor.Health;
@@ -44,7 +45,7 @@ public class CaSignerHealthIndicator implements ReactiveHealthIndicator {
 		if (snapshot != null && System.nanoTime() < cachedUntilNanos) {
 			return Mono.just(snapshot);
 		}
-		return signers.activeSigner("session").thenReturn(Health.up().build())
+		return signers.activeSigner("session", SloMetrics.SOURCE_PROBE).thenReturn(Health.up().build())
 				.onErrorResume(
 						error -> Mono.just(Health.outOfService().withDetail("caSigner", "no active signer").build()))
 				.doOnNext(health -> {

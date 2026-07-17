@@ -41,8 +41,21 @@ public class CaSignerService {
 		}
 	}
 
-	/** The signer for the currently-active CA of a kind, or a fail-closed error. */
+	/**
+	 * The signer for the currently-active CA of a kind, or a fail-closed error. A
+	 * real cert-sign request; the NFR-3 availability SLI is measured over the
+	 * {@code request} population.
+	 */
 	public Mono<SshCertSigner> activeSigner(String kind) {
+		return activeSigner(kind, SloMetrics.SOURCE_REQUEST);
+	}
+
+	/**
+	 * As {@link #activeSigner(String)} but attributing the availability sample to
+	 * {@code source} ({@code request} = a real sign, {@code probe} = the health
+	 * indicator poll) so the NFR-3 SLI is not diluted by the periodic probe.
+	 */
+	public Mono<SshCertSigner> activeSigner(String kind, String source) {
 		// NFR-3 availability SLI: whether an active signer could be obtained. A missing
 		// CA / key material is NoSignerAvailable ("unavailable" = fail-closed, not an
 		// error); anything else is "error". Client-input rejections never reach here.
@@ -50,9 +63,9 @@ public class CaSignerService {
 				.switchIfEmpty(Mono.error(new NoSignerAvailable("no active " + kind + " CA (fail closed)")))
 				.flatMap(this::signerFor).doOnSuccess(signer -> {
 					if (signer != null) {
-						metrics.recordSignerOutcome(kind, "available");
+						metrics.recordSignerOutcome(kind, source, "available");
 					}
-				}).doOnError(error -> metrics.recordSignerOutcome(kind,
+				}).doOnError(error -> metrics.recordSignerOutcome(kind, source,
 						error instanceof NoSignerAvailable ? "unavailable" : "error"));
 	}
 
