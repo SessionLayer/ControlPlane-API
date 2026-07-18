@@ -59,7 +59,7 @@
 		  licence (MIT-style) is GPL-3.0-compatible. Pinned explicitly because the BOM
 		  does not manage it; 1.84 is the latest bc-jdk18on release.
 		-->
-		<bouncycastle.version>1.84</bouncycastle.version>
+		<bouncycastle.version>1.85</bouncycastle.version>
 
 		<!--
 		  RE2/J — Google's linear-time regular-expression engine (a Java port of
