@@ -9,7 +9,9 @@ import io.sessionlayer.controlplane.data.config.BreakglassPolicy;
 import io.sessionlayer.controlplane.data.config.BreakglassPolicyRepository;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
+import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
 import io.sessionlayer.controlplane.data.config.PolicyEpochRepository;
+import io.sessionlayer.controlplane.data.config.SessionLimitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.BreakglassActivation;
@@ -22,6 +24,8 @@ import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeHostKeyRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.PresenceRepository;
+import io.sessionlayer.controlplane.data.runtime.SessionLease;
+import io.sessionlayer.controlplane.data.runtime.SessionLeaseRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
@@ -95,6 +99,9 @@ public class ConnectAuthorizationService {
 	private final PolicyEpochRepository policyEpochs;
 	private final GatewayIdentityRepository gatewayIdentities;
 	private final SshSessionRepository sshSessions;
+	private final SessionLeaseRepository sessionLeases;
+	private final SessionLimitPolicyRepository sessionLimitPolicies;
+	private final OperatorSettingsRepository operatorSettings;
 	private final PolicyEngine engine;
 	private final DecisionContextSigner signer;
 	private final SessionSigningTokenService tokens;
@@ -114,12 +121,14 @@ public class ConnectAuthorizationService {
 	public ConnectAuthorizationService(NodeRepository nodes, NodeHostKeyRepository hostKeys,
 			CaRotationService caRotation, DpRuleRepository dpRules, AccessLockRepository accessLocks,
 			PolicyEpochRepository policyEpochs, GatewayIdentityRepository gatewayIdentities,
-			SshSessionRepository sshSessions, PolicyEngine engine, DecisionContextSigner signer,
-			SessionSigningTokenService tokens, RecordingTokenService recordingTokens, JitLifecycleService jit,
-			BreakglassTokenService breakglassTokens, BreakglassActivationRepository breakglassActivations,
-			BreakglassPolicyRepository breakglassPolicies, BreakglassProperties breakglassProperties,
-			AuditEventStore audit, AuthzProperties properties, PresenceRepository presence, HaProperties haProperties,
-			ObjectMapper objectMapper, TransactionalOperator tx) {
+			SshSessionRepository sshSessions, SessionLeaseRepository sessionLeases,
+			SessionLimitPolicyRepository sessionLimitPolicies, OperatorSettingsRepository operatorSettings,
+			PolicyEngine engine, DecisionContextSigner signer, SessionSigningTokenService tokens,
+			RecordingTokenService recordingTokens, JitLifecycleService jit, BreakglassTokenService breakglassTokens,
+			BreakglassActivationRepository breakglassActivations, BreakglassPolicyRepository breakglassPolicies,
+			BreakglassProperties breakglassProperties, AuditEventStore audit, AuthzProperties properties,
+			PresenceRepository presence, HaProperties haProperties, ObjectMapper objectMapper,
+			TransactionalOperator tx) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -128,6 +137,9 @@ public class ConnectAuthorizationService {
 		this.policyEpochs = policyEpochs;
 		this.gatewayIdentities = gatewayIdentities;
 		this.sshSessions = sshSessions;
+		this.sessionLeases = sessionLeases;
+		this.sessionLimitPolicies = sessionLimitPolicies;
+		this.operatorSettings = operatorSettings;
 		this.engine = engine;
 		this.signer = signer;
 		this.tokens = tokens;
@@ -425,43 +437,72 @@ public class ConnectAuthorizationService {
 			// session row (Design §12/§15). Audit last (it serializes on the chain lock).
 			ConnectDecision.TraceInfo trace = new ConnectDecision.TraceInfo(accessModel, node.id(),
 					session.correlationId());
-			Mono<ConnectDecision> mint = sshSessions.save(session)
+			// FR-SESS-3: a STANDING/JIT session takes a concurrency lease; the lease is
+			// saved AFTER the session row (its session_id FKs ssh_session) and inside the
+			// same tx, so acquire is atomic with the mint. Break-glass takes no lease.
+			boolean leased = !MODEL_BREAKGLASS.equals(accessModel);
+			Mono<Void> acquireLease = leased
+					? sessionLeases.save(SessionLease.acquire(identity, sessionId, gatewayName, now, grantExpiry))
+							.then()
+					: Mono.empty();
+			Mono<ConnectDecision> mint = sshSessions.save(session).then(acquireLease)
 					.then(tokens.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, capabilities,
 							sourceIp))
 					.flatMap(sessionToken -> recordingTokens
 							.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, sourceIp)
 							.flatMap(recordingToken -> audit.record(auditRecord).thenReturn(ConnectDecision
 									.allow(signed, sessionToken, recordingToken, nodeConnection, trace))));
-			// FR-SESS-3: enforce the per-identity concurrent-session cap INSIDE the allow
-			// transaction, counting live sessions immediately before the insert so the
-			// check-then-insert window is as small as READ COMMITTED allows.
-			return tx.transactional(guardConcurrency(callerGatewayId, request, node, accessModel, now, mint));
+			// Gate on the cap BEFORE minting (count the live leases; a breach denies and
+			// mints nothing — deny wins). The check runs inside the allow tx.
+			return tx.transactional(enforceConcurrencyLimit(callerGatewayId, request, node, accessModel, mint));
 		});
 	}
 
-	// FR-SESS-3: a would-be allow is refused when the identity already holds its
-	// configured number of live sessions (counted fleet-wide from the shared
-	// datastore, so this holds across HA Gateways). A limit of 0 means unlimited
-	// and
-	// break-glass is exempt — emergency access must not be throttled by a routine
-	// resource cap (it is already gated by single-use token issuance, Lock
-	// supremacy,
-	// and a mandatory-review activation). The count-then-insert is not fully atomic
-	// at
-	// READ COMMITTED: a burst of concurrent Authorizes for one identity can
+	// FR-SESS-3: the per-identity concurrency primitive is runtime.session_lease
+	// (one
+	// live lease per session; count of unreleased leases = current concurrency,
+	// fleet-wide over the shared datastore). On a STANDING/JIT allow, if a resolved
+	// limit is already reached we mint nothing and deny (deny wins); else the mint
+	// proceeds and acquires the lease. Break-glass is EXEMPT — it neither counts
+	// nor
+	// consumes a lease, so emergency access is never throttled by the cap nor eats
+	// into
+	// a user's normal budget (it is gated instead by single-use token issuance +
+	// Lock
+	// supremacy + a mandatory-review activation). Soft-limit: the
+	// count-then-acquire is
+	// not atomic at READ COMMITTED, so a concurrent burst for one identity can
 	// overshoot
-	// by the number racing — an accepted soft-limit tolerance (deny wins on
-	// breach).
-	private Mono<ConnectDecision> guardConcurrency(UUID callerGatewayId, AuthorizationRequest request, Node node,
-			String accessModel, Instant now, Mono<ConnectDecision> mint) {
-		int limit = properties.concurrentSessionLimitFor(request.identity());
-		if (MODEL_BREAKGLASS.equals(accessModel) || limit <= 0) {
+	// by the number racing — an accepted tolerance (the in-tx check shrinks the
+	// window).
+	private Mono<ConnectDecision> enforceConcurrencyLimit(UUID callerGatewayId, AuthorizationRequest request, Node node,
+			String accessModel, Mono<ConnectDecision> mint) {
+		if (MODEL_BREAKGLASS.equals(accessModel)) {
 			return mint;
 		}
-		return sshSessions.countActiveByIdentity(request.identity(), now)
-				.flatMap(active -> active >= limit
-						? denyConcurrencyLimit(callerGatewayId, request, node.id(), accessModel, active, limit)
-						: mint);
+		return resolveConcurrencyLimit(request.identity(), request.groups()).flatMap(limit -> limit <= 0
+				? mint
+				: sessionLeases.countLiveByIdentity(request.identity())
+						.flatMap(active -> active >= limit
+								? denyConcurrencyLimit(callerGatewayId, request, node.id(), accessModel, active, limit)
+								: mint))
+				.switchIfEmpty(mint);
+	}
+
+	// Resolve the identity's concurrent-session cap (FR-SESS-3): a matching
+	// config.session_limit_policy override wins (most-restrictive of any that match
+	// by
+	// identity/group selector), else the operator_settings cluster default, else
+	// empty
+	// ⇒ no limit (unlimited). NULL/≤0 at any level means no enforcement.
+	private Mono<Integer> resolveConcurrencyLimit(String identity, List<String> groups) {
+		List<String> safeGroups = groups == null ? List.of() : groups;
+		return sessionLimitPolicies.findAll()
+				.filter(policy -> policy.maxConcurrentSessions() != null
+						&& Selectors.identityMatches(policy.identitySelector(), identity, safeGroups))
+				.map(policy -> policy.maxConcurrentSessions()).reduce(Math::min)
+				.switchIfEmpty(operatorSettings.findSingleton()
+						.flatMap(settings -> Mono.justOrEmpty(settings.defaultMaxConcurrentSessions())));
 	}
 
 	// Mint nothing; record the specific reason server-side (the caller sees the

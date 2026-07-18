@@ -11,9 +11,13 @@ import io.sessionlayer.controlplane.breakglass.BreakglassCredentialService;
 import io.sessionlayer.controlplane.ca.wire.SshWriter;
 import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
+import io.sessionlayer.controlplane.data.config.SessionLimitPolicy;
+import io.sessionlayer.controlplane.data.config.SessionLimitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.AuditEvent;
 import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
+import io.sessionlayer.controlplane.data.runtime.SessionLease;
+import io.sessionlayer.controlplane.data.runtime.SessionLeaseRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
@@ -29,23 +33,21 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.test.context.TestPropertySource;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
  * FR-SESS-3 — the per-identity concurrent-session limit enforced at
- * {@code Authorize}. With a small configured cap, the (N+1)th concurrent
- * session for one identity is refused with the generic deny while the decision
- * log records the {@code concurrent_session_limit} reason; a different identity
- * is unaffected; a session written by a <b>different</b> Gateway counts toward
- * the cap (HA-correctness — the count spans the fleet, not one Gateway);
- * closing a session frees a slot; a per-identity override changes the
- * threshold; and break-glass is exempt (emergency access is never throttled by
- * the cap).
+ * {@code Authorize} over the purpose-built seam: leases in
+ * {@code runtime.session_lease}, per-identity overrides in
+ * {@code config.session_limit_policy}, cluster default in
+ * {@code operator_settings.default_max_concurrent_sessions}. Proves the (N+1)th
+ * session is refused with the generic deny and the
+ * {@code concurrent_session_limit} decision-log note; a per-identity policy
+ * overrides (and out-restricts) the cluster default; a lease acquired by a
+ * <b>different</b> Gateway counts toward the cap (HA-correctness); releasing a
+ * lease frees a slot; and break-glass is exempt and consumes no lease.
  */
-@TestPropertySource(properties = {"sessionlayer.authz.max-concurrent-sessions-per-identity=2",
-		"sessionlayer.authz.concurrent-session-limit-overrides[bulk-identity]=4"})
 class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 
 	private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
@@ -58,6 +60,10 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 	@Autowired
 	private SshSessionRepository sshSessions;
 	@Autowired
+	private SessionLeaseRepository sessionLeases;
+	@Autowired
+	private SessionLimitPolicyRepository sessionLimitPolicies;
+	@Autowired
 	private AuditEventStore auditStore;
 	@Autowired
 	private BreakglassCredentialService breakglassCredentials;
@@ -67,141 +73,142 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 		String identity = "cap-" + unique();
 		UUID nodeId = seedProdNode();
 		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		seedPolicy(identity, 2);
 		EnrolledGateway gateway = enroll("gw-cap-" + unique());
 
-		// Cap is 2: the first two succeed, the third is refused.
-		assertThat(authorize(gateway, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
-		assertThat(authorize(gateway, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
 
-		AuthorizeResponse third = authorize(gateway, identity, nodeId);
+		AuthorizeResponse third = authorize(gateway, identity, nodeId, "deploy");
 		assertThat(third.getDecision()).isEqualTo(Decision.DECISION_DENY);
 		assertThat(third.getSessionToken()).isEmpty();
 		assertThat(third.hasContext()).isFalse();
 
-		// Exactly the cap number of session rows were written — the refused one minted
-		// nothing (deny wins, fail closed).
-		assertThat(sshSessions.findByIdentity(identity).collectList().block()).hasSize(2);
+		// Exactly two live leases were acquired; the refused one took none (deny wins).
+		assertThat(countLive(identity)).isEqualTo(2);
 
-		// The decision log records the specific server-side reason with the
-		// count/limit.
 		AuditEvent deny = deniedDecision(identity);
 		assertThat(deny.detail().get("note").stringValue()).isEqualTo("concurrent_session_limit");
 		assertThat(deny.detail().get("active_sessions").stringValue()).isEqualTo("2");
 		assertThat(deny.detail().get("limit").stringValue()).isEqualTo("2");
 	}
 
+	// A per-identity session_limit_policy overrides the cluster default — and here
+	// it
+	// out-restricts it (policy 2 < default 3); an identity with no policy falls to
+	// the
+	// default.
 	@Test
-	void adifferentIdentityIsUnaffectedByAnothersCap() {
-		String capped = "capped-" + unique();
-		String other = "free-" + unique();
+	void aPerIdentityPolicyOverridesTheClusterDefault() {
+		String policied = "policy-" + unique();
+		String defaulted = "default-" + unique();
 		UUID nodeId = seedProdNode();
-		seedAllow(capped, nodeId, List.of("deploy"), List.of("shell"));
-		seedAllow(other, nodeId, List.of("deploy"), List.of("shell"));
-		EnrolledGateway gateway = enroll("gw-iso-" + unique());
+		seedAllow(policied, nodeId, List.of("deploy"), List.of("shell"));
+		seedAllow(defaulted, nodeId, List.of("deploy"), List.of("shell"));
+		seedPolicy(policied, 2);
+		EnrolledGateway gateway = enroll("gw-policy-" + unique());
 
-		// Fill the first identity to its cap (2 allows + 1 deny).
-		authorize(gateway, capped, nodeId);
-		authorize(gateway, capped, nodeId);
-		assertThat(authorize(gateway, capped, nodeId).getDecision()).isEqualTo(Decision.DECISION_DENY);
+		setClusterDefault(3);
+		try {
+			// The policied identity is capped at 2 (policy wins over the default 3).
+			authorize(gateway, policied, nodeId, "deploy");
+			authorize(gateway, policied, nodeId, "deploy");
+			assertThat(authorize(gateway, policied, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_DENY);
 
-		// A different identity is counted independently — still allowed.
-		assertThat(authorize(gateway, other, nodeId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+			// The no-policy identity is governed by the cluster default (3): three succeed,
+			// the fourth is refused.
+			authorize(gateway, defaulted, nodeId, "deploy");
+			authorize(gateway, defaulted, nodeId, "deploy");
+			assertThat(authorize(gateway, defaulted, nodeId, "deploy").getDecision())
+					.isEqualTo(Decision.DECISION_ALLOW);
+			assertThat(authorize(gateway, defaulted, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_DENY);
+		} finally {
+			clearClusterDefault();
+		}
 	}
 
-	// HA-correctness: the count is identity-scoped over the shared datastore, not
-	// per-Gateway. A session written by a DIFFERENT Gateway is decisive here — with
-	// it present, the caller Gateway's own second Authorize tips the identity over
-	// the
-	// cap; a naive per-Gateway count (which could not see the peer's row) would
-	// allow.
+	// HA-correctness: leases are counted per-identity over the shared datastore,
+	// not
+	// per-Gateway. A lease acquired by a DIFFERENT Gateway is decisive — with it
+	// present the caller Gateway's first Authorize tips the identity over the cap;
+	// a
+	// naive per-Gateway count (blind to the peer's lease) would allow.
 	@Test
-	void aSessionFromADifferentGatewayCountsTowardTheCap() {
+	void aLeaseFromADifferentGatewayCountsTowardTheCap() {
 		String identity = "ha-" + unique();
 		UUID nodeId = seedProdNode();
 		Node node = nodes.findById(nodeId).block();
 		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		seedPolicy(identity, 2);
 		EnrolledGateway peer = enroll("gw-ha-peer-" + unique());
 		EnrolledGateway caller = enroll("gw-ha-caller-" + unique());
 
-		// A live session for this identity owned by a DIFFERENT Gateway (as if written
-		// by another HA instance to the shared CP DB).
-		sshSessions.save(SshSession.create(identity, nodeId, node.name(), "deploy", peer.gatewayId(), "gw-ha-peer",
-				"standing", List.of("shell"), null, "peer-rule", null, null, 0L, Instant.now().plusSeconds(3600),
-				Instant.now())).block();
+		// A live session + lease for this identity owned by a DIFFERENT Gateway (as if
+		// written by another HA instance to the shared CP DB).
+		SshSession peerSession = sshSessions.save(SshSession.create(identity, nodeId, node.name(), "deploy",
+				peer.gatewayId(), "gw-ha-peer", "standing", List.of("shell"), null, "peer-rule", null, null, 0L,
+				Instant.now().plusSeconds(3600), Instant.now())).block();
+		sessionLeases.save(SessionLease.acquire(identity, peerSession.id(), "gw-ha-peer", Instant.now(),
+				Instant.now().plusSeconds(3600))).block();
 
-		// Cap is 2. With the peer row counting, the caller's first Authorize is allowed
-		// (2 live) and the second is refused (would-be 3rd).
-		assertThat(authorize(caller, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
-		assertThat(authorize(caller, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_DENY);
+		// Cap is 2. With the peer lease counting, the caller's first Authorize is
+		// allowed
+		// (2 live) and the second is refused.
+		assertThat(authorize(caller, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(authorize(caller, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_DENY);
 	}
 
 	@Test
-	void closingASessionFreesASlot() {
+	void releasingALeaseFreesASlot() {
 		String identity = "free-slot-" + unique();
 		UUID nodeId = seedProdNode();
 		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		seedPolicy(identity, 2);
 		EnrolledGateway gateway = enroll("gw-free-" + unique());
 
-		authorize(gateway, identity, nodeId);
-		authorize(gateway, identity, nodeId);
-		assertThat(authorize(gateway, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_DENY);
+		authorize(gateway, identity, nodeId, "deploy");
+		authorize(gateway, identity, nodeId, "deploy");
+		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_DENY);
 
-		// End one live session (the finalize path does this via ssh_session.ended();
-		// here we exercise the count predicate directly — ended_at IS NULL is the live
-		// gate).
-		SshSession live = sshSessions.findByIdentity(identity).blockFirst();
-		sshSessions.save(live.ended(Instant.now(), "closed")).block();
+		// Release one lease (the finalize path does this in prod; here we drive the
+		// same
+		// repository release directly by the session id).
+		UUID sessionId = sshSessions.findByIdentity(identity).blockFirst().id();
+		sessionLeases.releaseBySessionId(sessionId, Instant.now()).block();
+		assertThat(countLive(identity)).isEqualTo(1);
 
-		// The freed slot admits a new session for the same identity.
-		assertThat(authorize(gateway, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
-	}
-
-	@Test
-	void aPerIdentityOverrideRaisesTheThreshold() {
-		String identity = "bulk-identity"; // matches the configured override (limit 4)
-		UUID nodeId = seedProdNode();
-		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
-		EnrolledGateway gateway = enroll("gw-override-" + unique());
-
-		// The default is 2, but this identity's override is 4: four succeed, the fifth
-		// is refused.
-		for (int i = 0; i < 4; i++) {
-			assertThat(authorize(gateway, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
-		}
-		assertThat(authorize(gateway, identity, nodeId).getDecision()).isEqualTo(Decision.DECISION_DENY);
+		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
 	}
 
 	// Break-glass is exempt: even with the identity already at its cap, a
 	// break-glass
-	// Authorize still allows (emergency access must not be throttled by a routine
-	// resource cap; it is gated instead by single-use token issuance + Lock
-	// supremacy).
+	// Authorize still allows AND consumes no lease (emergency access is neither
+	// throttled by the cap nor eats into the normal budget).
 	@Test
-	void breakGlassIsExemptFromTheCap() throws Exception {
+	void breakGlassIsExemptFromTheCapAndConsumesNoLease() throws Exception {
 		String identity = "bg-cap-" + unique();
 		UUID nodeId = seedProdNode();
 		seedAllow(identity, nodeId, List.of("root"), List.of("shell"));
+		seedPolicy(identity, 2);
 		byte[] sk = skBlob((byte) 0x55);
 		breakglassCredentials.register(sk, identity, List.of("root"), null, null, "admin").block();
 		EnrolledGateway gateway = enroll("gw-bgcap-" + unique());
 
-		// Fill the identity to its standing cap.
 		authorize(gateway, identity, nodeId, "root");
 		authorize(gateway, identity, nodeId, "root");
 		assertThat(authorize(gateway, identity, nodeId, "root").getDecision()).isEqualTo(Decision.DECISION_DENY);
 
-		// Break-glass over the cap still allows.
 		BreakglassResolution resolution = resolveKey(gateway, sk, nodeId);
 		assertThat(resolution.getBreakglassToken()).isNotBlank();
-		AuthorizeResponse bg = authorizeBreakglass(gateway, identity, nodeId, resolution.getBreakglassToken());
-		assertThat(bg.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(authorizeBreakglass(gateway, identity, nodeId, resolution.getBreakglassToken()).getDecision())
+				.isEqualTo(Decision.DECISION_ALLOW);
+
+		// The break-glass session took no lease — the count is still just the two
+		// standing sessions.
+		assertThat(countLive(identity)).isEqualTo(2);
 	}
 
 	// ----------------------- helpers -----------------------
-
-	private AuthorizeResponse authorize(EnrolledGateway gateway, String identity, UUID nodeId) {
-		return authorize(gateway, identity, nodeId, "deploy");
-	}
 
 	private AuthorizeResponse authorize(EnrolledGateway gateway, String identity, UUID nodeId, String principal) {
 		AuthorizeRequest request = AuthorizeRequest.newBuilder().setIdentity(identity).setNodeId(nodeId.toString())
@@ -226,10 +233,24 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 						.getResolution());
 	}
 
+	private long countLive(String identity) {
+		return sessionLeases.countLiveByIdentity(identity).block();
+	}
+
 	private AuditEvent deniedDecision(String identity) {
 		return auditStore.search(new AuditQuery(null, identity, "authz.decision", "denied", null, null, null, null,
 				null, null, null, Map.of(), null, List.of(), null, 50)).block().items().stream().findFirst()
 				.orElseThrow();
+	}
+
+	private void setClusterDefault(int limit) {
+		db.sql("UPDATE config.operator_settings SET default_max_concurrent_sessions = :n WHERE singleton = true")
+				.bind("n", limit).fetch().rowsUpdated().block();
+	}
+
+	private void clearClusterDefault() {
+		db.sql("UPDATE config.operator_settings SET default_max_concurrent_sessions = NULL WHERE singleton = true")
+				.fetch().rowsUpdated().block();
 	}
 
 	private <T> T onChannel(EnrolledGateway gateway, java.util.function.Function<ManagedChannel, T> call) {
@@ -256,6 +277,14 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 		labelSelector.set("env", JSON.objectNode().put("op", "eq").put("value", "prod"));
 		dpRules.save(DpRule.create("rule-" + unique(), identitySelector, labelSelector, null, principals, 3600,
 				capabilities, "allow", "api")).block();
+	}
+
+	private void seedPolicy(String identity, int maxConcurrentSessions) {
+		ObjectNode selector = JSON.objectNode();
+		selector.set("identities", JSON.arrayNode().add(identity));
+		sessionLimitPolicies.save(
+				SessionLimitPolicy.create("limit-" + unique(), selector, maxConcurrentSessions, null, null, "api"))
+				.block();
 	}
 
 	// A structurally valid sk-ecdsa-sha2-nistp256 wire blob (public material only).

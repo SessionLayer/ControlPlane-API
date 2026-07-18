@@ -18,6 +18,7 @@ import io.sessionlayer.controlplane.data.runtime.RecordingRef;
 import io.sessionlayer.controlplane.data.runtime.RecordingRefRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingToken;
 import io.sessionlayer.controlplane.data.runtime.RecordingTokenRepository;
+import io.sessionlayer.controlplane.data.runtime.SessionLeaseRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SingleUseTokens;
@@ -113,6 +114,8 @@ class RecordingIT extends AbstractMtlsIT {
 	private RecordingTokenRepository recordingTokens;
 	@Autowired
 	private SshSessionRepository sshSessions;
+	@Autowired
+	private SessionLeaseRepository sessionLeases;
 	@Autowired
 	private AuditEventRepository audits;
 	@Autowired
@@ -310,11 +313,13 @@ class RecordingIT extends AbstractMtlsIT {
 	}
 
 	// FR-SESS-3 lifecycle completion: the first terminal finalize closes the owning
-	// session (ended_at + a status-derived end_reason), freeing the identity's
-	// concurrency slot and filling the history the SessionController exposes. The
-	// close is idempotent — a same-status re-finalize does not move the end stamp.
+	// session — stamps ended_at + a status-derived end_reason (SessionController
+	// history) AND releases the concurrency lease, freeing the identity's slot. The
+	// close is idempotent — a same-status re-finalize moves neither the end stamp
+	// nor
+	// the (already released) lease.
 	@Test
-	void finalizeMarksTheOwningSessionEndedWithADerivedReason() {
+	void finalizeMarksTheOwningSessionEndedAndReleasesTheLease() {
 		configureCustomerKey("kms://customer-1", "governance");
 		String identity = "victor-" + unique();
 		UUID nodeId = seedProdNode();
@@ -324,8 +329,10 @@ class RecordingIT extends AbstractMtlsIT {
 		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", sessionId);
 		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
 
-		// Live before finalize (no end stamp).
+		// Live before finalize: no end stamp, and the Authorize acquired one live
+		// lease.
 		assertThat(sshSessions.findById(sessionId).block().endedAt()).isNull();
+		assertThat(sessionLeases.countLiveByIdentity(identity).block()).isEqualTo(1L);
 
 		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
 				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1).build());
@@ -333,12 +340,15 @@ class RecordingIT extends AbstractMtlsIT {
 		SshSession ended = sshSessions.findById(sessionId).block();
 		assertThat(ended.endedAt()).isNotNull();
 		assertThat(ended.endReason()).isEqualTo("closed"); // finalized → clean close
+		assertThat(sessionLeases.countLiveByIdentity(identity).block()).isEqualTo(0L); // slot freed
 
-		// A same-status re-finalize is a no-op that does not move the end stamp.
+		// A same-status re-finalize is a no-op that moves neither the end stamp nor the
+		// released lease.
 		Instant firstEnd = ended.endedAt();
 		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
 				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1).build());
 		assertThat(sshSessions.findById(sessionId).block().endedAt()).isEqualTo(firstEnd);
+		assertThat(sessionLeases.countLiveByIdentity(identity).block()).isEqualTo(0L);
 	}
 
 	// F-recording-worm-version-1 (HIGH): FinalizeRecording carries the object-store

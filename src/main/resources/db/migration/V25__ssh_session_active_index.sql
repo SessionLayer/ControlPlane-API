@@ -1,10 +1,11 @@
--- V25 — index the FR-SESS-3 per-identity live-session count. SessionLayer Control
--- Plane.
+-- V25 — index active-session lookups by identity. SessionLayer Control Plane.
 --
--- Authorize counts an identity's live sessions (ended_at IS NULL AND grant_expiry
--- > now) on every standing/JIT allow to enforce the concurrent-session cap. A
--- partial index on identity over only the live rows keeps that count off a
--- sequential scan as session history accumulates. Non-breaking (additive index,
+-- FR-SESS-3 concurrency counting is on runtime.session_lease (idx_session_lease_live,
+-- V9). This partial index serves the OTHER active-by-identity path: the config-API
+-- session listing (SessionManagementService.list filters ssh_session by identity with
+-- ended_at IS NULL for activeOnly), and it fills the gap left by idx_session_live (V5),
+-- which is keyed on node_id, not identity. The finalize path now also stamps
+-- ssh_session.ended_at, so these live rows are bounded. Non-breaking (additive index,
 -- IF NOT EXISTS).
 
 CREATE INDEX IF NOT EXISTS ix_ssh_session_active_identity
