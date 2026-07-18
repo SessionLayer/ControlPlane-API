@@ -66,6 +66,48 @@ class LockFeedIT extends AbstractMtlsIT {
 		}
 	}
 
+	// F-lockfeed-caller-gate-1 (A3): a locked/de-authorized Gateway's still-valid
+	// cert
+	// must NOT be able to stream the fleet deny-list (which
+	// identities/nodes/principals
+	// are locked). It is refused with a generic PERMISSION_DENIED before any
+	// snapshot.
+	@Test
+	void aLockedCallerGatewayIsRefusedTheLockFeedWithNoSnapshot() throws Exception {
+		EnrolledGateway gateway = enroll("gw-feed-locked-" + unique());
+		db.sql("UPDATE runtime.gateway_identity SET status = 'locked' WHERE id = :id").bind("id", gateway.gatewayId())
+				.fetch().rowsUpdated().block();
+
+		SslContext ssl = MtlsTestSupport.clientSslContext(caCertificate(), gateway.certificate(),
+				gateway.keyPair().getPrivate());
+		ManagedChannel channel = MtlsTestSupport.channel(grpcPort(), ssl);
+		BlockingQueue<LockEvent> events = new LinkedBlockingQueue<>();
+		java.util.concurrent.CompletableFuture<Throwable> error = new java.util.concurrent.CompletableFuture<>();
+		try {
+			LockFeedGrpc.newStub(channel).streamLocks(StreamLocksRequest.newBuilder().build(), new StreamObserver<>() {
+				@Override
+				public void onNext(LockEvent event) {
+					events.add(event);
+				}
+
+				@Override
+				public void onError(Throwable t) {
+					error.complete(t);
+				}
+
+				@Override
+				public void onCompleted() {
+					error.complete(new IllegalStateException("stream completed without an error"));
+				}
+			});
+			Throwable t = error.get(10, TimeUnit.SECONDS);
+			assertThat(io.grpc.Status.fromThrowable(t).getCode()).isEqualTo(io.grpc.Status.Code.PERMISSION_DENIED);
+			assertThat(events).noneMatch(LockEvent::hasSnapshot);
+		} finally {
+			channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+		}
+	}
+
 	@Test
 	void heartbeatsKeepTheStreamAlive() {
 		EnrolledGateway gateway = enroll("gw-hb-" + unique());

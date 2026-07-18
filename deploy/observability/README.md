@@ -64,3 +64,27 @@ in the structured logs today and can be shipped to the same collector):
 Recommended emission path for the Tier-0 binaries: OTel **metrics** over the existing
 OTLP pipeline (no new inbound listener), surfaced to Prometheus by the collector — the
 same low-attack-surface pattern as the span-metrics here.
+
+## Preconditions & corrections for the span-derived Gateway RED (A8)
+
+- **LOAD-BEARING — span status on fail-closed paths.** The Gateway currently stamps
+  `sessionlayer.outcome` (and, effectively, span success) **only on the ALLOW path**
+  (`handler.rs`); the fail-closed close paths (policy_denied / cp_unavailable /
+  node_unreachable / recording_unavailable) set no outcome and no span `status=error`.
+  So a span-metrics **error-rate keyed on `status_code` reads ~0 even when every session
+  is failing closed** — the exact 3am signal is invisible. **Before relying on the
+  Gateway span-RED error-rate,** the Gateway must set span `status=error` on the
+  outage-class fail-closed closes and stamp `sessionlayer.outcome=<reason enum>` on
+  policy denies. Until then, use the CP `sessionlayer_session_establishment_seconds_count{outcome=~"error|cancelled"}`
+  (this dir) as the authoritative fail-closed signal, and treat the Gateway span
+  error-rate as rate/latency only. (This is part of the native-emission follow-up above.)
+- **Metric names are collector-version-dependent.** Depending on the `spanmetrics`
+  connector version the series are either `calls_total` / `duration_milliseconds_bucket`
+  (used in the alert rules here) or `traces_spanmetrics_calls_total` /
+  `traces_spanmetrics_latency_bucket` — confirm against your collector and adjust the
+  rule/dashboard names to match.
+- **Sampling + cardinality preconditions.** The OTLP exporter is off by default, so
+  span-metrics require it ON in prod with **head sampling at 100%** on the
+  establishment path (sampled spans undercount RED rates); the connector `dimensions`
+  MUST stay an allow-list (outcome, access_model, connector_kind) — never
+  session_id/correlation_id/node_id (cardinality bomb + OTEL-CONTRACT §7).

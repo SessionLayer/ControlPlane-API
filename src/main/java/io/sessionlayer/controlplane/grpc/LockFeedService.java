@@ -3,18 +3,24 @@ package io.sessionlayer.controlplane.grpc;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.sessionlayer.controlplane.authz.LockFeedProperties;
+import io.sessionlayer.controlplane.data.runtime.GatewayIdentity;
+import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
+import io.sessionlayer.controlplane.gateway.GatewayRequestException;
 import io.sessionlayer.controlplane.grpc.v1.Heartbeat;
 import io.sessionlayer.controlplane.grpc.v1.LockEvent;
 import io.sessionlayer.controlplane.grpc.v1.LockFeedGrpc;
 import io.sessionlayer.controlplane.grpc.v1.StreamLocksRequest;
+import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
 import java.time.Instant;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.util.concurrent.Queues;
 
@@ -39,19 +45,60 @@ public class LockFeedService extends LockFeedGrpc.LockFeedImplBase {
 
 	private final LockFeedHub hub;
 	private final LockFeedProperties properties;
+	private final GatewayIdentityRepository gatewayIdentities;
 
-	public LockFeedService(LockFeedHub hub, LockFeedProperties properties) {
+	public LockFeedService(LockFeedHub hub, LockFeedProperties properties,
+			GatewayIdentityRepository gatewayIdentities) {
 		this.hub = hub;
 		this.properties = properties;
+		this.gatewayIdentities = gatewayIdentities;
 	}
 
 	@Override
 	public void streamLocks(StreamLocksRequest request, StreamObserver<LockEvent> observer) {
 		MtlsPeer peer = MtlsContext.peer();
-		LOG.debug("lock feed opened for gateway {}", peer.gatewayId());
 		ServerCallStreamObserver<LockEvent> server = (ServerCallStreamObserver<LockEvent>) observer;
+		UUID callerGatewayId = peer == null ? null : peer.gatewayId();
+		String presentedFingerprint = (peer == null || peer.certificate() == null)
+				? null
+				: CertificateFingerprints.sha256Hex(peer.certificate());
 
-		Flux<LockEvent> stream = Flux.defer(() -> {
+		// F-lockfeed-caller-gate-1 (A3): the whole-fleet deny-list is sensitive recon
+		// (which identities/nodes/principals are currently locked). Gate the stream on
+		// the caller Gateway being ACTIVE with a pinned fingerprint — the same check
+		// the
+		// sign paths enforce — so a locked/superseded-cert Gateway (or any agent)
+		// cannot
+		// read it. Rejection surfaces as a generic PERMISSION_DENIED before any
+		// snapshot.
+		Flux<LockEvent> stream = requireActiveGateway(callerGatewayId, presentedFingerprint)
+				.flatMapMany(gw -> lockStream(gw.id()));
+		ServerStreamBridge.forward(stream, server, "StreamLocks");
+	}
+
+	// The caller Gateway must be ACTIVE and present a cert pinned to its current or
+	// previous fingerprint; else a generic PERMISSION_DENIED (fail closed). Agent
+	// peers
+	// (gatewayId == null) are refused — the lock feed is a Gateway-only surface.
+	private Mono<GatewayIdentity> requireActiveGateway(UUID callerGatewayId, String presentedFingerprint) {
+		if (callerGatewayId == null || presentedFingerprint == null) {
+			return Mono.error(denied());
+		}
+		return gatewayIdentities.findById(callerGatewayId).switchIfEmpty(Mono.error(denied())).flatMap(gw -> {
+			boolean active = "active".equals(gw.status());
+			boolean pinned = presentedFingerprint.equals(gw.fingerprint())
+					|| presentedFingerprint.equals(gw.prevFingerprint());
+			return active && pinned ? Mono.just(gw) : Mono.error(denied());
+		});
+	}
+
+	private static GatewayRequestException denied() {
+		return new GatewayRequestException(GatewayRequestException.Reason.PERMISSION_DENIED, "lock feed refused");
+	}
+
+	private Flux<LockEvent> lockStream(UUID gatewayId) {
+		LOG.debug("lock feed opened for gateway {}", gatewayId);
+		return Flux.defer(() -> {
 			// Subscribe to the live multicast BEFORE reading the snapshot: a lock created
 			// during the snapshot read lands in this per-connection buffer and is emitted
 			// right after the snapshot, so no add is ever lost (the Gateway dedups by
@@ -73,7 +120,6 @@ public class LockFeedService extends LockFeedGrpc.LockFeedImplBase {
 			return hub.snapshotEvent().concatWith(Flux.merge(buffer.asFlux(), heartbeats))
 					.doFinally(signal -> pump.dispose());
 		});
-		ServerStreamBridge.forward(stream, server, "StreamLocks");
 	}
 
 	private static void bufferEmit(Sinks.Many<LockEvent> buffer, LockEvent event) {
