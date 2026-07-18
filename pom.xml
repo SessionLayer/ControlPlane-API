@@ -70,7 +70,7 @@
 		  java.util.regex for that operator. BSD-style licence (Go licence),
 		  GPL-3.0-compatible; not managed by the Spring Boot BOM, so pinned here.
 		-->
-		<re2j.version>1.7</re2j.version>
+		<re2j.version>1.8</re2j.version>
 
 		<!--
 		  jqwik — property-based testing on the JUnit Platform. Session Five proves
