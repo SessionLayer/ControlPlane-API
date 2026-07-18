@@ -18,6 +18,8 @@ import io.sessionlayer.controlplane.data.runtime.RecordingRef;
 import io.sessionlayer.controlplane.data.runtime.RecordingRefRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingToken;
 import io.sessionlayer.controlplane.data.runtime.RecordingTokenRepository;
+import io.sessionlayer.controlplane.data.runtime.SshSession;
+import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SingleUseTokens;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeRequest;
@@ -109,6 +111,8 @@ class RecordingIT extends AbstractMtlsIT {
 	private RecordingRefRepository recordings;
 	@Autowired
 	private RecordingTokenRepository recordingTokens;
+	@Autowired
+	private SshSessionRepository sshSessions;
 	@Autowired
 	private AuditEventRepository audits;
 	@Autowired
@@ -303,6 +307,38 @@ class RecordingIT extends AbstractMtlsIT {
 		AuditEvent sftp = events.stream().filter(e -> e.action().equals("sftp.write")).findFirst().orElseThrow();
 		assertThat(sftp.detail().get("path").asString()).isEqualTo("/etc/app.conf");
 		assertThat(sftp.detail().get("direction").asString()).isEqualTo("upload");
+	}
+
+	// FR-SESS-3 lifecycle completion: the first terminal finalize closes the owning
+	// session (ended_at + a status-derived end_reason), freeing the identity's
+	// concurrency slot and filling the history the SessionController exposes. The
+	// close is idempotent — a same-status re-finalize does not move the end stamp.
+	@Test
+	void finalizeMarksTheOwningSessionEndedWithADerivedReason() {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "victor-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-endreason-" + unique());
+		UUID sessionId = UUID.randomUUID();
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", sessionId);
+		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
+
+		// Live before finalize (no end stamp).
+		assertThat(sshSessions.findById(sessionId).block().endedAt()).isNull();
+
+		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1).build());
+
+		SshSession ended = sshSessions.findById(sessionId).block();
+		assertThat(ended.endedAt()).isNotNull();
+		assertThat(ended.endReason()).isEqualTo("closed"); // finalized → clean close
+
+		// A same-status re-finalize is a no-op that does not move the end stamp.
+		Instant firstEnd = ended.endedAt();
+		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1).build());
+		assertThat(sshSessions.findById(sessionId).block().endedAt()).isEqualTo(firstEnd);
 	}
 
 	// F-recording-worm-version-1 (HIGH): FinalizeRecording carries the object-store
