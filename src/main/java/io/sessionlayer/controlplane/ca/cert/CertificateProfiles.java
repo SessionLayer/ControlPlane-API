@@ -111,9 +111,11 @@ public final class CertificateProfiles {
 		if (capabilities.contains("port_forward_local") || capabilities.contains("port_forward_remote")) {
 			extensions.add("permit-port-forwarding");
 		}
-		if (capabilities.contains("agent_forward")) {
-			extensions.add("permit-agent-forwarding");
-		}
+		// F-agent-forward-cert-1 (A5-L2): agent forwarding is ALWAYS refused at the
+		// Gateway (FR-SESS-2), so the inner-leg cert MUST NEVER carry
+		// permit-agent-forwarding even when RBAC grants agent_forward. Belt-and-
+		// suspenders: the node is never told to permit it (two controls, not just
+		// the outer-leg refusal).
 		if (capabilities.contains("x11")) {
 			extensions.add("permit-X11-forwarding");
 		}

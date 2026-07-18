@@ -159,6 +159,6 @@ class AuditPartitioningIT extends AbstractDataIT {
 			String wormMode) {
 		return new RecordingRef(io.sessionlayer.controlplane.data.Uuids.v7(), sessionId, objectKey, "kms://ref", null,
 				wormMode, null, retentionUntil, legalHold, "finalized", "asciicast-v2", null, null, null, null, null,
-				null, null, null);
+				null, null, null, null);
 	}
 }

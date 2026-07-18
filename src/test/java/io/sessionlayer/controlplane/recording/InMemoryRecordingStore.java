@@ -41,9 +41,13 @@ public class InMemoryRecordingStore implements RecordingStore {
 	}
 
 	@Override
-	public Mono<PresignedAccess> presignDownload(String objectKey, Duration ttl) {
-		return Mono.just(
-				new PresignedAccess(BASE_URL + objectKey, "GET", Map.of(), Instant.now().plus(ttl).getEpochSecond()));
+	public Mono<PresignedAccess> presignDownload(String objectKey, String objectVersionId, Duration ttl) {
+		// Encode the pinned version into the URL so tests can assert replay serves the
+		// finalized version, not the current one (F-recording-worm-version-1).
+		String url = (objectVersionId == null || objectVersionId.isBlank())
+				? BASE_URL + objectKey
+				: BASE_URL + objectKey + "?versionId=" + objectVersionId;
+		return Mono.just(new PresignedAccess(url, "GET", Map.of(), Instant.now().plus(ttl).getEpochSecond()));
 	}
 
 	@Override

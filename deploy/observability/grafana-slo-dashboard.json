@@ -1,0 +1,81 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "description": "", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" }
+  ],
+  "title": "SessionLayer — SLOs + data-path RED (S23)",
+  "uid": "sessionlayer-slo-red",
+  "tags": ["sessionlayer", "slo", "red"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      { "name": "DS_PROMETHEUS", "type": "datasource", "query": "prometheus", "current": {}, "hide": 0 }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "Control Plane SLOs (S21 Micrometer)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "type": "timeseries", "title": "NFR-4 session-establishment p95 (SLO 250ms)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.25 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le)(rate(sessionlayer_session_establishment_seconds_bucket[5m])))", "legendFormat": "p95" } ]
+    },
+    {
+      "type": "stat", "title": "NFR-3 CA-signer availability (SLO 99.9%, real requests)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0.99, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 0.999 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum(rate(sessionlayer_ca_signer_total{source=\"request\",outcome=\"available\"}[30m])) / sum(rate(sessionlayer_ca_signer_total{source=\"request\"}[30m]))", "legendFormat": "availability" } ]
+    },
+    {
+      "type": "timeseries", "title": "Establishment rate + errors (deny excluded)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(sessionlayer_session_establishment_seconds_count[5m]))", "legendFormat": "rate" },
+        { "refId": "B", "expr": "sum(rate(sessionlayer_session_establishment_seconds_count{outcome=~\"error|cancelled\"}[5m]))", "legendFormat": "errors" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "cert-sign p95 by kind (SLO 100ms)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.1 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le,kind)(rate(sessionlayer_cert_sign_seconds_bucket[5m])))", "legendFormat": "{{kind}} p95" } ]
+    },
+    { "type": "row", "title": "Gateway data-path RED (OTel span-metrics)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 } },
+    {
+      "type": "timeseries", "title": "Gateway session rate + error ratio",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(calls_total{service_name=\"sessionlayer-gateway\",span_name=\"gateway.session\"}[5m]))", "legendFormat": "rate" },
+        { "refId": "B", "expr": "sum(rate(calls_total{service_name=\"sessionlayer-gateway\",span_name=\"gateway.session\",status_code=\"STATUS_CODE_ERROR\"}[5m])) / clamp_min(sum(rate(calls_total{service_name=\"sessionlayer-gateway\",span_name=\"gateway.session\"}[5m])),0.001)", "legendFormat": "error ratio" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "host-verify failures (no-TOFU aborts / possible MITM)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum(rate(calls_total{service_name=\"sessionlayer-gateway\",span_name=\"host_verify\",status_code=\"STATUS_CODE_ERROR\"}[10m]))", "legendFormat": "host_verify errors" } ]
+    },
+    { "type": "row", "title": "Saturation (CP actuator)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 } },
+    {
+      "type": "timeseries", "title": "R2DBC pool — utilization + pending",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "r2dbc_pool_acquired / clamp_min(r2dbc_pool_max_allocated,1)", "legendFormat": "utilization" },
+        { "refId": "B", "expr": "r2dbc_pool_pending", "legendFormat": "pending (queue)" }
+      ]
+    }
+  ]
+}

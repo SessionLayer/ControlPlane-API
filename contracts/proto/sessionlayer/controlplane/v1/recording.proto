@@ -191,6 +191,15 @@ message FinalizeRecordingRequest {
   // SHA-256 of the transferred content (FR-AUD-1). METADATA ONLY; file content is
   // never captured. Correlated into the audit_event stream (FR-AUD-9).
   repeated FileTransferAudit sftp_audit = 6;
+
+  // The object-store version id (S3 `x-amz-version-id`) of the ciphertext object
+  // the Gateway actually PUT. Written write-once to recording_ref.object_version_id
+  // and pinned by replay/export so they serve THIS finalized version — not a later
+  // shadow PUT to the same key by a compromised CP/Gateway (§15 crown-jewels: WORM
+  // Object Lock protects a version, not the key from new versions). Additive/N-1:
+  // an older Gateway omits it → the CP stores null and replay falls back to the
+  // unversioned GET (pre-fix behaviour) until both peers are upgraded.
+  string object_version_id = 7;
 }
 
 // One decoded SFTP/SCP file-transfer operation (metadata only).

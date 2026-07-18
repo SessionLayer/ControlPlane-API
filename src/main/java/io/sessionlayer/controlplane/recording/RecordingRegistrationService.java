@@ -153,6 +153,13 @@ public class RecordingRegistrationService {
 					if (!callerGatewayId.equals(session.gatewayId())) {
 						return Mono.error(refused());
 					}
+					// F-recording-worm-version-1: a terminal recording gets NO fresh presigned
+					// PUT — else a compromised/buggy Gateway could shadow the finalized,
+					// WORM-locked object with a later version to the same key (§15). Uploads
+					// are only issued while the recording is still open.
+					if (!"recording".equals(ref.status())) {
+						return Mono.error(refused());
+					}
 					Instant retainUntil = ref.retentionUntil() != null
 							? ref.retentionUntil()
 							: Instant.now().plus(Duration.ofDays(1));
@@ -174,7 +181,7 @@ public class RecordingRegistrationService {
 	 * Returns the stored terminal status.
 	 */
 	public Mono<String> finalizeRecording(UUID callerGatewayId, UUID recordingId, String status, String hashChainHead,
-			String contentDigest, long byteLen, List<FileTransferAuditEntry> sftpAudit) {
+			String contentDigest, String objectVersionId, long byteLen, List<FileTransferAuditEntry> sftpAudit) {
 		if (callerGatewayId == null || recordingId == null) {
 			return Mono.error(refused());
 		}
@@ -186,6 +193,10 @@ public class RecordingRegistrationService {
 		}
 		String head = normalizedDigest(hashChainHead);
 		String digest = normalizedDigest(contentDigest);
+		// The object-store version id replay/export pins so a later shadow PUT to the
+		// same key can't be served (F-recording-worm-version-1 / §15). Empty ⇒ null (an
+		// N-1 Gateway that predates the field, or a non-versioned store).
+		String versionId = (objectVersionId == null || objectVersionId.isBlank()) ? null : objectVersionId;
 		Long size = byteLen > 0 ? byteLen : null;
 		Mono<String> body = recordings.findById(recordingId).switchIfEmpty(Mono.error(refused())).flatMap(
 				ref -> sshSessions.findById(ref.sessionId()).switchIfEmpty(Mono.error(refused())).flatMap(session -> {
@@ -201,7 +212,7 @@ public class RecordingRegistrationService {
 								: Mono.error(new GatewayRequestException(Reason.FAILED_PRECONDITION,
 										"recording already finalized"));
 					}
-					RecordingRef finalized = ref.finalized(head, digest, size, status);
+					RecordingRef finalized = ref.finalized(head, digest, versionId, size, status);
 					return nodeLabels(session.nodeId()).flatMap(labels -> recordings.save(finalized)
 							.then(writeTransferAudit(session, labels, sftpAudit))
 							.then(audit.record(sessionEvent(session, labels, session.identity(), recordingId.toString(),

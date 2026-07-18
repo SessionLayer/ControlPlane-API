@@ -305,6 +305,60 @@ class RecordingIT extends AbstractMtlsIT {
 		assertThat(sftp.detail().get("direction").asString()).isEqualTo("upload");
 	}
 
+	// F-recording-worm-version-1 (HIGH): FinalizeRecording carries the object-store
+	// version id the Gateway PUT; the CP stores it write-once so replay/export can
+	// pin
+	// it. A re-finalize cannot repoint it (a compromised actor can't move the pin).
+	@Test
+	void finalizePersistsTheObjectVersionIdAndCannotRepointIt() {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "peggy-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-ver-" + unique());
+		UUID sessionId = UUID.randomUUID();
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", sessionId);
+		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
+
+		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setHashChainHead("sha256:" + "a".repeat(64))
+				.setContentDigest("sha256:" + "b".repeat(64)).setByteLen(1).setObjectVersionId("ver-abc-123").build());
+		RecordingRef ref = recordings.findBySessionId(sessionId).block();
+		assertThat(ref.objectVersionId()).isEqualTo("ver-abc-123");
+
+		// A same-status re-finalize with an EVIL version id is an idempotent no-op —
+		// the
+		// pinned version does not move (belt; the DB write-once trigger is the
+		// suspenders).
+		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setObjectVersionId("ver-EVIL-999").build());
+		assertThat(recordings.findBySessionId(sessionId).block().objectVersionId()).isEqualTo("ver-abc-123");
+	}
+
+	// F-recording-worm-version-1 (F4): a finalized recording is terminal —
+	// RequestUpload
+	// is refused so a compromised/buggy Gateway can't shadow the WORM-locked object
+	// with
+	// a later version to the same key (§15 crown-jewels).
+	@Test
+	void requestUploadAfterFinalizeIsRefused() {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "trent-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell"));
+		EnrolledGateway gateway = enroll("gw-final-noupload-" + unique());
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", UUID.randomUUID());
+		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
+		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setHashChainHead("sha256:" + "a".repeat(64))
+				.setContentDigest("sha256:" + "b".repeat(64)).setByteLen(1).build());
+
+		assertThatThrownBy(() -> requestUpload(gateway, begin.getRecordingId()))
+				.isInstanceOf(StatusRuntimeException.class)
+				.satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode())
+						.isEqualTo(io.grpc.Status.Code.PERMISSION_DENIED));
+	}
+
 	@Test
 	void hostileSftpMetadataIsNormalized() {
 		configureCustomerKey("kms://customer-1", "governance");

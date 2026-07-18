@@ -29,9 +29,13 @@ public interface RecordingStore {
 	/**
 	 * Presign a short-lived single-object GET for admin replay/export (FR-AUD-5).
 	 * The object stays customer-key encrypted; the CP returns only the URL, never
-	 * plaintext, and cannot decrypt it.
+	 * plaintext, and cannot decrypt it. When {@code objectVersionId} is non-null
+	 * the GET is PINNED to that finalized version so a later shadow PUT to the same
+	 * key (by a compromised CP/Gateway) is never served (F-recording-worm-version-1
+	 * / §15); null falls back to the current version (N-1 recording with no stored
+	 * id).
 	 */
-	Mono<PresignedAccess> presignDownload(String objectKey, Duration ttl);
+	Mono<PresignedAccess> presignDownload(String objectKey, String objectVersionId, Duration ttl);
 
 	/**
 	 * Governance-mode deletion of a single object (FR-AUD-3/6, the GDPR erasure

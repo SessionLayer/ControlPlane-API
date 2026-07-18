@@ -86,7 +86,8 @@ public class RecordingService extends RecordingGrpc.RecordingImplBase {
 			return new FinalizeArgs(recordingId, status);
 		}).flatMap(args -> registration
 				.finalizeRecording(caller, args.recordingId(), args.status(), request.getHashChainHead(),
-						request.getContentDigest(), request.getByteLen(), toEntries(request))
+						request.getContentDigest(), request.getObjectVersionId(), request.getByteLen(),
+						toEntries(request))
 				.map(stored -> FinalizeRecordingResponse.newBuilder().setStatus(fromStatus(stored)).build()));
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "FinalizeRecording");
 	}

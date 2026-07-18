@@ -27,10 +27,12 @@ import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectLockConfigurationRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.s3.model.ObjectLockEnabled;
 import software.amazon.awssdk.services.s3.model.ObjectLockMode;
 import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -111,8 +113,8 @@ public class WormObjectStore implements RecordingStore {
 	}
 
 	@Override
-	public Mono<PresignedAccess> presignDownload(String objectKey, Duration ttl) {
-		return Mono.fromCallable(() -> presignDownloadBlocking(objectKey, ttl))
+	public Mono<PresignedAccess> presignDownload(String objectKey, String objectVersionId, Duration ttl) {
+		return Mono.fromCallable(() -> presignDownloadBlocking(objectKey, objectVersionId, ttl))
 				.subscribeOn(Schedulers.boundedElastic());
 	}
 
@@ -185,8 +187,17 @@ public class WormObjectStore implements RecordingStore {
 
 	// A read-only presigned GET for admin replay/export. No object-lock headers (a
 	// GET does not mutate); the object remains customer-key encrypted end to end.
-	private PresignedAccess presignDownloadBlocking(String objectKey, Duration ttl) {
-		GetObjectRequest get = GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build();
+	private PresignedAccess presignDownloadBlocking(String objectKey, String objectVersionId, Duration ttl) {
+		// Pin the finalized version (F-recording-worm-version-1 / §15): Object Lock
+		// protects an object VERSION, not the key from a new PUT, so an unversioned GET
+		// would serve a later shadow version. A stored version id makes replay/export
+		// serve exactly the finalized bytes; null (N-1 recording) falls back to
+		// current.
+		GetObjectRequest.Builder getBuilder = GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey);
+		if (objectVersionId != null && !objectVersionId.isBlank()) {
+			getBuilder.versionId(objectVersionId);
+		}
+		GetObjectRequest get = getBuilder.build();
 		GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder().signatureDuration(ttl)
 				.getObjectRequest(get).build();
 		PresignedGetObjectRequest presigned = presigner.presignGetObject(presignRequest);
@@ -210,6 +221,11 @@ public class WormObjectStore implements RecordingStore {
 		String bucket = properties.getBucket();
 		try {
 			s3.headBucket(HeadBucketRequest.builder().bucket(bucket).build());
+			// F-worm-objectlock-verify-1: a pre-existing operator bucket without
+			// object-lock would silently drop WORM immutability (a compliance PUT still
+			// fails per-object, but the misconfig should surface at STARTUP, not per
+			// recording at Tier-0). Verify it, fail fast on a definitive miss.
+			verifyObjectLockEnabled(bucket);
 		} catch (NoSuchBucketException absent) {
 			createBucket(bucket);
 		} catch (S3Exception maybeMissing) {
@@ -220,6 +236,36 @@ public class WormObjectStore implements RecordingStore {
 			}
 		}
 		bucketEnsured.set(true);
+	}
+
+	private void verifyObjectLockEnabled(String bucket) {
+		ObjectLockEnabled enabled;
+		try {
+			enabled = s3.getObjectLockConfiguration(GetObjectLockConfigurationRequest.builder().bucket(bucket).build())
+					.objectLockConfiguration().objectLockEnabled();
+		} catch (S3Exception e) {
+			// A missing object-lock configuration is a DEFINITIVE "not immutable" → fail
+			// fast. Any other failure (a read-permission gap, a store that can't answer)
+			// warns loudly but proceeds; the per-upload lock header is still the hard
+			// fail-closed control (FR-AUD-3), so we never weaken it by refusing to start.
+			String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : "";
+			if ("ObjectLockConfigurationNotFoundError".equals(code)) {
+				throw notImmutable(bucket, e);
+			}
+			LOG.warn("could not verify object-lock on WORM bucket {} (errorCode={}); per-upload lock header remains "
+					+ "the control", bucket, code, e);
+			return;
+		}
+		if (enabled != ObjectLockEnabled.ENABLED) {
+			throw notImmutable(bucket, null);
+		}
+		LOG.info("WORM recording bucket {} object-lock verified ENABLED", bucket);
+	}
+
+	private static IllegalStateException notImmutable(String bucket, Throwable cause) {
+		return new IllegalStateException("WORM recording bucket " + bucket
+				+ " is not object-lock enabled (FR-AUD-3): recordings would not be immutable — enable object-lock "
+				+ "on the bucket before starting.", cause);
 	}
 
 	private void createBucket(String bucket) {

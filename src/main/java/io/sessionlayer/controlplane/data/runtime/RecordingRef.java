@@ -21,41 +21,46 @@ import org.springframework.data.relational.core.mapping.Table;
 @Table(schema = "runtime", name = "recording_ref")
 public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String encryptionKeyRef, String hashChainHead,
 		String wormMode, Long sizeBytes, Instant retentionUntil, boolean legalHold, String status, String format,
-		String contentDigest, Instant prunedAt, String deleteMode, String deletedBy, String legalHoldReason,
-		@Version Long version, @CreatedDate Instant createdAt, @LastModifiedDate Instant updatedAt) {
+		String contentDigest, String objectVersionId, Instant prunedAt, String deleteMode, String deletedBy,
+		String legalHoldReason, @Version Long version, @CreatedDate Instant createdAt,
+		@LastModifiedDate Instant updatedAt) {
 
 	public static RecordingRef create(UUID sessionId, String objectKey, String encryptionKeyRef, String hashChainHead,
 			String wormMode, Long sizeBytes) {
 		return new RecordingRef(Uuids.v7(), sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
-				null, false, "recording", "asciicast-v2", null, null, null, null, null, null, null, null);
+				null, false, "recording", "asciicast-v2", null, null, null, null, null, null, null, null, null);
 	}
 
 	/**
 	 * Register a recording at {@code BeginRecording}: {@code id} is supplied by the
 	 * caller (it is echoed as the recording id and embedded in {@code objectKey}),
 	 * the WORM mode + retention window are the operator policy, and the integrity
-	 * fields ({@code hashChainHead}/{@code contentDigest}) are filled write-once at
-	 * finalize.
+	 * fields ({@code hashChainHead}/{@code contentDigest}/{@code objectVersionId})
+	 * are filled write-once at finalize.
 	 */
 	public static RecordingRef begin(UUID id, UUID sessionId, String objectKey, String encryptionKeyRef,
 			String wormMode, Instant retentionUntil) {
 		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, null, wormMode, null, retentionUntil, false,
-				"recording", "asciicast-v2", null, null, null, null, null, null, null, null);
+				"recording", "asciicast-v2", null, null, null, null, null, null, null, null, null);
 	}
 
 	/**
 	 * Commit the terminal integrity metadata at {@code FinalizeRecording}. The
-	 * write-once provenance columns ({@code hashChainHead}/{@code contentDigest})
-	 * go NULL→value (the DB trigger permits that once, then freezes them);
-	 * {@code status} and {@code sizeBytes} are the mutable lifecycle fields. Null
-	 * arguments leave the corresponding field unchanged (a FAILED recording has no
-	 * object → no digest).
+	 * write-once provenance columns ({@code hashChainHead}/{@code contentDigest}/
+	 * {@code objectVersionId}) go NULL→value (the DB trigger permits that once,
+	 * then freezes them); {@code status} and {@code sizeBytes} are the mutable
+	 * lifecycle fields. Null arguments leave the corresponding field unchanged (a
+	 * FAILED recording has no object → no digest/version). {@code objectVersionId}
+	 * is the object-store version id replay/export pins so a later shadow PUT can't
+	 * be served (F-recording-worm-version-1 / §15).
 	 */
-	public RecordingRef finalized(String hashChainHead, String contentDigest, Long sizeBytes, String status) {
+	public RecordingRef finalized(String hashChainHead, String contentDigest, String objectVersionId, Long sizeBytes,
+			String status) {
 		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef,
 				hashChainHead != null ? hashChainHead : this.hashChainHead, wormMode,
 				sizeBytes != null ? sizeBytes : this.sizeBytes, retentionUntil, legalHold, status, format,
-				contentDigest != null ? contentDigest : this.contentDigest, prunedAt, deleteMode, deletedBy,
+				contentDigest != null ? contentDigest : this.contentDigest,
+				objectVersionId != null ? objectVersionId : this.objectVersionId, prunedAt, deleteMode, deletedBy,
 				legalHoldReason, version, createdAt, updatedAt);
 	}
 
@@ -65,7 +70,7 @@ public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String
 	 */
 	public RecordingRef withLegalHold(boolean held, String reason) {
 		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
-				retentionUntil, held, status, format, contentDigest, prunedAt, deleteMode, deletedBy,
+				retentionUntil, held, status, format, contentDigest, objectVersionId, prunedAt, deleteMode, deletedBy,
 				held ? reason : null, version, createdAt, updatedAt);
 	}
 
@@ -75,7 +80,7 @@ public record RecordingRef(@Id UUID id, UUID sessionId, String objectKey, String
 	 */
 	public RecordingRef pruned(String deleteMode, String deletedBy, Instant prunedAt) {
 		return new RecordingRef(id, sessionId, objectKey, encryptionKeyRef, hashChainHead, wormMode, sizeBytes,
-				retentionUntil, legalHold, status, format, contentDigest, prunedAt, deleteMode, deletedBy,
-				legalHoldReason, version, createdAt, updatedAt);
+				retentionUntil, legalHold, status, format, contentDigest, objectVersionId, prunedAt, deleteMode,
+				deletedBy, legalHoldReason, version, createdAt, updatedAt);
 	}
 }

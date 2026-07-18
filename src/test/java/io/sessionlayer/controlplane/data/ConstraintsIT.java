@@ -162,8 +162,9 @@ class ConstraintsIT extends AbstractDataIT {
 		// rejected
 		var tampered = new RecordingRef(rec.id(), rec.sessionId(), "k2-tampered", rec.encryptionKeyRef(),
 				rec.hashChainHead(), rec.wormMode(), rec.sizeBytes(), rec.retentionUntil(), rec.legalHold(),
-				rec.status(), rec.format(), rec.contentDigest(), rec.prunedAt(), rec.deleteMode(), rec.deletedBy(),
-				rec.legalHoldReason(), rec.version(), rec.createdAt(), rec.updatedAt());
+				rec.status(), rec.format(), rec.contentDigest(), rec.objectVersionId(), rec.prunedAt(),
+				rec.deleteMode(), rec.deletedBy(), rec.legalHoldReason(), rec.version(), rec.createdAt(),
+				rec.updatedAt());
 		expectRejected(recordings.save(tampered));
 	}
 
