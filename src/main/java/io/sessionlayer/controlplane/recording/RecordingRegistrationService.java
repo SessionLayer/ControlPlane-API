@@ -7,6 +7,7 @@ import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.data.runtime.RecordingRef;
 import io.sessionlayer.controlplane.data.runtime.RecordingRefRepository;
+import io.sessionlayer.controlplane.data.runtime.SessionLeaseRepository;
 import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.GatewayRequestException;
@@ -56,6 +57,7 @@ public class RecordingRegistrationService {
 	private final RecordingTokenService recordingTokens;
 	private final OperatorSettingsRepository operatorSettings;
 	private final SshSessionRepository sshSessions;
+	private final SessionLeaseRepository sessionLeases;
 	private final RecordingRefRepository recordings;
 	private final NodeRepository nodes;
 	private final RecordingStore worm;
@@ -64,11 +66,12 @@ public class RecordingRegistrationService {
 
 	public RecordingRegistrationService(RecordingTokenService recordingTokens,
 			OperatorSettingsRepository operatorSettings, SshSessionRepository sshSessions,
-			RecordingRefRepository recordings, NodeRepository nodes, RecordingStore worm, AuditEventStore audit,
-			TransactionalOperator tx) {
+			SessionLeaseRepository sessionLeases, RecordingRefRepository recordings, NodeRepository nodes,
+			RecordingStore worm, AuditEventStore audit, TransactionalOperator tx) {
 		this.recordingTokens = recordingTokens;
 		this.operatorSettings = operatorSettings;
 		this.sshSessions = sshSessions;
+		this.sessionLeases = sessionLeases;
 		this.recordings = recordings;
 		this.nodes = nodes;
 		this.worm = worm;
@@ -214,7 +217,7 @@ public class RecordingRegistrationService {
 					}
 					RecordingRef finalized = ref.finalized(head, digest, versionId, size, status);
 					return nodeLabels(session.nodeId()).flatMap(labels -> recordings.save(finalized)
-							.then(writeTransferAudit(session, labels, sftpAudit))
+							.then(endSession(session, status)).then(writeTransferAudit(session, labels, sftpAudit))
 							.then(audit.record(sessionEvent(session, labels, session.identity(), recordingId.toString(),
 									"recording.finalize", finalizeOutcome(status))
 									.detail(finalizeDetail(callerGatewayId, recordingId, status, byteLen, digest, head))
@@ -222,6 +225,35 @@ public class RecordingRegistrationService {
 							.thenReturn(status));
 				}));
 		return tx.transactional(body);
+	}
+
+	// FR-SESS-3 lifecycle completion: the first terminal finalize closes the owning
+	// session — stamps ended_at/end_reason (the SessionController history) AND
+	// releases
+	// the session_lease, freeing the identity's concurrency slot (Authorize counts
+	// unreleased leases). Idempotent — an already-ended row is left untouched and
+	// the
+	// lease release is a no-op if already released. end_reason is derived from the
+	// recording's terminal status: it marks HOW the recording completed, not the
+	// authoritative teardown cause (a Lock teardown's "why" lives in the lock/audit
+	// trail).
+	private Mono<Void> endSession(SshSession session, String status) {
+		Instant now = Instant.now();
+		Mono<Void> stampEnd = session.endedAt() == null
+				? sshSessions.save(session.ended(now, sessionEndReason(status))).then()
+				: Mono.empty();
+		// Release the FR-SESS-3 concurrency lease so the identity's slot frees the
+		// moment the session ends (idempotent; a break-glass session never took a lease
+		// → a harmless no-op).
+		return stampEnd.then(sessionLeases.releaseBySessionId(session.id(), now)).then();
+	}
+
+	private static String sessionEndReason(String status) {
+		return switch (status) {
+			case "truncated" -> "truncated";
+			case "failed" -> "error";
+			default -> "closed"; // finalized: the session closed and its recording sealed cleanly
+		};
 	}
 
 	// One audit_event per decoded SFTP/SCP operation (FR-AUD-1), metadata only,

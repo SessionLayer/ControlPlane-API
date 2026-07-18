@@ -48,4 +48,16 @@ public record SshSession(@Id UUID id, String identity, UUID nodeId, String nodeN
 				capabilities, matchedRuleId, matchedRuleName, jitRequestId, breakglassActivationId, policyEpoch,
 				grantExpiry, startedAt, null, null, null, null, null);
 	}
+
+	/**
+	 * Close the session lifecycle: stamp {@code endedAt}/{@code endReason} so a
+	 * finished session immediately frees its FR-SESS-3 concurrency slot (the count
+	 * gates on {@code ended_at IS NULL}) and history reflects how it ended. Called
+	 * once, on the first terminal recording finalize.
+	 */
+	public SshSession ended(Instant endedAt, String endReason) {
+		return new SshSession(id, identity, nodeId, nodeName, principal, gatewayId, gatewayName, accessModel,
+				capabilities, matchedRuleId, matchedRuleName, jitRequestId, breakglassActivationId, policyEpoch,
+				grantExpiry, startedAt, endedAt, endReason, version, createdAt, updatedAt);
+	}
 }

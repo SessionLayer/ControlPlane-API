@@ -37,8 +37,9 @@ class MigrationIntegrityIT extends AbstractDataIT {
 		// (runtime.idempotency_key). S18 adds V23 (recording:delete permission +
 		// recording_ref retention/governance columns — no new table). S23 adds V24
 		// (recording_ref.object_version_id write-once column — WORM version pin, no new
-		// table).
-		assertThat(maxVersion).isEqualTo(24);
+		// table). S24 adds V25 (partial index on active ssh_session by identity for the
+		// FR-SESS-3 session listing — index only, no new table/column).
+		assertThat(maxVersion).isEqualTo(25);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
