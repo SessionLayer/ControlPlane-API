@@ -80,7 +80,7 @@
 		  only (never shipped); EPL-2.0, same posture as the JUnit test deps already
 		  present. Not managed by the BOM, so pinned here.
 		-->
-		<jqwik.version>1.9.1</jqwik.version>
+		<jqwik.version>1.10.1</jqwik.version>
 
 		<!--
 		  AWS SDK for Java v2 (Apache-2.0, GPL-3.0-compatible; not managed by the
