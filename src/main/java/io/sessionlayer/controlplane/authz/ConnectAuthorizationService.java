@@ -501,7 +501,10 @@ public class ConnectAuthorizationService {
 	// (Postgres xact advisory lock, same connection as the tx; auto-released at
 	// commit/rollback). Consistent lock order everywhere: per-identity BEFORE the
 	// audit
-	// chain lock, so it cannot deadlock with the audit-append lock.
+	// chain lock, so it cannot deadlock with the audit-append lock. A hashtext()
+	// collision between two DIFFERENT identities only makes them share this lock —
+	// harmless extra serialization; the count itself filters by exact identity
+	// text.
 	private Mono<Void> lockIdentity(String identity) {
 		return db.sql("SELECT pg_advisory_xact_lock(hashtext(:identity))").bind("identity", identity).fetch()
 				.rowsUpdated().then();

@@ -32,4 +32,21 @@ public interface SessionLeaseRepository extends ReactiveCrudRepository<SessionLe
 	@Modifying
 	@Query("UPDATE runtime.session_lease SET released_at = :now WHERE session_id = :sessionId AND released_at IS NULL")
 	Mono<Integer> releaseBySessionId(UUID sessionId, Instant now);
+
+	/**
+	 * Reap leaked leases: mark released any lease still unreleased whose grant
+	 * window ended before {@code cutoff} (a few minutes past its
+	 * {@code expires_at}, for belt). A session that crashed without a
+	 * FinalizeRecording (e.g. a hard-killed Gateway, NFR-1) never releases its
+	 * lease; the count already ignores it (via the {@code expires_at} filter), but
+	 * the {@code idx_session_lease_live} partial index (predicate
+	 * {@code released_at IS NULL}) would otherwise keep it forever and bloat.
+	 * Setting {@code released_at} removes it from that index. Idempotent and
+	 * harmless — it never touches a still-live (unexpired) or already-released
+	 * lease.
+	 */
+	@Modifying
+	@Query("UPDATE runtime.session_lease SET released_at = :now "
+			+ "WHERE released_at IS NULL AND expires_at IS NOT NULL AND expires_at < :cutoff")
+	Mono<Integer> reapExpired(Instant now, Instant cutoff);
 }
