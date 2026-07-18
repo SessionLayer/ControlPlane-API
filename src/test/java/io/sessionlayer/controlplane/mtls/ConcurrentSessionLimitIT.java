@@ -180,6 +180,36 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
 	}
 
+	// A leaked lease self-heals at grant_expiry: an unreleased lease whose
+	// expires_at
+	// is already in the past (a crashed session that never finalized) no longer
+	// counts,
+	// so it can never lock the identity out permanently — no reaper needed for
+	// correctness.
+	@Test
+	void anExpiredUnreleasedLeaseNoLongerCountsTowardTheCap() {
+		String identity = "leak-" + unique();
+		UUID nodeId = seedProdNode();
+		Node node = nodes.findById(nodeId).block();
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		seedPolicy(identity, 1); // cap of one
+		EnrolledGateway gateway = enroll("gw-leak-" + unique());
+
+		// A leaked lease: unreleased but past its expires_at grant window.
+		SshSession stale = sshSessions.save(SshSession.create(identity, nodeId, node.name(), "deploy",
+				gateway.gatewayId(), "gw-leak", "standing", List.of("shell"), null, "stale-rule", null, null, 0L,
+				Instant.now().minusSeconds(60), Instant.now().minusSeconds(3600))).block();
+		sessionLeases.save(SessionLease.acquire(identity, stale.id(), "gw-leak", Instant.now().minusSeconds(3600),
+				Instant.now().minusSeconds(60))).block();
+		assertThat(countLive(identity)).isEqualTo(0); // the phantom lease is not counted
+
+		// Even at cap 1, a new session is admitted; the fresh (unexpired) lease then
+		// caps
+		// the next one.
+		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_DENY);
+	}
+
 	// Break-glass is exempt: even with the identity already at its cap, a
 	// break-glass
 	// Authorize still allows AND consumes no lease (emergency access is neither
@@ -234,7 +264,7 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 	}
 
 	private long countLive(String identity) {
-		return sessionLeases.countLiveByIdentity(identity).block();
+		return sessionLeases.countLiveByIdentity(identity, Instant.now()).block();
 	}
 
 	private AuditEvent deniedDecision(String identity) {

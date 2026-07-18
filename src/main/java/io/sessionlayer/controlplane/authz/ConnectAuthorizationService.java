@@ -454,7 +454,7 @@ public class ConnectAuthorizationService {
 									.allow(signed, sessionToken, recordingToken, nodeConnection, trace))));
 			// Gate on the cap BEFORE minting (count the live leases; a breach denies and
 			// mints nothing — deny wins). The check runs inside the allow tx.
-			return tx.transactional(enforceConcurrencyLimit(callerGatewayId, request, node, accessModel, mint));
+			return tx.transactional(enforceConcurrencyLimit(callerGatewayId, request, node, accessModel, now, mint));
 		});
 	}
 
@@ -476,13 +476,13 @@ public class ConnectAuthorizationService {
 	// by the number racing — an accepted tolerance (the in-tx check shrinks the
 	// window).
 	private Mono<ConnectDecision> enforceConcurrencyLimit(UUID callerGatewayId, AuthorizationRequest request, Node node,
-			String accessModel, Mono<ConnectDecision> mint) {
+			String accessModel, Instant now, Mono<ConnectDecision> mint) {
 		if (MODEL_BREAKGLASS.equals(accessModel)) {
 			return mint;
 		}
 		return resolveConcurrencyLimit(request.identity(), request.groups()).flatMap(limit -> limit <= 0
 				? mint
-				: sessionLeases.countLiveByIdentity(request.identity())
+				: sessionLeases.countLiveByIdentity(request.identity(), now)
 						.flatMap(active -> active >= limit
 								? denyConcurrencyLimit(callerGatewayId, request, node.id(), accessModel, active, limit)
 								: mint))

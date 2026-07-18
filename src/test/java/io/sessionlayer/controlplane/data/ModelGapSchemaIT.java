@@ -166,7 +166,7 @@ class ModelGapSchemaIT extends AbstractDataIT {
 		leases.save(new SessionLease(released.id(), released.identity(), released.sessionId(), released.gatewayName(),
 				released.acquiredAt(), released.expiresAt(), Instant.now(), released.version(), released.createdAt(),
 				released.updatedAt())).block();
-		assertThat(leases.countLiveByIdentity(identity).block()).isEqualTo(2L); // 3 acquired, 1 released
+		assertThat(leases.countLiveByIdentity(identity, Instant.now()).block()).isEqualTo(2L); // 3 acquired, 1 released
 	}
 
 	@Test

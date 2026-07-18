@@ -332,7 +332,7 @@ class RecordingIT extends AbstractMtlsIT {
 		// Live before finalize: no end stamp, and the Authorize acquired one live
 		// lease.
 		assertThat(sshSessions.findById(sessionId).block().endedAt()).isNull();
-		assertThat(sessionLeases.countLiveByIdentity(identity).block()).isEqualTo(1L);
+		assertThat(sessionLeases.countLiveByIdentity(identity, Instant.now()).block()).isEqualTo(1L);
 
 		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
 				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1).build());
@@ -340,7 +340,7 @@ class RecordingIT extends AbstractMtlsIT {
 		SshSession ended = sshSessions.findById(sessionId).block();
 		assertThat(ended.endedAt()).isNotNull();
 		assertThat(ended.endReason()).isEqualTo("closed"); // finalized → clean close
-		assertThat(sessionLeases.countLiveByIdentity(identity).block()).isEqualTo(0L); // slot freed
+		assertThat(sessionLeases.countLiveByIdentity(identity, Instant.now()).block()).isEqualTo(0L); // slot freed
 
 		// A same-status re-finalize is a no-op that moves neither the end stamp nor the
 		// released lease.
@@ -348,7 +348,7 @@ class RecordingIT extends AbstractMtlsIT {
 		finalizeRecording(gateway, FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
 				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setByteLen(1).build());
 		assertThat(sshSessions.findById(sessionId).block().endedAt()).isEqualTo(firstEnd);
-		assertThat(sessionLeases.countLiveByIdentity(identity).block()).isEqualTo(0L);
+		assertThat(sessionLeases.countLiveByIdentity(identity, Instant.now()).block()).isEqualTo(0L);
 	}
 
 	// F-recording-worm-version-1 (HIGH): FinalizeRecording carries the object-store
