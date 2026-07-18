@@ -6,14 +6,15 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
- * The capability → OpenSSH cert-extension mapping (FR-AUTHZ-6, default-deny) and
- * the A5-L2 agent-forwarding belt-and-suspenders.
+ * The capability → OpenSSH cert-extension mapping (FR-AUTHZ-6, default-deny)
+ * and the A5-L2 agent-forwarding belt-and-suspenders.
  */
 class CertificateProfilesTest {
 
 	// F-agent-forward-cert-1 (A5-L2): FR-SESS-2 refuses agent forwarding at the
 	// Gateway unconditionally, so a granted agent_forward capability MUST NOT put
-	// permit-agent-forwarding into the inner cert — the node is never told to permit
+	// permit-agent-forwarding into the inner cert — the node is never told to
+	// permit
 	// it (defense-in-depth, not a single outer-leg control).
 	@Test
 	void grantedAgentForwardNeverYieldsPermitAgentForwarding() {

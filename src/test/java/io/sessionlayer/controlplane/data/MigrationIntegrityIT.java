@@ -35,8 +35,10 @@ class MigrationIntegrityIT extends AbstractDataIT {
 		// enrichment columns + the breakglass:manage permission). S17 adds V21 (origin
 		// CHECK tightened to api|ui|default — no table) + V22
 		// (runtime.idempotency_key). S18 adds V23 (recording:delete permission +
-		// recording_ref retention/governance columns — no new table).
-		assertThat(maxVersion).isEqualTo(23);
+		// recording_ref retention/governance columns — no new table). S23 adds V24
+		// (recording_ref.object_version_id write-once column — WORM version pin, no new
+		// table).
+		assertThat(maxVersion).isEqualTo(24);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
