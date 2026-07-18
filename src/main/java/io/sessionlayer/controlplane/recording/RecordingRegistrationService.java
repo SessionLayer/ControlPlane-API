@@ -214,7 +214,7 @@ public class RecordingRegistrationService {
 					}
 					RecordingRef finalized = ref.finalized(head, digest, versionId, size, status);
 					return nodeLabels(session.nodeId()).flatMap(labels -> recordings.save(finalized)
-							.then(writeTransferAudit(session, labels, sftpAudit))
+							.then(endSession(session, status)).then(writeTransferAudit(session, labels, sftpAudit))
 							.then(audit.record(sessionEvent(session, labels, session.identity(), recordingId.toString(),
 									"recording.finalize", finalizeOutcome(status))
 									.detail(finalizeDetail(callerGatewayId, recordingId, status, byteLen, digest, head))
@@ -222,6 +222,33 @@ public class RecordingRegistrationService {
 							.thenReturn(status));
 				}));
 		return tx.transactional(body);
+	}
+
+	// FR-SESS-3 lifecycle completion: the first terminal finalize also closes the
+	// owning session (ended_at/end_reason), which immediately frees the identity's
+	// concurrency slot (the Authorize count gates on ended_at IS NULL) and fills
+	// the
+	// session history the SessionController exposes. Idempotent — an already-ended
+	// row
+	// is left untouched (a re-finalize never reaches this branch anyway). The
+	// reason is
+	// derived from the recording's terminal status: it marks HOW the recording
+	// completed, not the authoritative teardown cause (a Lock teardown's "why"
+	// lives in
+	// the lock/audit trail).
+	private Mono<Void> endSession(SshSession session, String status) {
+		if (session.endedAt() != null) {
+			return Mono.empty();
+		}
+		return sshSessions.save(session.ended(Instant.now(), sessionEndReason(status))).then();
+	}
+
+	private static String sessionEndReason(String status) {
+		return switch (status) {
+			case "truncated" -> "truncated";
+			case "failed" -> "error";
+			default -> "closed"; // finalized: the session closed and its recording sealed cleanly
+		};
 	}
 
 	// One audit_event per decoded SFTP/SCP operation (FR-AUD-1), metadata only,

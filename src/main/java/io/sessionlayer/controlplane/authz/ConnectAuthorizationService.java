@@ -425,15 +425,62 @@ public class ConnectAuthorizationService {
 			// session row (Design §12/§15). Audit last (it serializes on the chain lock).
 			ConnectDecision.TraceInfo trace = new ConnectDecision.TraceInfo(accessModel, node.id(),
 					session.correlationId());
-			Mono<ConnectDecision> allowed = sshSessions.save(session)
+			Mono<ConnectDecision> mint = sshSessions.save(session)
 					.then(tokens.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, capabilities,
 							sourceIp))
 					.flatMap(sessionToken -> recordingTokens
 							.mint(callerGatewayId, sessionId, node.id(), requestedPrincipal, sourceIp)
 							.flatMap(recordingToken -> audit.record(auditRecord).thenReturn(ConnectDecision
 									.allow(signed, sessionToken, recordingToken, nodeConnection, trace))));
-			return tx.transactional(allowed);
+			// FR-SESS-3: enforce the per-identity concurrent-session cap INSIDE the allow
+			// transaction, counting live sessions immediately before the insert so the
+			// check-then-insert window is as small as READ COMMITTED allows.
+			return tx.transactional(guardConcurrency(callerGatewayId, request, node, accessModel, now, mint));
 		});
+	}
+
+	// FR-SESS-3: a would-be allow is refused when the identity already holds its
+	// configured number of live sessions (counted fleet-wide from the shared
+	// datastore, so this holds across HA Gateways). A limit of 0 means unlimited
+	// and
+	// break-glass is exempt — emergency access must not be throttled by a routine
+	// resource cap (it is already gated by single-use token issuance, Lock
+	// supremacy,
+	// and a mandatory-review activation). The count-then-insert is not fully atomic
+	// at
+	// READ COMMITTED: a burst of concurrent Authorizes for one identity can
+	// overshoot
+	// by the number racing — an accepted soft-limit tolerance (deny wins on
+	// breach).
+	private Mono<ConnectDecision> guardConcurrency(UUID callerGatewayId, AuthorizationRequest request, Node node,
+			String accessModel, Instant now, Mono<ConnectDecision> mint) {
+		int limit = properties.concurrentSessionLimitFor(request.identity());
+		if (MODEL_BREAKGLASS.equals(accessModel) || limit <= 0) {
+			return mint;
+		}
+		return sshSessions.countActiveByIdentity(request.identity(), now)
+				.flatMap(active -> active >= limit
+						? denyConcurrencyLimit(callerGatewayId, request, node.id(), accessModel, active, limit)
+						: mint);
+	}
+
+	// Mint nothing; record the specific reason server-side (the caller sees the
+	// same
+	// generic deny, §8.4) with the observed count vs the limit for the operator.
+	private Mono<ConnectDecision> denyConcurrencyLimit(UUID callerGatewayId, AuthorizationRequest request, UUID nodeId,
+			String accessModel, long active, int limit) {
+		Map<String, String> detail = new HashMap<>();
+		detail.put("reason", "CONCURRENT_SESSION_LIMIT");
+		detail.put("note", "concurrent_session_limit");
+		detail.put("active_sessions", Long.toString(active));
+		detail.put("limit", Integer.toString(limit));
+		if (request.sourceIp() != null) {
+			detail.put("source_ip", request.sourceIp());
+		}
+		return bestEffortAudit(
+				AuditRecord.builder(actor(callerGatewayId), request.identity(), DECISION_ACTION, "denied").node(nodeId)
+						.detail(detail).sourceIp(auditableIp(request.sourceIp())).accessModel(accessModel).build())
+				.thenReturn(ConnectDecision.denied());
 	}
 
 	private static AccessLock firstMatchingLock(AuthorizationRequest request, Set<String> allowedLogins,
