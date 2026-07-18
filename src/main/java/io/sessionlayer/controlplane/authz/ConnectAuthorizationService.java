@@ -45,6 +45,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
@@ -117,6 +118,7 @@ public class ConnectAuthorizationService {
 	private final HaProperties haProperties;
 	private final ObjectMapper objectMapper;
 	private final TransactionalOperator tx;
+	private final DatabaseClient db;
 
 	public ConnectAuthorizationService(NodeRepository nodes, NodeHostKeyRepository hostKeys,
 			CaRotationService caRotation, DpRuleRepository dpRules, AccessLockRepository accessLocks,
@@ -127,8 +129,8 @@ public class ConnectAuthorizationService {
 			RecordingTokenService recordingTokens, JitLifecycleService jit, BreakglassTokenService breakglassTokens,
 			BreakglassActivationRepository breakglassActivations, BreakglassPolicyRepository breakglassPolicies,
 			BreakglassProperties breakglassProperties, AuditEventStore audit, AuthzProperties properties,
-			PresenceRepository presence, HaProperties haProperties, ObjectMapper objectMapper,
-			TransactionalOperator tx) {
+			PresenceRepository presence, HaProperties haProperties, ObjectMapper objectMapper, TransactionalOperator tx,
+			DatabaseClient db) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -155,6 +157,7 @@ public class ConnectAuthorizationService {
 		this.haProperties = haProperties;
 		this.objectMapper = objectMapper;
 		this.tx = tx;
+		this.db = db;
 	}
 
 	public Mono<ConnectDecision> authorize(UUID callerGatewayId, String presentedFingerprint, String identity,
@@ -460,21 +463,25 @@ public class ConnectAuthorizationService {
 
 	// FR-SESS-3: the per-identity concurrency primitive is runtime.session_lease
 	// (one
-	// live lease per session; count of unreleased leases = current concurrency,
-	// fleet-wide over the shared datastore). On a STANDING/JIT allow, if a resolved
-	// limit is already reached we mint nothing and deny (deny wins); else the mint
-	// proceeds and acquires the lease. Break-glass is EXEMPT — it neither counts
-	// nor
-	// consumes a lease, so emergency access is never throttled by the cap nor eats
-	// into
-	// a user's normal budget (it is gated instead by single-use token issuance +
-	// Lock
-	// supremacy + a mandatory-review activation). Soft-limit: the
-	// count-then-acquire is
-	// not atomic at READ COMMITTED, so a concurrent burst for one identity can
-	// overshoot
-	// by the number racing — an accepted tolerance (the in-tx check shrinks the
-	// window).
+	// live lease per session; count of unreleased+unexpired leases = current
+	// concurrency, fleet-wide over the shared datastore). On a STANDING/JIT allow
+	// with
+	// a finite cap, we take a per-identity Postgres advisory xact lock BEFORE
+	// counting,
+	// so count-then-acquire is atomic per identity and the cap is HARD (exact) — a
+	// concurrent burst from a shared/stolen credential can never overshoot it. The
+	// lock
+	// contends ONLY between same-identity connects (hashtext(identity)); different
+	// identities never block each other, and it auto-releases at commit/rollback.
+	// An
+	// over-cap count mints nothing and denies (deny wins). Break-glass is EXEMPT —
+	// it
+	// neither counts nor consumes a lease nor takes the lock, so emergency access
+	// is
+	// never throttled by the cap nor eats into a user's normal budget (it is gated
+	// instead by single-use token issuance + Lock supremacy + a mandatory-review
+	// activation). Unlimited identities skip the lock entirely (no needless
+	// serialization).
 	private Mono<ConnectDecision> enforceConcurrencyLimit(UUID callerGatewayId, AuthorizationRequest request, Node node,
 			String accessModel, Instant now, Mono<ConnectDecision> mint) {
 		if (MODEL_BREAKGLASS.equals(accessModel)) {
@@ -482,11 +489,22 @@ public class ConnectAuthorizationService {
 		}
 		return resolveConcurrencyLimit(request.identity(), request.groups()).flatMap(limit -> limit <= 0
 				? mint
-				: sessionLeases.countLiveByIdentity(request.identity(), now)
+				: lockIdentity(request.identity()).then(sessionLeases.countLiveByIdentity(request.identity(), now))
 						.flatMap(active -> active >= limit
 								? denyConcurrencyLimit(callerGatewayId, request, node.id(), accessModel, active, limit)
 								: mint))
 				.switchIfEmpty(mint);
+	}
+
+	// Serialize concurrent Authorizes for one identity within their allow
+	// transactions
+	// (Postgres xact advisory lock, same connection as the tx; auto-released at
+	// commit/rollback). Consistent lock order everywhere: per-identity BEFORE the
+	// audit
+	// chain lock, so it cannot deadlock with the audit-append lock.
+	private Mono<Void> lockIdentity(String identity) {
+		return db.sql("SELECT pg_advisory_xact_lock(hashtext(:identity))").bind("identity", identity).fetch()
+				.rowsUpdated().then();
 	}
 
 	// Resolve the identity's concurrent-session cap (FR-SESS-3): a matching

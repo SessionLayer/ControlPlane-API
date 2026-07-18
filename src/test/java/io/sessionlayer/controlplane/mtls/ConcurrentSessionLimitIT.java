@@ -28,9 +28,15 @@ import io.sessionlayer.controlplane.grpc.v1.Decision;
 import io.sessionlayer.controlplane.grpc.v1.OuterLegAuthGrpc;
 import io.sessionlayer.controlplane.grpc.v1.ResolveBreakglassKeyRequest;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import tools.jackson.databind.node.JsonNodeFactory;
@@ -91,6 +97,53 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 		assertThat(deny.detail().get("note").stringValue()).isEqualTo("concurrent_session_limit");
 		assertThat(deny.detail().get("active_sessions").stringValue()).isEqualTo("2");
 		assertThat(deny.detail().get("limit").stringValue()).isEqualTo("2");
+	}
+
+	// C1 (redteam MEDIUM): the cap is HARD, not soft. A concurrent BURST of
+	// Authorizes
+	// for ONE identity at cap L admits EXACTLY L — never more — because the
+	// per-identity
+	// advisory xact lock serializes count-then-acquire, so a shared/stolen
+	// credential
+	// can't overshoot the concurrent blast radius. This is the race the sequential
+	// tests
+	// cannot exercise; without serialization the burst would overshoot.
+	@Test
+	void aConcurrentBurstForOneIdentityNeverOvershootsTheCap() throws Exception {
+		String identity = "burst-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
+		int limit = 2;
+		seedPolicy(identity, limit);
+		EnrolledGateway gateway = enroll("gw-burst-" + unique());
+
+		int burst = 8;
+		ExecutorService pool = Executors.newFixedThreadPool(burst);
+		try {
+			CountDownLatch ready = new CountDownLatch(burst);
+			CountDownLatch go = new CountDownLatch(1);
+			List<Future<Decision>> futures = new ArrayList<>();
+			for (int i = 0; i < burst; i++) {
+				futures.add(pool.submit(() -> {
+					ready.countDown();
+					go.await();
+					return authorize(gateway, identity, nodeId, "deploy").getDecision();
+				}));
+			}
+			assertThat(ready.await(15, TimeUnit.SECONDS)).isTrue();
+			go.countDown(); // release the whole burst simultaneously
+
+			long allows = 0;
+			for (Future<Decision> future : futures) {
+				if (future.get(30, TimeUnit.SECONDS) == Decision.DECISION_ALLOW) {
+					allows++;
+				}
+			}
+			assertThat(allows).isEqualTo(limit); // EXACTLY the cap — the race never overshoots
+			assertThat(countLive(identity)).isEqualTo(limit);
+		} finally {
+			pool.shutdownNow();
+		}
 	}
 
 	// A per-identity session_limit_policy overrides the cluster default — and here
