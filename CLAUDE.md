@@ -74,7 +74,8 @@ This is deliberate, not a mistake:
 ## Build, test, gate
 
 - `./mvnw -B -ntp verify` — codegen + compile + `spotless:check` + `checkstyle:check`
-  + unit tests + the Testcontainers IT (`*IT`, needs Docker) + OWASP dependency-check.
+  + unit tests + the Testcontainers IT (`*IT`, needs Docker). Dependency CVE
+  management is Dependabot's — no NVD/OWASP scanner in the build (owner rule, S22).
 - `./mvnw spotless:apply` — auto-format before committing.
 - `./scripts/gate.sh` — the full ROUND_FINAL gate: `mvnw verify` + `contracts/lint.sh`
   + zero-open-medium+ audit findings. Also `make cp-gate` from the parent.
@@ -105,11 +106,10 @@ S1–S4** — match it; do not restore the denser earlier style.
 
 ## Security posture (scaffold)
 
-- OWASP `dependency-check` fails the build on any dependency CVSS ≥ 7. NVD data is
-  cached in `.dependency-check-data` (git-ignored, CI-cached). CI passes an
-  `NVD_API_KEY` secret when present. Accepted CVEs (if ever) go in
-  `config/owasp/dependency-check-suppressions.xml` **with justification** and a
-  mirroring `audit/F-*.md` (Status: Accepted-Risk).
+- **Dependency CVEs are Dependabot's job — there is NO NVD/OWASP scanner in the
+  build** (the OWASP `dependency-check` plugin was retired in #2; the owner rule,
+  S22, forbids re-adding any NVD/OWASP scanner). Dependabot (`.github/dependabot.yml`)
+  raises upgrade PRs; adopt green ones. Do not re-introduce a CVSS build gate.
 - **License:** the project is GPL-3.0-only; the dependency tree is Apache-2.0 /
   BSD / MIT except `jakarta.annotation-api` (EPL-2.0 OR GPL-2.0-with-Classpath-
   Exception). The GPL-2.0+Classpath-Exception alternative is the operative license
