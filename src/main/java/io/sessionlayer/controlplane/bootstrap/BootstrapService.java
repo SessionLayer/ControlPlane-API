@@ -2,6 +2,7 @@ package io.sessionlayer.controlplane.bootstrap;
 
 import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.auth.Secrets;
+import io.sessionlayer.controlplane.authz.SessionLimitProperties;
 import io.sessionlayer.controlplane.data.config.OperatorSettings;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
 import io.sessionlayer.controlplane.data.config.PlatformRole;
@@ -44,15 +45,18 @@ public class BootstrapService {
 	private final PlatformRoleRepository roles;
 	private final RoleBindingRepository bindings;
 	private final BootstrapProperties properties;
+	private final SessionLimitProperties sessionLimits;
 	private final AuditEventStore audit;
 	private final DatabaseClient db;
 
 	public BootstrapService(OperatorSettingsRepository settings, PlatformRoleRepository roles,
-			RoleBindingRepository bindings, BootstrapProperties properties, AuditEventStore audit, DatabaseClient db) {
+			RoleBindingRepository bindings, BootstrapProperties properties, SessionLimitProperties sessionLimits,
+			AuditEventStore audit, DatabaseClient db) {
 		this.settings = settings;
 		this.roles = roles;
 		this.bindings = bindings;
 		this.properties = properties;
+		this.sessionLimits = sessionLimits;
 		this.audit = audit;
 		this.db = db;
 	}
@@ -161,8 +165,32 @@ public class BootstrapService {
 	}
 
 	private Mono<OperatorSettings> ensureSettings() {
-		return settings.findSingleton().switchIfEmpty(Mono.defer(() -> settings.save(OperatorSettings.defaults()))
-				.onErrorResume(conflict -> settings.findSingleton()));
+		return settings.findSingleton()
+				.switchIfEmpty(Mono.defer(() -> settings.save(seededDefaults()))
+						.onErrorResume(conflict -> settings.findSingleton()))
+				.flatMap(this::reconcileConcurrencyDefault);
+	}
+
+	// FR-SESS-3: the cluster-default concurrent-session cap is an OPT-IN
+	// deployment-config knob (sessionlayer.session-limits.default-max-concurrent).
+	// Seed it into a freshly-created singleton, and — since the singleton may
+	// already
+	// have been created null at cold start — reconcile it on each boot when the
+	// property is set (deployment config is authoritative for the cluster default);
+	// when unset, leave the stored value untouched (default null ⇒ unlimited), so
+	// existing deployments are unaffected.
+	private OperatorSettings seededDefaults() {
+		Integer configured = sessionLimits.getDefaultMaxConcurrent();
+		OperatorSettings defaults = OperatorSettings.defaults();
+		return configured == null ? defaults : defaults.withDefaultMaxConcurrentSessions(configured);
+	}
+
+	private Mono<OperatorSettings> reconcileConcurrencyDefault(OperatorSettings current) {
+		Integer configured = sessionLimits.getDefaultMaxConcurrent();
+		if (configured == null || configured.equals(current.defaultMaxConcurrentSessions())) {
+			return Mono.just(current);
+		}
+		return settings.save(current.withDefaultMaxConcurrentSessions(configured));
 	}
 
 	private static OperatorSettings withCredentialHash(OperatorSettings s, String hash) {

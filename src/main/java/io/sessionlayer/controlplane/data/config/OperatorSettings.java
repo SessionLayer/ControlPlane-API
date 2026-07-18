@@ -38,4 +38,13 @@ public record OperatorSettings(@Id UUID id, boolean singleton, String kekReferen
 		return new OperatorSettings(Uuids.v7(), true, null, "local", 365, "governance", 120, null, null, null, null,
 				null, false, null, null, "ecies_p256", null, 365, true, "default", null, null, null);
 	}
+
+	/** The FR-SESS-3 cluster-default concurrent-session cap (null ⇒ unlimited). */
+	public OperatorSettings withDefaultMaxConcurrentSessions(Integer defaultMaxConcurrentSessions) {
+		return new OperatorSettings(id, singleton, kekReference, defaultCaBackend, auditRetentionDays, defaultWormMode,
+				otpTtlSeconds, defaultMaxSessionSeconds, defaultIdleTimeoutSeconds, defaultMaxConcurrentSessions,
+				bootstrapAdminSubject, bootstrapCredentialHash, bootstrapCompleted, bootstrapCompletedAt,
+				recordingCustomerPublicKey, recordingKeySealAlgorithm, recordingKeyRef, recordingRetentionDays,
+				recordingStrictDefault, origin, version, createdAt, updatedAt);
+	}
 }
