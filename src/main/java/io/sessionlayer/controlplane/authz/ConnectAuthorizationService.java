@@ -15,6 +15,7 @@ import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
 import io.sessionlayer.controlplane.data.runtime.BreakglassActivation;
 import io.sessionlayer.controlplane.data.runtime.BreakglassActivationRepository;
 import io.sessionlayer.controlplane.data.runtime.BreakglassToken;
+import io.sessionlayer.controlplane.data.runtime.GatewayIdentity;
 import io.sessionlayer.controlplane.data.runtime.GatewayIdentityRepository;
 import io.sessionlayer.controlplane.data.runtime.JitRequest;
 import io.sessionlayer.controlplane.data.runtime.Node;
@@ -144,8 +145,9 @@ public class ConnectAuthorizationService {
 		this.tx = tx;
 	}
 
-	public Mono<ConnectDecision> authorize(UUID callerGatewayId, String identity, List<String> groups, UUID nodeId,
-			String nodeName, String requestedPrincipal, String sourceIp, UUID sessionId, String breakglassToken) {
+	public Mono<ConnectDecision> authorize(UUID callerGatewayId, String presentedFingerprint, String identity,
+			List<String> groups, UUID nodeId, String nodeName, String requestedPrincipal, String sourceIp,
+			UUID sessionId, String breakglassToken) {
 		boolean hasName = !isBlank(nodeName);
 		// The connect decision requires a concrete authenticated caller, target,
 		// session, resolved identity, and requested login — the target is resolvable by
@@ -162,17 +164,48 @@ public class ConnectAuthorizationService {
 		// name. An unknown name yields the SAME generic node_unknown deny as any other
 		// no-match (no existence disclosure, §7.1).
 		Mono<Node> resolved = hasName ? nodes.findByName(nodeName) : nodes.findById(nodeId);
-		return resolved
-				.flatMap(node -> decide(callerGatewayId, identity, groups, node, requestedPrincipal, sourceIp,
-						sessionId, breakglassToken))
+		// FR-BOOT-3 / §8.4 / FR-LOCK-2: the caller Gateway is a first-class lockable
+		// principal, so EVERY connect decision is gated on the same active-status +
+		// fingerprint pin the sign path enforces (requireActiveGateway), BEFORE any
+		// RBAC
+		// eval, break-glass/JIT consumption, or state write. A locked or
+		// superseded-cert Gateway is refused on Authorize too (else its still-valid
+		// cert
+		// stays an RBAC oracle and can consume break-glass tokens / flip JIT grants).
+		return requireActiveGateway(callerGatewayId, presentedFingerprint)
+				.flatMap(
+						gw -> resolved
+								.flatMap(node -> decide(callerGatewayId, identity, groups, node, requestedPrincipal,
+										sourceIp, sessionId, breakglassToken))
+								.switchIfEmpty(auditDeny(callerGatewayId, identity, nodeId, sourceIp,
+										DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null),
+										"node_unknown", null, null).thenReturn(ConnectDecision.denied())))
 				.switchIfEmpty(auditDeny(callerGatewayId, identity, nodeId, sourceIp,
-						DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "node_unknown",
-						null, null).thenReturn(ConnectDecision.denied()))
+						DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null),
+						"gateway_not_authorized", null, null).thenReturn(ConnectDecision.denied()))
 				// Any datastore/unexpected failure denies (fail closed, §8.4) — never leaks.
 				.onErrorResume(failure -> {
 					LOG.warn("connect authorization failed closed: {}", failure.toString());
 					return auditError(callerGatewayId, identity, nodeId, sourceIp).thenReturn(ConnectDecision.denied());
 				});
+	}
+
+	// FR-BOOT-3 / §8.4: the caller Gateway must be an ACTIVE identity whose
+	// presented
+	// client-cert fingerprint pins to its current or previous fingerprint (a locked
+	// or
+	// superseded/stolen cert is refused). The same gate the sign path enforces
+	// (SessionCertificateService.requireAuthorizedGateway); empty ⇒ generic deny.
+	private Mono<GatewayIdentity> requireActiveGateway(UUID callerGatewayId, String presentedFingerprint) {
+		if (callerGatewayId == null || presentedFingerprint == null) {
+			return Mono.empty();
+		}
+		return gatewayIdentities.findById(callerGatewayId).flatMap(gw -> {
+			boolean active = "active".equals(gw.status());
+			boolean pinned = presentedFingerprint.equals(gw.fingerprint())
+					|| presentedFingerprint.equals(gw.prevFingerprint());
+			return active && pinned ? Mono.just(gw) : Mono.<GatewayIdentity>empty();
+		});
 	}
 
 	private Mono<ConnectDecision> decide(UUID callerGatewayId, String identity, List<String> groups, Node node,

@@ -64,6 +64,21 @@ public class RecordingRetentionService {
 			 WHERE id = :id AND pruned_at IS NULL AND legal_hold = false AND worm_mode IS DISTINCT FROM 'compliance'
 			RETURNING object_key, worm_mode, session_id""";
 
+	// F-recording-prune-confirm-1: the atomic claim commits pruned_at FIRST (to
+	// close
+	// the legal-hold TOCTOU), but the OBJECT delete can still fail. If it does,
+	// roll
+	// the claim back so the row is re-selected next cycle — otherwise metadata
+	// reports
+	// "erased" while the encrypted bytes persist (false erasure + orphaned object).
+	// The
+	// re-claim re-asserts hold/compliance, so a hold placed meanwhile still
+	// protects.
+	private static final String UNCLAIM = """
+			UPDATE runtime.recording_ref
+			   SET pruned_at = NULL, delete_mode = NULL, deleted_by = NULL, version = version + 1, updated_at = now()
+			 WHERE id = :id AND pruned_at IS NOT NULL""";
+
 	private final RecordingRefRepository recordings;
 	private final SshSessionRepository sessions;
 	private final RecordingStore recordingStore;
@@ -121,7 +136,12 @@ public class RecordingRetentionService {
 							Mono.error(ApiProblemException.conflict("recording was concurrently modified; retry")))
 					.flatMap(claimed -> recordingStore.deleteObject(claimed.objectKey(), claimed.wormMode())
 							.then(audit.record(actor, recordingId.toString(), "recording.delete", "success",
-									claimed.sessionId(), null, Map.of("delete_mode", "governance"))))
+									claimed.sessionId(), null, Map.of("delete_mode", "governance")))
+							// The object delete failed: roll the claim back + audit, then surface the
+							// error so the caller never gets a false 204 (F-recording-prune-confirm-1).
+							.onErrorResume(
+									error -> unclaim(recordingId, claimed, actor, "recording.delete", "governance")
+											.then(Mono.error(error))))
 					.then();
 		});
 	}
@@ -155,11 +175,28 @@ public class RecordingRetentionService {
 
 	private Mono<Boolean> pruneOne(UUID recordingId, Instant now) {
 		return claim(CLAIM_RETENTION, spec -> spec.bind("now", now).bind("id", recordingId))
-				.flatMap(claimed -> recordingStore.deleteObject(claimed.objectKey(), claimed.wormMode())
-						.then(audit.record(RETENTION_ACTOR, recordingId.toString(), "recording.prune", "success",
-								claimed.sessionId(), null, Map.of("delete_mode", "retention")))
-						.thenReturn(Boolean.TRUE))
+				.flatMap(
+						claimed -> recordingStore.deleteObject(claimed.objectKey(), claimed.wormMode())
+								.then(audit.record(RETENTION_ACTOR, recordingId.toString(), "recording.prune",
+										"success", claimed.sessionId(), null, Map.of("delete_mode", "retention")))
+								.thenReturn(Boolean.TRUE)
+								// The object delete failed: roll the claim back + audit so the row is
+								// re-pruned next cycle rather than falsely reported erased
+								// (F-recording-prune-confirm-1). The error propagates to prune()'s
+								// per-row onErrorResume (counted failed).
+								.onErrorResume(error -> unclaim(recordingId, claimed, RETENTION_ACTOR,
+										"recording.prune", "retention").then(Mono.error(error))))
 				.defaultIfEmpty(Boolean.FALSE);
+	}
+
+	// Roll back a claim whose object delete failed, and audit the failed attempt,
+	// so
+	// the recording is NOT falsely reported erased (F-recording-prune-confirm-1).
+	private Mono<Void> unclaim(UUID recordingId, Claimed claimed, String actor, String action, String mode) {
+		return db.sql(UNCLAIM).bind("id", recordingId).fetch().rowsUpdated()
+				.then(audit.record(actor, recordingId.toString(), action, "error", claimed.sessionId(), null,
+						Map.of("delete_mode", mode, "reason", "object_delete_failed")))
+				.then();
 	}
 
 	private Mono<Claimed> claim(String sql, java.util.function.UnaryOperator<DatabaseClient.GenericExecuteSpec> binds) {

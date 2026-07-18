@@ -1,0 +1,90 @@
+# SessionLayer Control Plane — Prometheus SLO alert rules (Session 23, Part B).
+#
+# Closes the S21 observability "missing half": S21 emitted the OTel traces + the
+# SLO histograms (Design §14, NFR-3/NFR-4) but shipped no alerts. These rules page
+# on the two SLOs and on fail-closed spikes, off the meters SloMetrics.java
+# actually registers (Micrometer → Prometheus, percentiles-histogram buckets, so
+# histogram_quantile() is fleet-aggregatable across CP replicas).
+#
+# Metric provenance (all from ControlPlane-API observability/SloMetrics.java):
+#   sessionlayer.session.establishment  -> sessionlayer_session_establishment_seconds_{bucket,count,sum}
+#       tags: outcome{allow,deny,error,cancelled}, access_model
+#   sessionlayer.cert.sign              -> sessionlayer_cert_sign_seconds_{bucket,count,sum}
+#       tags: kind{session,gateway_host}, outcome{success,error,cancelled}
+#   sessionlayer.ca.signer (Counter)    -> sessionlayer_ca_signer_total
+#       tags: kind, source{request,probe}, outcome{available,unavailable,error}
+#
+# Targets set S21: NFR-4 establishment p95 = 250 ms; cert-sign p95 = 100 ms;
+# NFR-3 CA-signer availability = 99.9% (computed over source="request" only, so the
+# ~6/min health-probe baseline never masks partial degradation).
+groups:
+  - name: sessionlayer-cp-slo
+    rules:
+      # --- NFR-4: session-establishment latency (p95, ex-human-OIDC) --------------
+      - alert: SessionEstablishmentP95SloBreach
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(sessionlayer_session_establishment_seconds_bucket[5m]))
+          ) > 0.25
+        for: 10m
+        labels: { severity: page, slo: nfr-4 }
+        annotations:
+          summary: "CP session-establishment p95 > 250 ms (NFR-4)"
+          description: "p95 = {{ $value | humanizeDuration }} over 5m; SLO is 250 ms. The Authorize→session-write→token-mint machine path is slow; check DB pool saturation and CA-signer latency."
+
+      - alert: CertSignP95SloBreach
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(sessionlayer_cert_sign_seconds_bucket[5m]))
+          ) > 0.1
+        for: 10m
+        labels: { severity: page, slo: nfr-4 }
+        annotations:
+          summary: "CP cert-sign p95 > 100 ms"
+          description: "Inner/host cert signing p95 = {{ $value | humanizeDuration }}; SLO is 100 ms. Check the CA backend (KMS/Vault) latency."
+
+      # --- NFR-3: session-CA signing availability (99.9%, real requests only) -----
+      - alert: CaSignerAvailabilitySloBreach
+        expr: >
+          (
+            sum(rate(sessionlayer_ca_signer_total{source="request",outcome="available"}[30m]))
+            /
+            sum(rate(sessionlayer_ca_signer_total{source="request"}[30m]))
+          ) < 0.999
+        for: 15m
+        labels: { severity: page, slo: nfr-3 }
+        annotations:
+          summary: "CP CA-signer availability < 99.9% (NFR-3)"
+          description: "Availability = {{ $value | humanizePercentage }} over 30m of REAL sign requests. The session CA gates all NEW sessions — this is an SLO peer of the datastore. Fails CLOSED (no cert ever issued), so this is a hard new-session outage, not a security regression."
+
+      # A fast-burn companion so a total signer outage pages in minutes, not after
+      # the 30m ratio window.
+      - alert: CaSignerFailClosedSpike
+        expr: >
+          sum(rate(sessionlayer_ca_signer_total{source="request",outcome=~"unavailable|error"}[5m])) > 0
+        for: 5m
+        labels: { severity: page, slo: nfr-3 }
+        annotations:
+          summary: "CP CA-signer returning unavailable/error (fail-closed) on real requests"
+          description: "{{ $value | humanize }}/s real sign requests are failing closed. All redundant signer backends may be down (FR-CA-9). New sessions cannot start until a signer recovers."
+
+      # --- Fail-closed / deny observability (NFR-2, §8.4) -------------------------
+      - alert: SessionEstablishmentErrorSpike
+        expr: >
+          sum(rate(sessionlayer_session_establishment_seconds_count{outcome="error"}[5m]))
+          /
+          clamp_min(sum(rate(sessionlayer_session_establishment_seconds_count[5m])), 0.001)
+          > 0.10
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "CP Authorize error-rate > 10%"
+          description: "Errored (not deny — {{ $value | humanizePercentage }}) establishment decisions. Errors fail closed (NFR-2); a spike means a degraded dependency (DB/lock-stream) turning legitimate sessions away. Investigate before it becomes an availability incident."
+
+      - alert: NoAuthorizeTraffic
+        expr: sum(rate(sessionlayer_session_establishment_seconds_count[10m])) == 0
+        for: 15m
+        labels: { severity: warn }
+        annotations:
+          summary: "CP received no Authorize decisions for 15m"
+          description: "Either genuinely idle or the Gateway→CP gRPC path is broken (mTLS/version-negotiation). Correlate with gateway session-attempt spans."

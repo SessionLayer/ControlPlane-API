@@ -21,6 +21,7 @@ import io.sessionlayer.controlplane.data.runtime.SshSession;
 import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.platform.PlatformAuthorization;
 import io.sessionlayer.controlplane.platform.PlatformDecision;
+import io.sessionlayer.controlplane.platform.PlatformScope;
 import io.sessionlayer.controlplane.platform.PlatformSubject;
 import io.sessionlayer.controlplane.recording.RecordingStore.PresignedAccess;
 import io.sessionlayer.controlplane.web.ApiProblemException;
@@ -69,15 +70,19 @@ class RecordingStoreSeamTest {
 	}
 
 	private RecordingRef finalizedRef(UUID id, UUID sessionId, String objectKey) {
-		return governanceRef(id, sessionId, objectKey).finalized(null, null, null, "finalized");
+		return governanceRef(id, sessionId, objectKey).finalized(null, null, null, null, "finalized");
 	}
 
 	private SshSession session(UUID sessionId, UUID nodeId) {
+		return sessionStartedAt(sessionId, nodeId, Instant.now());
+	}
+
+	private SshSession sessionStartedAt(UUID sessionId, UUID nodeId, Instant startedAt) {
 		SshSession base = SshSession.create("alice", null, null, "deploy", null, null, "standing", List.of("shell"),
-				null, null, null, null, null, null, Instant.now());
+				null, null, null, null, null, null, startedAt);
 		return new SshSession(sessionId, base.identity(), nodeId, null, base.principal(), null, null,
-				base.accessModel(), base.capabilities(), null, null, null, null, null, null, base.startedAt(), null,
-				null, null, null, null);
+				base.accessModel(), base.capabilities(), null, null, null, null, null, null, startedAt, null, null,
+				null, null, null);
 	}
 
 	private Node nodeWithLabels(String key, String value) {
@@ -123,6 +128,95 @@ class RecordingStoreSeamTest {
 		assertThat(recorded.nodeLabels()).containsEntry("env", "prod");
 	}
 
+	// F-recording-worm-version-1 (HIGH): replay/export pin the FINALIZED object
+	// version, so a later shadow PUT to the same key (by a compromised CP/Gateway)
+	// can't be served (§15 crown-jewels: Object Lock protects a version, not a
+	// key).
+	@Test
+	void replayPinsTheFinalizedObjectVersion() {
+		UUID id = UUID.randomUUID();
+		UUID sessionId = UUID.randomUUID();
+		Node node = nodeWithLabels("env", "prod");
+		String objectKey = "recordings/" + sessionId + "/" + id + ".cast.enc";
+		String versionId = "v-FINALIZED-0001";
+		store.seed(objectKey);
+		RecordingRef finalized = governanceRef(id, sessionId, objectKey).finalized("sha256:head", "sha256:digest",
+				versionId, 10L, "finalized");
+		when(recordings.findById(id)).thenReturn(Mono.just(finalized));
+		when(sessions.findById(sessionId)).thenReturn(Mono.just(session(sessionId, node.id())));
+		when(nodes.findById(node.id())).thenReturn(Mono.just(node));
+		when(authorization.resolveScopeGrant(any(), any()))
+				.thenReturn(Mono.just(PlatformAuthorization.ScopeGrant.all()));
+		when(authorization.authorize(any(), any(), any()))
+				.thenReturn(Mono.just(new PlatformDecision(true, PlatformDecision.Reason.ALLOWED, null, null)));
+		when(audit.record(any(AuditRecord.class))).thenReturn(Mono.empty());
+
+		PresignedAccess presigned = access.replay(admin, id).block();
+
+		// The GET is PINNED to the finalized version id (a null/unversioned GET would
+		// serve whatever is "current" — the shadow-PUT vector this fix closes).
+		assertThat(presigned.url()).isEqualTo(InMemoryRecordingStore.BASE_URL + objectKey + "?versionId=" + versionId);
+	}
+
+	// F-recording-scope-time-1 (MEDIUM): the replay scope's time facet is evaluated
+	// against the SESSION's time (which recordings), not the wall-clock at request
+	// time
+	// — matching audit-search's occurred_at, so an incident-window-scoped auditor
+	// can't
+	// replay an out-of-window session during the window.
+	@Test
+	void replayScopeTimeIsTheSessionTimeNotWallClock() {
+		UUID id = UUID.randomUUID();
+		UUID sessionId = UUID.randomUUID();
+		Node node = nodeWithLabels("env", "prod");
+		String objectKey = "recordings/" + sessionId + "/" + id + ".cast.enc";
+		Instant sessionStart = Instant.now().minus(java.time.Duration.ofDays(90));
+		store.seed(objectKey);
+		when(recordings.findById(id)).thenReturn(Mono.just(finalizedRef(id, sessionId, objectKey)));
+		when(sessions.findById(sessionId)).thenReturn(Mono.just(sessionStartedAt(sessionId, node.id(), sessionStart)));
+		when(nodes.findById(node.id())).thenReturn(Mono.just(node));
+		when(authorization.resolveScopeGrant(any(), any()))
+				.thenReturn(Mono.just(PlatformAuthorization.ScopeGrant.all()));
+		ArgumentCaptor<PlatformScope> scope = ArgumentCaptor.forClass(PlatformScope.class);
+		when(authorization.authorize(any(), any(), scope.capture()))
+				.thenReturn(Mono.just(new PlatformDecision(true, PlatformDecision.Reason.ALLOWED, null, null)));
+		when(audit.record(any(AuditRecord.class))).thenReturn(Mono.empty());
+
+		access.replay(admin, id).block();
+
+		// The scope's evaluation time is the session start (90 days ago), not ~now.
+		assertThat(scope.getValue().at()).isEqualTo(sessionStart);
+	}
+
+	// F-recording-prune-confirm-1 (MEDIUM): a FAILED object delete must NOT report
+	// a
+	// false erasure — the claim is rolled back (so the row is re-pruned) and the
+	// failure is audited, and the error surfaces (never a false 204).
+	@Test
+	void aFailedObjectDeleteRollsBackTheClaimAndAuditsTheFailure() {
+		UUID id = UUID.randomUUID();
+		UUID sessionId = UUID.randomUUID();
+		String objectKey = "recordings/" + sessionId + "/" + id + ".cast.enc";
+		RecordingStore failing = mock(RecordingStore.class);
+		when(failing.deleteObject(any(), any())).thenReturn(Mono.error(new IllegalStateException("object store down")));
+		RecordingRetentionService failingRetention = new RecordingRetentionService(recordings, sessions, failing, audit,
+				db);
+		when(recordings.findById(id)).thenReturn(Mono.just(governanceRef(id, sessionId, objectKey)));
+		when(audit.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(Mono.empty());
+		stubClaim(objectKey, "governance", sessionId);
+
+		// The error is surfaced (no false success), not swallowed into a 204.
+		StepVerifier.create(failingRetention.governanceDelete("custodian", id)).expectError(IllegalStateException.class)
+				.verify();
+
+		// The delete was attempted, the failure was audited (outcome "error"), and a
+		// second db.sql (the compensating UNCLAIM) ran so the row is re-selectable.
+		verify(failing).deleteObject(eq(objectKey), eq("governance"));
+		verify(audit).record(eq("custodian"), eq(id.toString()), eq("recording.delete"), eq("error"), eq(sessionId),
+				any(), any());
+		verify(db, org.mockito.Mockito.atLeast(2)).sql(anyString());
+	}
+
 	@Test
 	void governanceDeleteRemovesTheObjectThroughTheInterfaceAndAudits() {
 		UUID id = UUID.randomUUID();
@@ -151,6 +245,12 @@ class RecordingStoreSeamTest {
 		DatabaseClient.GenericExecuteSpec spec = mock(DatabaseClient.GenericExecuteSpec.class);
 		when(db.sql(anyString())).thenReturn(spec);
 		when(spec.bind(anyString(), any())).thenReturn(spec);
+		// The compensating UNCLAIM UPDATE (on a failed object delete) runs
+		// fetch().rowsUpdated().
+		org.springframework.r2dbc.core.FetchSpec<java.util.Map<String, Object>> fetchSpec = mock(
+				org.springframework.r2dbc.core.FetchSpec.class);
+		when(spec.fetch()).thenReturn(fetchSpec);
+		when(fetchSpec.rowsUpdated()).thenReturn(Mono.just(1L));
 		Row row = mock(Row.class);
 		when(row.get("object_key", String.class)).thenReturn(objectKey);
 		when(row.get("worm_mode", String.class)).thenReturn(wormMode);

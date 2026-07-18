@@ -141,7 +141,11 @@ public class RecordingAccessService {
 
 	private Mono<PresignedAccess> authorizeAndIssue(PlatformSubject subject, String permission, String auditAction,
 			RecordingRef ref, SshSession session, Map<String, String> labels) {
-		PlatformScope scope = new PlatformScope(labels, session.identity(), Instant.now());
+		// F-recording-scope-time-1: the time facet scopes WHICH recordings (by the
+		// session's time), not WHEN the auditor clicks — matching audit-search's
+		// occurred_at semantics (PlatformScopes). Using wall-clock here would let an
+		// incident-window-scoped auditor replay any-dated session during the window.
+		PlatformScope scope = new PlatformScope(labels, session.identity(), session.startedAt());
 		return platformAuthorization.authorize(subject, permission, scope).flatMap(decision -> {
 			if (!decision.allowed()) {
 				return Mono.empty();
@@ -157,7 +161,7 @@ public class RecordingAccessService {
 				return Mono.error(
 						ApiProblemException.conflict("recording is not replayable (status " + ref.status() + ")"));
 			}
-			return recordingStore.presignDownload(ref.objectKey(), properties.getSignedUrlTtl())
+			return recordingStore.presignDownload(ref.objectKey(), ref.objectVersionId(), properties.getSignedUrlTtl())
 					.flatMap(access -> auditAccess(subject, ref, session, labels, auditAction).thenReturn(access));
 		});
 	}

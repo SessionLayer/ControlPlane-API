@@ -283,6 +283,36 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(response.getSessionToken()).isEmpty();
 	}
 
+	// S23 F-authorize-gateway-lock-1 (HIGH): a locked Gateway's still-valid client
+	// cert MUST be refused on Authorize too, not only at Sign. Before the fix the
+	// caller was used only for the audit name, so a locked Gateway stayed a full
+	// RBAC oracle and could consume break-glass tokens / flip JIT grants / write
+	// session rows with its un-expired cert (there is no CRL on the internal mTLS
+	// CA
+	// — the status lock IS the revocation, FR-BOOT-3/§8.4/FR-LOCK-2).
+	@Test
+	void aLockedCallerGatewayIsRefusedOnAuthorizeWithNoStateChange() {
+		String identity = "alice-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell")); // otherwise-allowed
+		EnrolledGateway gateway = enroll("gw-locked-caller-" + unique());
+		// Lock the caller Gateway: the client cert stays cryptographically valid until
+		// expiry, so the status flip is the only thing refusing it.
+		db.sql("UPDATE runtime.gateway_identity SET status = 'locked' WHERE id = :id").bind("id", gateway.gatewayId())
+				.fetch().rowsUpdated().block();
+		UUID sessionId = UUID.randomUUID();
+
+		AuthorizeResponse response = authorize(gateway, request(identity, nodeId, "deploy", "10.0.0.5", sessionId));
+
+		// The same generic fail-closed shape as any denial: deny, no token, no context.
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_DENY);
+		assertThat(response.getSessionToken()).isEmpty();
+		assertThat(response.hasContext()).isFalse();
+		// And NOTHING was written despite the standing allow: no ssh_session decision
+		// snapshot (nor any minted session/recording token — the empty token above).
+		assertThat(sshSessions.findById(sessionId).block()).isNull();
+	}
+
 	@Test
 	void signedContextCarriesIdentityGroupsAndNodeLabels() throws Exception {
 		String identity = "alice-" + unique();

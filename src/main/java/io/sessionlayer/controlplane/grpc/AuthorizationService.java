@@ -13,6 +13,7 @@ import io.sessionlayer.controlplane.grpc.v1.ConnectorKind;
 import io.sessionlayer.controlplane.grpc.v1.Decision;
 import io.sessionlayer.controlplane.grpc.v1.HostVerification;
 import io.sessionlayer.controlplane.grpc.v1.NodeConnection;
+import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
 import io.sessionlayer.controlplane.mtls.MtlsProperties;
@@ -55,6 +56,13 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		// The mTLS-required tier guarantees a resolved peer, but never NPE if it isn't:
 		// a null caller fails closed to a generic deny in the service (missing input).
 		UUID caller = peer == null ? null : peer.gatewayId();
+		// The presented client-cert fingerprint gates the caller Gateway's
+		// active/pinned
+		// status in the handler — a locked or superseded-cert Gateway is refused on
+		// Authorize too, not only at Sign (same pin the sign path enforces).
+		String callerFingerprint = (peer == null || peer.certificate() == null)
+				? null
+				: CertificateFingerprints.sha256Hex(peer.certificate());
 		// The break-glass token (field 8) is carried through: when present the CP
 		// consumes
 		// it atomically, raises the activation + alert, and evaluates the break-glass
@@ -64,7 +72,7 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		// node_name (field 9) is server-side authoritative when set: the CP resolves it
 		// via findByName and ignores node_id (§2.6/§11; closes
 		// F-ha-connect-nodename-1).
-		Mono<ConnectDecision> decision = authorization.authorize(caller, request.getIdentity(),
+		Mono<ConnectDecision> decision = authorization.authorize(caller, callerFingerprint, request.getIdentity(),
 				request.getIdentityGroupsList(), parseUuid(request.getNodeId()), blankToNull(request.getNodeName()),
 				blankToNull(request.getRequestedPrincipal()), blankToNull(request.getSourceIp()),
 				parseUuid(request.getSessionId()), blankToNull(request.getBreakglassToken()));

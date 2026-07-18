@@ -132,7 +132,7 @@ public abstract class AbstractRecordingIT extends AbstractConfigApiIT {
 			boolean legalHold, String status) {
 		RecordingRef ref = RecordingRef
 				.begin(UUID.randomUUID(), sessionId, objectKey, "kms://customer-1", wormMode, retentionUntil)
-				.finalized(null, null, null, status);
+				.finalized(null, null, null, null, status);
 		if (legalHold) {
 			ref = ref.withLegalHold(true, "litigation");
 		}
