@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.handler.ssl.SslContext;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.audit.AuditEventStore.AuditQuery;
@@ -73,6 +74,8 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 	private AuditEventStore auditStore;
 	@Autowired
 	private BreakglassCredentialService breakglassCredentials;
+	@Autowired
+	private MeterRegistry meters;
 
 	@Test
 	void theNPlusFirstConcurrentSessionIsDeniedWithTheConcurrentLimitNote() {
@@ -81,6 +84,7 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 		seedAllow(identity, nodeId, List.of("deploy"), List.of("shell"));
 		seedPolicy(identity, 2);
 		EnrolledGateway gateway = enroll("gw-cap-" + unique());
+		double deniedBefore = limitDeniedCount();
 
 		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
 		assertThat(authorize(gateway, identity, nodeId, "deploy").getDecision()).isEqualTo(Decision.DECISION_ALLOW);
@@ -97,6 +101,15 @@ class ConcurrentSessionLimitIT extends AbstractMtlsIT {
 		assertThat(deny.detail().get("note").stringValue()).isEqualTo("concurrent_session_limit");
 		assertThat(deny.detail().get("active_sessions").stringValue()).isEqualTo("2");
 		assertThat(deny.detail().get("limit").stringValue()).isEqualTo("2");
+
+		// S25 Part D: the limit hit is observable — enum-only tags, no identity.
+		assertThat(limitDeniedCount()).isEqualTo(deniedBefore + 1);
+	}
+
+	private double limitDeniedCount() {
+		var counter = meters.find("sessionlayer.session.limit").tag("outcome", "denied").tag("access_model", "standing")
+				.counter();
+		return counter == null ? 0 : counter.count();
 	}
 
 	// C1 (redteam MEDIUM): the cap is HARD, not soft. A concurrent BURST of

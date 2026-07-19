@@ -10,6 +10,9 @@ import reactor.core.publisher.Mono;
 /** Reactive repository for {@link SessionLease}. */
 public interface SessionLeaseRepository extends ReactiveCrudRepository<SessionLease, UUID> {
 
+	/** The session's (single, by construction) lease. */
+	Mono<SessionLease> findBySessionId(UUID sessionId);
+
 	/**
 	 * Live-lease count for an identity = current concurrency (FR-SESS-3).
 	 * Fleet-wide: every Gateway acquires its leases in this shared datastore, so

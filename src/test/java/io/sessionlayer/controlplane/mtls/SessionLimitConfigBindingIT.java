@@ -32,7 +32,9 @@ import tools.jackson.databind.node.ObjectNode;
  * (runtime-mutable singleton) stands — as every other IT here runs, unlimited
  * by default — so an operator picks exactly one source unambiguously.
  */
-@TestPropertySource(properties = "sessionlayer.session-limits.default-max-concurrent=2")
+@TestPropertySource(properties = {"sessionlayer.session-limits.default-max-concurrent=2",
+		"sessionlayer.session-limits.default-max-session-seconds=7200",
+		"sessionlayer.session-limits.default-idle-timeout-seconds=1200"})
 class SessionLimitConfigBindingIT extends AbstractMtlsIT {
 
 	private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
@@ -48,14 +50,20 @@ class SessionLimitConfigBindingIT extends AbstractMtlsIT {
 	// null/unlimited default.
 	@AfterEach
 	void resetClusterDefault() {
-		db.sql("UPDATE config.operator_settings SET default_max_concurrent_sessions = NULL WHERE singleton = true")
+		db.sql("UPDATE config.operator_settings SET default_max_concurrent_sessions = NULL, "
+				+ "default_max_session_seconds = NULL, default_idle_timeout_seconds = NULL WHERE singleton = true")
 				.fetch().rowsUpdated().block();
 	}
 
 	@Test
 	void deploymentConfigSeedsAndEnforcesTheClusterDefault() {
-		// The property was reconciled into the cluster-default column at boot.
-		assertThat(operatorSettings.findSingleton().block().defaultMaxConcurrentSessions()).isEqualTo(2);
+		// All three FR-SESS-3 default knobs were reconciled into the cluster-default
+		// columns at boot (S25: the duration/idle defaults are enforceable from
+		// deployment config too — no dead default).
+		var settings = operatorSettings.findSingleton().block();
+		assertThat(settings.defaultMaxConcurrentSessions()).isEqualTo(2);
+		assertThat(settings.defaultMaxSessionSeconds()).isEqualTo(7200);
+		assertThat(settings.defaultIdleTimeoutSeconds()).isEqualTo(1200);
 
 		// ...and the Authorize path enforces that config-seeded default for an identity
 		// with no per-identity policy: two sessions allowed, the third refused.

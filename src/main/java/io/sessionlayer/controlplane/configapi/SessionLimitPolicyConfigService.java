@@ -98,7 +98,7 @@ public class SessionLimitPolicyConfigService {
 
 	private static void validate(JsonNode identitySelector, Integer maxConcurrentSessions, Integer maxSessionSeconds,
 			Integer idleTimeoutSeconds) {
-		SelectorValidation.identitySelector(identitySelector);
+		validateSelector(identitySelector);
 		requirePositive("maxConcurrentSessions", maxConcurrentSessions);
 		requirePositive("maxSessionSeconds", maxSessionSeconds);
 		requirePositive("idleTimeoutSeconds", idleTimeoutSeconds);
@@ -108,6 +108,39 @@ public class SessionLimitPolicyConfigService {
 			throw ApiProblemException.validation(
 					"at least one of maxConcurrentSessions/maxSessionSeconds/idleTimeoutSeconds must be set");
 		}
+	}
+
+	// Stricter than the dp_rule surface on purpose: a selector shape the S5
+	// evaluator quietly ignores (non-array/empty identities/groups, no all:true)
+	// would select NO ONE — a silently-dead limit policy (FR-SESS-3 "no dead
+	// config"). The evaluator-parse check still runs first so the accepted shapes
+	// are exactly the ones Authorize resolves.
+	private static void validateSelector(JsonNode selector) {
+		if (selector == null || !selector.isObject()) {
+			throw ApiProblemException.validation("identitySelector must be a JSON object");
+		}
+		SelectorValidation.identitySelector(selector);
+		JsonNode all = selector.get("all");
+		if (all != null && all.isBoolean() && all.booleanValue()) {
+			return;
+		}
+		if (nonEmptyStringArray(selector.get("identities")) || nonEmptyStringArray(selector.get("groups"))) {
+			return;
+		}
+		throw ApiProblemException.validation(
+				"identitySelector must name a subject population: a non-empty identities/groups string array, or all:true");
+	}
+
+	private static boolean nonEmptyStringArray(JsonNode node) {
+		if (node == null || !node.isArray() || node.isEmpty()) {
+			return false;
+		}
+		for (JsonNode value : node.values()) {
+			if (!value.isString()) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private static void requirePositive(String field, Integer value) {
