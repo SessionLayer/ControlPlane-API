@@ -1,18 +1,21 @@
 package io.sessionlayer.controlplane.observability;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.sessionlayer.controlplane.authz.ConnectDecision;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
 /**
- * The Session-21 SLO instruments (Design §14, NFR-3/NFR-4). Every meter is
- * tagged by <b>outcome/kind enum only</b> — never {@code session_id} /
- * {@code correlation_id} / {@code node_id} (OTEL-CONTRACT §7: those are
- * high-cardinality and live on the trace, not the metric).
+ * The Session-21 SLO instruments (Design §14, NFR-3/NFR-4) plus the Session-25
+ * FR-SESS-3 limit/lease lifecycle meters. Every meter is tagged by
+ * <b>outcome/kind enum only</b> — never {@code session_id} /
+ * {@code correlation_id} / {@code node_id} / identity (OTEL-CONTRACT §7: those
+ * are high-cardinality and live on the trace, not the metric).
  *
  * <ul>
  * <li>{@code sessionlayer.session.establishment} — NFR-4 session-establishment
@@ -24,6 +27,12 @@ import reactor.core.publisher.Mono;
  * <li>{@code sessionlayer.ca.signer} — NFR-3 session-CA signing availability:
  * whether an active signer could be obtained ({@code available} vs
  * {@code unavailable} = fail-closed vs {@code error}).</li>
+ * <li>{@code sessionlayer.session.limit} — FR-SESS-3 limit hits
+ * ({@code outcome=denied}, by access model).</li>
+ * <li>{@code sessionlayer.session.lease.reaped} — leaked leases released by the
+ * {@code SessionLeaseReaper} sweep.</li>
+ * <li>{@code sessionlayer.session.lease.live} — fleet-wide live (unreleased +
+ * unexpired) concurrency leases, refreshed on a schedule.</li>
  * </ul>
  */
 @Component
@@ -32,6 +41,9 @@ public class SloMetrics {
 	static final String ESTABLISHMENT = "sessionlayer.session.establishment";
 	static final String CERT_SIGN = "sessionlayer.cert.sign";
 	static final String CA_SIGNER = "sessionlayer.ca.signer";
+	static final String SESSION_LIMIT = "sessionlayer.session.limit";
+	static final String LEASE_REAPED = "sessionlayer.session.lease.reaped";
+	static final String LEASE_LIVE = "sessionlayer.session.lease.live";
 
 	static final String TAG_OUTCOME = "outcome";
 	static final String TAG_ACCESS_MODEL = "access_model";
@@ -48,9 +60,31 @@ public class SloMetrics {
 	static final String OUTCOME_ERROR = "error";
 
 	private final MeterRegistry registry;
+	private final AtomicLong liveLeases = new AtomicLong();
 
 	public SloMetrics(MeterRegistry registry) {
 		this.registry = registry;
+		Gauge.builder(LEASE_LIVE, liveLeases, AtomicLong::doubleValue)
+				.description("Live (unreleased, unexpired) FR-SESS-3 concurrency leases, fleet-wide")
+				.register(registry);
+	}
+
+	/** A per-identity session-limit denial at Authorize (FR-SESS-3, S25). */
+	public void recordSessionLimitDenied(String accessModel) {
+		Counter.builder(SESSION_LIMIT).tag(TAG_OUTCOME, "denied").tag(TAG_ACCESS_MODEL, accessModel).register(registry)
+				.increment();
+	}
+
+	/** Leaked leases released by a reaper sweep. */
+	public void recordLeasesReaped(long reaped) {
+		if (reaped > 0) {
+			Counter.builder(LEASE_REAPED).register(registry).increment(reaped);
+		}
+	}
+
+	/** Refresh the live-lease gauge (scheduled; no per-identity breakdown). */
+	public void updateLiveLeases(long count) {
+		liveLeases.set(count);
 	}
 
 	/**

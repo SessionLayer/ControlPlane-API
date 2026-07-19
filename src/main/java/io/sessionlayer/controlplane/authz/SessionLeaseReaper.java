@@ -1,6 +1,7 @@
 package io.sessionlayer.controlplane.authz;
 
 import io.sessionlayer.controlplane.data.runtime.SessionLeaseRepository;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,10 +36,12 @@ public class SessionLeaseReaper {
 
 	private final SessionLeaseRepository leases;
 	private final SessionLimitProperties properties;
+	private final SloMetrics metrics;
 
-	public SessionLeaseReaper(SessionLeaseRepository leases, SessionLimitProperties properties) {
+	public SessionLeaseReaper(SessionLeaseRepository leases, SessionLimitProperties properties, SloMetrics metrics) {
 		this.leases = leases;
 		this.properties = properties;
+		this.metrics = metrics;
 	}
 
 	@Scheduled(fixedDelayString = "${sessionlayer.session-limits.reaper.interval:PT1H}", initialDelayString = "${sessionlayer.session-limits.reaper.interval:PT1H}")
@@ -46,6 +49,7 @@ public class SessionLeaseReaper {
 		Instant now = Instant.now();
 		Instant cutoff = now.minus(properties.getReaper().getGrace());
 		leases.reapExpired(now, cutoff).doOnNext(reaped -> {
+			metrics.recordLeasesReaped(reaped);
 			if (reaped > 0) {
 				LOG.info("session-lease reaper released {} leaked (expired, unreleased) lease(s)", reaped);
 			}
