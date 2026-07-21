@@ -168,29 +168,52 @@ public class BootstrapService {
 		return settings.findSingleton()
 				.switchIfEmpty(Mono.defer(() -> settings.save(seededDefaults()))
 						.onErrorResume(conflict -> settings.findSingleton()))
-				.flatMap(this::reconcileConcurrencyDefault);
+				.flatMap(this::reconcileSessionLimitDefaults).doOnNext(BootstrapService::warnWhenCapUnlimited);
 	}
 
-	// FR-SESS-3: the cluster-default concurrent-session cap is an OPT-IN
-	// deployment-config knob (sessionlayer.session-limits.default-max-concurrent).
-	// Seed it into a freshly-created singleton, and — since the singleton may
-	// already
-	// have been created null at cold start — reconcile it on each boot when the
-	// property is set (deployment config is authoritative for the cluster default);
-	// when unset, leave the stored value untouched (default null ⇒ unlimited), so
+	// FR-SESS-3: the cluster-default session-limit knobs (concurrent cap, max
+	// duration, idle timeout) are OPT-IN deployment-config values
+	// (sessionlayer.session-limits.default-*). Seed them into a freshly-created
+	// singleton, and — since the singleton may already have been created null at
+	// cold start — reconcile each on every boot when its property is set
+	// (deployment config is authoritative for the cluster default); when unset,
+	// leave the stored value untouched (default null ⇒ unlimited/none), so
 	// existing deployments are unaffected.
 	private OperatorSettings seededDefaults() {
-		Integer configured = sessionLimits.getDefaultMaxConcurrent();
-		OperatorSettings defaults = OperatorSettings.defaults();
-		return configured == null ? defaults : defaults.withDefaultMaxConcurrentSessions(configured);
+		return applyConfigured(OperatorSettings.defaults());
 	}
 
-	private Mono<OperatorSettings> reconcileConcurrencyDefault(OperatorSettings current) {
-		Integer configured = sessionLimits.getDefaultMaxConcurrent();
-		if (configured == null || configured.equals(current.defaultMaxConcurrentSessions())) {
-			return Mono.just(current);
+	private Mono<OperatorSettings> reconcileSessionLimitDefaults(OperatorSettings current) {
+		OperatorSettings reconciled = applyConfigured(current);
+		return reconciled == current ? Mono.just(current) : settings.save(reconciled);
+	}
+
+	private OperatorSettings applyConfigured(OperatorSettings base) {
+		OperatorSettings result = base;
+		Integer concurrent = sessionLimits.getDefaultMaxConcurrent();
+		if (concurrent != null && !concurrent.equals(result.defaultMaxConcurrentSessions())) {
+			result = result.withDefaultMaxConcurrentSessions(concurrent);
 		}
-		return settings.save(current.withDefaultMaxConcurrentSessions(configured));
+		Integer maxSeconds = sessionLimits.getDefaultMaxSessionSeconds();
+		if (maxSeconds != null && !maxSeconds.equals(result.defaultMaxSessionSeconds())) {
+			result = result.withDefaultMaxSessionSeconds(maxSeconds);
+		}
+		Integer idleSeconds = sessionLimits.getDefaultIdleTimeoutSeconds();
+		if (idleSeconds != null && !idleSeconds.equals(result.defaultIdleTimeoutSeconds())) {
+			result = result.withDefaultIdleTimeoutSeconds(idleSeconds);
+		}
+		return result;
+	}
+
+	// S25 Part D: an unlimited cluster-default concurrent cap is a legitimate but
+	// easily-unintended posture — say so once, loudly, at boot.
+	private static void warnWhenCapUnlimited(OperatorSettings current) {
+		if (current.defaultMaxConcurrentSessions() == null) {
+			LOG.warn("the cluster-default concurrent-session cap is UNLIMITED: identities without a matching "
+					+ "session_limit_policy have no concurrent-session bound. Set "
+					+ "sessionlayer.session-limits.default-max-concurrent (or "
+					+ "operator_settings.default_max_concurrent_sessions) to cap them.");
+		}
 	}
 
 	private static OperatorSettings withCredentialHash(OperatorSettings s, String hash) {

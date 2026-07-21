@@ -376,6 +376,46 @@ and `audit-events` operations moved from `501` stub to implemented; the drift ga
    `prunedAt`). Compliance-mode = un-deletable (object-lock); legal hold blocks
    both prune and governance delete.
 
+**Session Twenty-Five completed FR-SESS-3 enforcement — all additive (gRPC stays
+`1.1`, wire stays `1.0`, URI major stays `v1`, `info.version` stays `0.1.0`).**
+`buf breaking`-clean vs `main` (one new context field, two new RPCs within the
+already-bumped 1.1 minor — neither moves the number).
+
+1. **`DecisionContext.idle_timeout_seconds` (field 17)** — the resolved
+   per-identity idle timeout, SIGNED into the decision context so it reaches the
+   Gateway on trusted data (never client-suppliable). The Gateway applies it
+   TIGHTEN-ONLY against its static `max_session_idle_secs` (the smaller wins).
+   `0`/absent ⇒ no per-identity idle policy. An N-1 Gateway ignores the field
+   and keeps its static idle bound — safe (the CP-side max-duration ceiling,
+   folded into `grant_expiry`, still holds). The per-identity **max session
+   duration** needed NO wire change: the CP folds
+   `min(policy.max_session_seconds, grant TTL)` into the existing
+   `grant_expiry_epoch_seconds`, which the S13/FR-ACC-8 expiry machinery already
+   enforces.
+2. **Two additive `Authorization` RPCs** (a new RPC within the already-bumped
+   1.1 minor does not move the number):
+   - **`NotifySessionEnd`** — the Gateway's reliable session-end signal: releases
+     the FR-SESS-3 concurrency lease (and stamps the session ended) promptly on
+     EVERY teardown path, including the degraded ones where no recording exists
+     and `Recording.FinalizeRecording` never fires. Idempotent; caller-bound to
+     the session's brokering gateway (mTLS identity, never a request field) — a
+     Gateway can never free another Gateway's slot. Lifecycle-only: the S8/S9
+     byte-bridge and recording seams are unchanged.
+   - **`ExtendSessionLease`** — exact-accounting support for `RunToTtl`: a live
+     session outliving `grant_expiry` still occupies its concurrency slot; the
+     Gateway re-stamps the lease ahead of expiry. The extension window is
+     server-authoritative (no duration on the wire). Caller-bound like
+     `NotifySessionEnd`.
+   An N-1 CP without these RPCs returns `UNIMPLEMENTED`; the Gateway treats that
+   as best-effort (the lease then self-heals via the reaper exactly as in S24),
+   so the window holds.
+3. **OpenAPI `/v1/session-limit-policies`** — the FR-SESS-3 write surface
+   (`config.session_limit_policy` CRUD) following the S17 conventions: cursor
+   pagination, `Idempotency-Key`, RFC 9457, version-required optimistic
+   concurrency, pre-commit selector/limit validation (`422`), `origin='api'`.
+   Reads `rbac:read`; writes `settings:write` + audited. Adding paths/schemas/a
+   tag is additive within URI major **v1**.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

@@ -11,7 +11,9 @@ import org.junit.jupiter.api.Test;
 /**
  * The Session-Ten additions to the SIGNED decision context: identity, groups
  * and node labels are serialised so the Gateway matches identity/group/label
- * locks against trusted data (never data it was merely told).
+ * locks against trusted data (never data it was merely told). Session 25 adds
+ * the per-identity idle timeout (field 17) with the same N-1 byte-stability
+ * rule as the S13 access model: emitted ONLY when a value resolved.
  */
 class DecisionContextCodecTest {
 
@@ -20,7 +22,7 @@ class DecisionContextCodecTest {
 		DecisionContext ctx = new DecisionContext(UUID.randomUUID(), "node-a", List.of("deploy"), List.of("shell"),
 				"deploy", Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(),
 				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of("admins", "oncall"),
-				List.of("env=prod", "tier=db"), "standing");
+				List.of("env=prod", "tier=db"), "standing", null);
 
 		io.sessionlayer.controlplane.grpc.v1.DecisionContext proto = DecisionContextCodec.toProto(ctx);
 
@@ -41,13 +43,13 @@ class DecisionContextCodecTest {
 	void emitsNonStandingAccessModel() {
 		DecisionContext jit = new DecisionContext(UUID.randomUUID(), "node-a", List.of("deploy"), List.of("shell"),
 				"deploy", Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(),
-				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of(), List.of(), "jit");
+				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of(), List.of(), "jit", null);
 		assertThat(DecisionContextCodec.toProto(jit).getAccessModel())
 				.isEqualTo(io.sessionlayer.controlplane.grpc.v1.AccessModel.ACCESS_MODEL_JIT);
 
 		DecisionContext bg = new DecisionContext(UUID.randomUUID(), "node-a", List.of("root"), List.of("shell"), "root",
 				Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(), UUID.randomUUID(),
-				"10.0.0.5", Instant.now(), "root", List.of(), List.of(), "breakglass");
+				"10.0.0.5", Instant.now(), "root", List.of(), List.of(), "breakglass", null);
 		assertThat(DecisionContextCodec.toProto(bg).getAccessModel())
 				.isEqualTo(io.sessionlayer.controlplane.grpc.v1.AccessModel.ACCESS_MODEL_BREAKGLASS);
 	}
@@ -56,12 +58,37 @@ class DecisionContextCodecTest {
 	void toleratesEmptyIdentityAndCollections() {
 		DecisionContext ctx = new DecisionContext(UUID.randomUUID(), "node-b", List.of(), List.of(), "", Instant.now(),
 				0L, Duration.ZERO, UUID.randomUUID(), UUID.randomUUID(), "", Instant.now(), null, List.of(), List.of(),
-				null);
+				null, null);
 
 		io.sessionlayer.controlplane.grpc.v1.DecisionContext proto = DecisionContextCodec.toProto(ctx);
 
 		assertThat(proto.getIdentity()).isEmpty();
 		assertThat(proto.getIdentityGroupsList()).isEmpty();
 		assertThat(proto.getNodeLabelsList()).isEmpty();
+	}
+
+	@Test
+	void emitsAResolvedIdleTimeout() {
+		DecisionContext ctx = new DecisionContext(UUID.randomUUID(), "node-a", List.of("deploy"), List.of("shell"),
+				"deploy", Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(),
+				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of(), List.of(), "standing", 300);
+
+		assertThat(DecisionContextCodec.toProto(ctx).getIdleTimeoutSeconds()).isEqualTo(300L);
+	}
+
+	@Test
+	void noResolvedIdleTimeoutKeepsThePreS25BytesIdentical() {
+		DecisionContext ctx = new DecisionContext(UUID.randomUUID(), "node-a", List.of("deploy"), List.of("shell"),
+				"deploy", Instant.now().plusSeconds(3600), 7L, Duration.ofSeconds(45), UUID.randomUUID(),
+				UUID.randomUUID(), "10.0.0.5", Instant.now(), "alice", List.of("admins"), List.of("env=prod"),
+				"standing", null);
+
+		io.sessionlayer.controlplane.grpc.v1.DecisionContext proto = DecisionContextCodec.toProto(ctx);
+		byte[] bytes = DecisionContextCodec.canonicalBytes(proto);
+
+		assertThat(proto.getIdleTimeoutSeconds()).isZero();
+		// Field 17 is truly ABSENT, not encoded-as-zero: clearing it changes nothing,
+		// so a no-idle-policy decision signs byte-identically to the pre-S25 encoding.
+		assertThat(proto.toBuilder().clearIdleTimeoutSeconds().build().toByteArray()).isEqualTo(bytes);
 	}
 }

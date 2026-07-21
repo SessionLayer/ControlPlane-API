@@ -47,4 +47,22 @@ public record OperatorSettings(@Id UUID id, boolean singleton, String kekReferen
 				recordingCustomerPublicKey, recordingKeySealAlgorithm, recordingKeyRef, recordingRetentionDays,
 				recordingStrictDefault, origin, version, createdAt, updatedAt);
 	}
+
+	/** The FR-SESS-3 cluster-default max session duration (null ⇒ none). */
+	public OperatorSettings withDefaultMaxSessionSeconds(Integer defaultMaxSessionSeconds) {
+		return new OperatorSettings(id, singleton, kekReference, defaultCaBackend, auditRetentionDays, defaultWormMode,
+				otpTtlSeconds, defaultMaxSessionSeconds, defaultIdleTimeoutSeconds, defaultMaxConcurrentSessions,
+				bootstrapAdminSubject, bootstrapCredentialHash, bootstrapCompleted, bootstrapCompletedAt,
+				recordingCustomerPublicKey, recordingKeySealAlgorithm, recordingKeyRef, recordingRetentionDays,
+				recordingStrictDefault, origin, version, createdAt, updatedAt);
+	}
+
+	/** The FR-SESS-3 cluster-default idle timeout (null ⇒ none). */
+	public OperatorSettings withDefaultIdleTimeoutSeconds(Integer defaultIdleTimeoutSeconds) {
+		return new OperatorSettings(id, singleton, kekReference, defaultCaBackend, auditRetentionDays, defaultWormMode,
+				otpTtlSeconds, defaultMaxSessionSeconds, defaultIdleTimeoutSeconds, defaultMaxConcurrentSessions,
+				bootstrapAdminSubject, bootstrapCredentialHash, bootstrapCompleted, bootstrapCompletedAt,
+				recordingCustomerPublicKey, recordingKeySealAlgorithm, recordingKeyRef, recordingRetentionDays,
+				recordingStrictDefault, origin, version, createdAt, updatedAt);
+	}
 }

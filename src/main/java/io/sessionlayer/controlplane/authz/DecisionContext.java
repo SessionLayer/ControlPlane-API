@@ -26,11 +26,18 @@ import java.util.UUID;
  * model is emitted onto the wire (STANDING is left UNSPECIFIED), so a standing
  * decision's signed bytes stay byte-identical to the pre-S13 encoding and an
  * N-1 Gateway reads the absent field as the safe STANDING default.
+ *
+ * <p>
+ * {@code idleTimeoutSeconds} (S25, FR-SESS-3) is the resolved per-identity idle
+ * timeout, signed so the Gateway applies it TIGHTEN-ONLY against its static
+ * idle bound on trusted data. {@code null} = no per-identity idle policy; the
+ * field is then omitted from the wire so the signed bytes stay byte-identical
+ * to the pre-S25 encoding (N-1).
  */
 public record DecisionContext(UUID nodeId, String nodeName, List<String> allowedLogins, List<String> capabilities,
 		String principal, Instant grantExpiry, long policyEpoch, Duration decisionTtl, UUID gatewayId, UUID sessionId,
 		String sourceAddress, Instant issuedAt, String identity, List<String> identityGroups, List<String> nodeLabels,
-		String accessModel) {
+		String accessModel, Integer idleTimeoutSeconds) {
 
 	public DecisionContext {
 		allowedLogins = List.copyOf(allowedLogins);

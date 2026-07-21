@@ -32,6 +32,13 @@ public final class DecisionContextCodec {
 		if (model != io.sessionlayer.controlplane.grpc.v1.AccessModel.ACCESS_MODEL_UNSPECIFIED) {
 			builder.setAccessModel(model);
 		}
+		// Emit the per-identity idle timeout (field 17, S25) only when one resolved:
+		// a session with no idle policy keeps signed bytes byte-identical to the
+		// pre-S25 encoding, and an N-1 Gateway reading the absent field keeps its
+		// static idle bound (§16).
+		if (ctx.idleTimeoutSeconds() != null && ctx.idleTimeoutSeconds() > 0) {
+			builder.setIdleTimeoutSeconds(ctx.idleTimeoutSeconds());
+		}
 		return builder.build();
 	}
 

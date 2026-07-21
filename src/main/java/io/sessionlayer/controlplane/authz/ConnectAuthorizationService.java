@@ -11,6 +11,7 @@ import io.sessionlayer.controlplane.data.config.DpRule;
 import io.sessionlayer.controlplane.data.config.DpRuleRepository;
 import io.sessionlayer.controlplane.data.config.OperatorSettingsRepository;
 import io.sessionlayer.controlplane.data.config.PolicyEpochRepository;
+import io.sessionlayer.controlplane.data.config.SessionLimitPolicy;
 import io.sessionlayer.controlplane.data.config.SessionLimitPolicyRepository;
 import io.sessionlayer.controlplane.data.runtime.AccessLock;
 import io.sessionlayer.controlplane.data.runtime.AccessLockRepository;
@@ -31,6 +32,7 @@ import io.sessionlayer.controlplane.data.runtime.SshSessionRepository;
 import io.sessionlayer.controlplane.gateway.SessionSigningTokenService;
 import io.sessionlayer.controlplane.ha.HaProperties;
 import io.sessionlayer.controlplane.jit.JitLifecycleService;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import io.sessionlayer.controlplane.recording.RecordingTokenService;
 import java.time.Duration;
 import java.time.Instant;
@@ -116,6 +118,7 @@ public class ConnectAuthorizationService {
 	private final AuthzProperties properties;
 	private final PresenceRepository presence;
 	private final HaProperties haProperties;
+	private final SloMetrics metrics;
 	private final ObjectMapper objectMapper;
 	private final TransactionalOperator tx;
 	private final DatabaseClient db;
@@ -129,8 +132,8 @@ public class ConnectAuthorizationService {
 			RecordingTokenService recordingTokens, JitLifecycleService jit, BreakglassTokenService breakglassTokens,
 			BreakglassActivationRepository breakglassActivations, BreakglassPolicyRepository breakglassPolicies,
 			BreakglassProperties breakglassProperties, AuditEventStore audit, AuthzProperties properties,
-			PresenceRepository presence, HaProperties haProperties, ObjectMapper objectMapper, TransactionalOperator tx,
-			DatabaseClient db) {
+			PresenceRepository presence, HaProperties haProperties, SloMetrics metrics, ObjectMapper objectMapper,
+			TransactionalOperator tx, DatabaseClient db) {
 		this.nodes = nodes;
 		this.hostKeys = hostKeys;
 		this.caRotation = caRotation;
@@ -155,6 +158,7 @@ public class ConnectAuthorizationService {
 		this.properties = properties;
 		this.presence = presence;
 		this.haProperties = haProperties;
+		this.metrics = metrics;
 		this.objectMapper = objectMapper;
 		this.tx = tx;
 		this.db = db;
@@ -399,10 +403,33 @@ public class ConnectAuthorizationService {
 			AuthorizationRequest request, UUID sessionId, List<String> logins, List<String> capabilities,
 			UUID matchedRuleId, String matchedRuleName, String accessModel, UUID jitRequestId,
 			UUID breakglassActivationId, int grantTtlSeconds, long epoch, Instant now) {
+		// FR-SESS-3 (S25): resolve the per-identity duration/idle ceilings for
+		// STANDING/JIT before building the signed context. Break-glass is EXEMPT
+		// (keeps its own break-glass TTL, carries no per-identity idle) — emergency
+		// access is never throttled by per-identity policy, consistent with its
+		// concurrency-cap exemption.
+		Mono<SessionCeilings> ceilings = MODEL_BREAKGLASS.equals(accessModel)
+				? Mono.just(SessionCeilings.NONE)
+				: resolveSessionCeilings(request.identity(), request.groups());
+		return ceilings.flatMap(resolved -> emitAllowWithCeilings(callerGatewayId, node, gatewayName, request,
+				sessionId, logins, capabilities, matchedRuleId, matchedRuleName, accessModel, jitRequestId,
+				breakglassActivationId, grantTtlSeconds, epoch, now, resolved));
+	}
+
+	private Mono<ConnectDecision> emitAllowWithCeilings(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, List<String> logins, List<String> capabilities,
+			UUID matchedRuleId, String matchedRuleName, String accessModel, UUID jitRequestId,
+			UUID breakglassActivationId, int grantTtlSeconds, long epoch, Instant now, SessionCeilings ceilings) {
 		String identity = request.identity();
 		String requestedPrincipal = request.requestedPrincipal();
 		String sourceIp = request.sourceIp();
 		int ttlSeconds = effectiveGrantTtl(grantTtlSeconds);
+		// Part B: grant_expiry = now + min(grant TTL, per-identity max duration); the
+		// Gateway's existing FR-ACC-8 expiry machinery then enforces it — no wire
+		// change.
+		if (ceilings.maxSessionSeconds() != null) {
+			ttlSeconds = Math.min(ttlSeconds, ceilings.maxSessionSeconds());
+		}
 		Instant grantExpiry = now.plusSeconds(ttlSeconds);
 		// identity/groups/node-labels are signed into the context so the Gateway
 		// matches
@@ -413,7 +440,7 @@ public class ConnectAuthorizationService {
 		List<String> nodeLabels = sortedLabelStrings(node.resolvedLabels());
 		DecisionContext context = new DecisionContext(node.id(), node.name(), logins, capabilities, requestedPrincipal,
 				grantExpiry, epoch, properties.getDecisionTtl(), callerGatewayId, sessionId, sourceIp, now, identity,
-				identityGroups, nodeLabels, accessModel);
+				identityGroups, nodeLabels, accessModel, ceilings.idleTimeoutSeconds());
 
 		return Mono.zip(signer.sign(context), resolveNodeConnection(node)).flatMap(signedAndConn -> {
 			SignedDecisionContext signed = signedAndConn.getT1();
@@ -443,6 +470,12 @@ public class ConnectAuthorizationService {
 			// FR-SESS-3: a STANDING/JIT session takes a concurrency lease; the lease is
 			// saved AFTER the session row (its session_id FKs ssh_session) and inside the
 			// same tx, so acquire is atomic with the mint. Break-glass takes no lease.
+			// No-double-count-on-re-authorize is LOAD-BEARING here: a mid-session
+			// re-Authorize re-runs this with the SAME session_id, the ssh_session INSERT
+			// PK-conflicts, and the WHOLE tx (this lease included) rolls back — so a
+			// re-auth never acquires a second lease. If that INSERT is ever changed to an
+			// upsert, this acquire MUST become re-auth-aware (idempotent per session_id)
+			// or the cap will double-count.
 			boolean leased = !MODEL_BREAKGLASS.equals(accessModel);
 			Mono<Void> acquireLease = leased
 					? sessionLeases.save(SessionLease.acquire(identity, sessionId, gatewayName, now, grantExpiry))
@@ -526,11 +559,49 @@ public class ConnectAuthorizationService {
 						.flatMap(settings -> Mono.justOrEmpty(settings.defaultMaxConcurrentSessions())));
 	}
 
+	// FR-SESS-3 (S25): the identity's max-duration + idle ceilings, resolved in
+	// one pass with the same semantics as resolveConcurrencyLimit — per knob, the
+	// most restrictive matching session_limit_policy value wins, else the
+	// operator_settings cluster default, else none (NULL/≤0 at any level means no
+	// enforcement of that knob).
+	private record SessionCeilings(Integer maxSessionSeconds, Integer idleTimeoutSeconds) {
+		static final SessionCeilings NONE = new SessionCeilings(null, null);
+	}
+
+	private Mono<SessionCeilings> resolveSessionCeilings(String identity, List<String> groups) {
+		List<String> safeGroups = groups == null ? List.of() : groups;
+		return sessionLimitPolicies.findAll()
+				.filter(policy -> Selectors.identityMatches(policy.identitySelector(), identity, safeGroups))
+				.collectList().flatMap(matching -> {
+					Integer duration = mostRestrictive(matching, SessionLimitPolicy::maxSessionSeconds);
+					Integer idle = mostRestrictive(matching, SessionLimitPolicy::idleTimeoutSeconds);
+					if (duration != null && idle != null) {
+						return Mono.just(new SessionCeilings(duration, idle));
+					}
+					return operatorSettings.findSingleton()
+							.map(settings -> new SessionCeilings(
+									duration != null ? duration : positiveOrNull(settings.defaultMaxSessionSeconds()),
+									idle != null ? idle : positiveOrNull(settings.defaultIdleTimeoutSeconds())))
+							.defaultIfEmpty(new SessionCeilings(duration, idle));
+				});
+	}
+
+	private static Integer mostRestrictive(List<SessionLimitPolicy> policies,
+			java.util.function.Function<SessionLimitPolicy, Integer> knob) {
+		return policies.stream().map(knob).filter(value -> value != null && value > 0).min(Integer::compare)
+				.orElse(null);
+	}
+
+	private static Integer positiveOrNull(Integer value) {
+		return value == null || value <= 0 ? null : value;
+	}
+
 	// Mint nothing; record the specific reason server-side (the caller sees the
 	// same
 	// generic deny, §8.4) with the observed count vs the limit for the operator.
 	private Mono<ConnectDecision> denyConcurrencyLimit(UUID callerGatewayId, AuthorizationRequest request, UUID nodeId,
 			String accessModel, long active, int limit) {
+		metrics.recordSessionLimitDenied(accessModel);
 		Map<String, String> detail = new HashMap<>();
 		detail.put("reason", "CONCURRENT_SESSION_LIMIT");
 		detail.put("note", "concurrent_session_limit");

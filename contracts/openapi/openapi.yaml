@@ -110,6 +110,13 @@ tags:
     description: >-
       Break-glass-policy CRUD (`config.breakglass_policy`; FR-ACC-6/API-2). Gated
       (`breakglass:manage`) + audited.
+  - name: session-limit-policies
+    description: >-
+      Session-limit-policy CRUD (`config.session_limit_policy`; FR-SESS-3/API-2).
+      Per-identity overrides for the concurrent-session cap, max session
+      duration, and idle timeout — enforced at Authorize (cap + duration) and
+      the Gateway (idle, signed into the decision context). Reads gated
+      (`rbac:read`); writes gated (`settings:write`) + audited.
   - name: sessions
     description: >-
       Runtime SSH-session management (`runtime.ssh_session`; Design §12A). List +
@@ -2424,6 +2431,150 @@ paths:
         default:
           $ref: '#/components/responses/Problem'
   # ===================================================================
+  # Session 25 — session-limit policies (FR-SESS-3 write surface).
+  # Per-identity overrides for the three session-limit knobs; every stored
+  # value is ENFORCED (no dead config): cap + duration at Authorize, idle
+  # via the signed decision context at the Gateway.
+  # ===================================================================
+  /v1/session-limit-policies:
+    get:
+      operationId: listSessionLimitPolicies
+      summary: List session-limit policies (admin).
+      description: |
+        Lists per-identity session-limit policies (`config.session_limit_policy`;
+        FR-SESS-3) — overrides for the concurrent-session cap, max session
+        duration, and idle timeout. When several policies match an identity the
+        most restrictive value wins per knob; the `operator_settings` cluster
+        defaults apply where no policy matches. Cursor-paginated. Platform-RBAC
+        gated (`rbac:read`).
+      tags:
+        - session-limit-policies
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of session-limit policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLimitPolicyPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createSessionLimitPolicy
+      summary: Create a session-limit policy (admin).
+      description: |
+        Creates a session-limit policy. Invalid config (a malformed
+        `identitySelector`, a non-positive limit, or all three limits absent) is
+        rejected PRE-COMMIT (`422`, FR-API-5). The `origin` is server-set to
+        `api`. Platform-RBAC gated (`settings:write`) + audited.
+      tags:
+        - session-limit-policies
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionLimitPolicyRequest'
+      responses:
+        '201':
+          description: The session-limit policy was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLimitPolicyResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/session-limit-policies/{sessionLimitPolicyId}:
+    parameters:
+      - $ref: '#/components/parameters/SessionLimitPolicyId'
+    get:
+      operationId: getSessionLimitPolicy
+      summary: Get a session-limit policy (admin).
+      description: Returns one session-limit policy by id. Platform-RBAC gated (`rbac:read`).
+      tags:
+        - session-limit-policies
+      responses:
+        '200':
+          description: The session-limit policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLimitPolicyResource'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: updateSessionLimitPolicy
+      summary: Update a session-limit policy (admin).
+      description: |
+        Replaces the mutable fields of a session-limit policy (the `name` is
+        immutable). Invalid config is rejected pre-commit (`422`). The `version`
+        is required and must match (optimistic concurrency — a stale version is
+        a `409`). Platform-RBAC gated (`settings:write`) + audited.
+      tags:
+        - session-limit-policies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSessionLimitPolicyRequest'
+      responses:
+        '200':
+          description: The updated session-limit policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLimitPolicyResource'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: deleteSessionLimitPolicy
+      summary: Delete a session-limit policy (admin).
+      description: |
+        Deletes a session-limit policy (idempotent — `204` whether or not it
+        existed). Enforcement falls back to the remaining policies / cluster
+        defaults from the next decision. Platform-RBAC gated (`settings:write`)
+        + audited.
+      tags:
+        - session-limit-policies
+      responses:
+        '204':
+          description: The session-limit policy was deleted (idempotent).
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  # ===================================================================
   # Session 17 — runtime session management (list + terminate).
   # `sessions` is RUNTIME (never config); terminate reuses the S10 Lock
   # teardown path (Design §8.3/§8.4).
@@ -3007,6 +3158,13 @@ components:
         format: uuid
     BreakglassPolicyId:
       name: breakglassPolicyId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionLimitPolicyId:
+      name: sessionLimitPolicyId
       in: path
       required: true
       schema:
@@ -5113,6 +5271,120 @@ components:
             $ref: '#/components/schemas/BreakglassPolicyResource'
         nextCursor:
           type: string
+      additionalProperties: false
+    # ============ Session 25 — session-limit-policies (session_limit_policy) ============
+    SessionLimitPolicyResource:
+      type: object
+      title: Session-Limit Policy
+      description: |
+        A per-identity override for the FR-SESS-3 session-limit knobs. Every
+        stored value is enforced: `maxConcurrentSessions` as the HARD cap at
+        Authorize, `maxSessionSeconds` folded into the decision's `grant_expiry`,
+        `idleTimeoutSeconds` signed into the decision context and applied
+        (tighten-only) by the Gateway. An absent knob defers to the
+        `operator_settings` cluster default for that knob.
+      required:
+        - id
+        - name
+        - identitySelector
+        - origin
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        identitySelector:
+          $ref: '#/components/schemas/Selector'
+        maxConcurrentSessions:
+          type: integer
+          format: int32
+          minimum: 1
+        maxSessionSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        idleTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        origin:
+          $ref: '#/components/schemas/Origin'
+        version:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CreateSessionLimitPolicyRequest:
+      type: object
+      title: Create Session-Limit Policy Request
+      required:
+        - name
+        - identitySelector
+      properties:
+        name:
+          type: string
+          minLength: 1
+        identitySelector:
+          $ref: '#/components/schemas/Selector'
+        maxConcurrentSessions:
+          type: integer
+          format: int32
+          minimum: 1
+        maxSessionSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        idleTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+      additionalProperties: false
+    UpdateSessionLimitPolicyRequest:
+      type: object
+      title: Update Session-Limit Policy Request
+      required:
+        - identitySelector
+        - version
+      properties:
+        identitySelector:
+          $ref: '#/components/schemas/Selector'
+        maxConcurrentSessions:
+          type: integer
+          format: int32
+          minimum: 1
+        maxSessionSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        idleTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        version:
+          type: integer
+          format: int64
+          description: The current resource version; required and must match (optimistic concurrency — no silent lost update).
+      additionalProperties: false
+    SessionLimitPolicyPage:
+      type: object
+      title: Session-Limit Policy Page
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionLimitPolicyResource'
+        nextCursor:
+          type: string
+          description: Cursor for the next page; absent on the last page.
       additionalProperties: false
     # ============ Session 17 — sessions (ssh_session, runtime) ============
     SessionResource:

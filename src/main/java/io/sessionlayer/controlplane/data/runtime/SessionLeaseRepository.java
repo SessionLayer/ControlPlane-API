@@ -10,6 +10,9 @@ import reactor.core.publisher.Mono;
 /** Reactive repository for {@link SessionLease}. */
 public interface SessionLeaseRepository extends ReactiveCrudRepository<SessionLease, UUID> {
 
+	/** The session's (single, by construction) lease. */
+	Mono<SessionLease> findBySessionId(UUID sessionId);
+
 	/**
 	 * Live-lease count for an identity = current concurrency (FR-SESS-3).
 	 * Fleet-wide: every Gateway acquires its leases in this shared datastore, so
@@ -32,6 +35,29 @@ public interface SessionLeaseRepository extends ReactiveCrudRepository<SessionLe
 	@Modifying
 	@Query("UPDATE runtime.session_lease SET released_at = :now WHERE session_id = :sessionId AND released_at IS NULL")
 	Mono<Integer> releaseBySessionId(UUID sessionId, Instant now);
+
+	/**
+	 * Re-stamp a live lease's expiry (S25 exact accounting — a RunToTtl session
+	 * outliving grant_expiry keeps occupying its slot while the Gateway extends
+	 * ahead of expiry). Guarded by {@code released_at IS NULL} so an ended/released
+	 * lease is never resurrected, and {@code GREATEST} so a re-stamp can only
+	 * extend, never shorten, the counted window (an accidental early call cannot
+	 * under-count). A direct UPDATE (no {@code @Version} read-modify-write) so
+	 * concurrent extends/releases never conflict. Returns the rows affected.
+	 */
+	@Modifying
+	@Query("UPDATE runtime.session_lease SET expires_at = GREATEST(expires_at, :expiresAt) "
+			+ "WHERE session_id = :sessionId AND released_at IS NULL")
+	Mono<Integer> extendBySessionId(UUID sessionId, Instant expiresAt);
+
+	/**
+	 * Fleet-wide live (unreleased + unexpired) lease count — the
+	 * {@code sessionlayer.session.lease.live} gauge (S25 Part D). No per-identity
+	 * breakdown (OTEL content rule: enum-only tags).
+	 */
+	@Query("SELECT count(*) FROM runtime.session_lease WHERE released_at IS NULL "
+			+ "AND (expires_at IS NULL OR expires_at > :now)")
+	Mono<Long> countLive(Instant now);
 
 	/**
 	 * Reap leaked leases: mark released any lease still unreleased whose grant

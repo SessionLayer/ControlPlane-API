@@ -23,10 +23,12 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -224,7 +226,13 @@ public class RecordingRegistrationService {
 									.build()))
 							.thenReturn(status));
 				}));
-		return tx.transactional(body);
+		// S25: the Gateway fires NotifySessionEnd and FinalizeRecording concurrently
+		// at teardown and both stamp ssh_session.ended_at — a lost @Version race here
+		// would roll back the WHOLE finalize (terminal status + SFTP audit) with no
+		// Gateway-side retry, leaving the recording permanently non-terminal. Retry
+		// once: the re-read sees the session already ended and no-ops the stamp.
+		return tx.transactional(body)
+				.retryWhen(Retry.max(1).filter(OptimisticLockingFailureException.class::isInstance));
 	}
 
 	// FR-SESS-3 lifecycle completion: the first terminal finalize closes the owning

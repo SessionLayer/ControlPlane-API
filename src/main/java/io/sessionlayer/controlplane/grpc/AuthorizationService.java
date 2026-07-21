@@ -5,14 +5,21 @@ import io.grpc.stub.StreamObserver;
 import io.sessionlayer.controlplane.authz.ConnectAuthorizationService;
 import io.sessionlayer.controlplane.authz.ConnectDecision;
 import io.sessionlayer.controlplane.authz.NodeConnectionInfo;
+import io.sessionlayer.controlplane.authz.SessionLifecycleService;
 import io.sessionlayer.controlplane.authz.SignedDecisionContext;
+import io.sessionlayer.controlplane.gateway.GatewayRequestException;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeRequest;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeResponse;
 import io.sessionlayer.controlplane.grpc.v1.ConnectorKind;
 import io.sessionlayer.controlplane.grpc.v1.Decision;
+import io.sessionlayer.controlplane.grpc.v1.ExtendSessionLeaseRequest;
+import io.sessionlayer.controlplane.grpc.v1.ExtendSessionLeaseResponse;
 import io.sessionlayer.controlplane.grpc.v1.HostVerification;
 import io.sessionlayer.controlplane.grpc.v1.NodeConnection;
+import io.sessionlayer.controlplane.grpc.v1.NotifySessionEndRequest;
+import io.sessionlayer.controlplane.grpc.v1.NotifySessionEndResponse;
+import io.sessionlayer.controlplane.grpc.v1.SessionEndReason;
 import io.sessionlayer.controlplane.mtls.CertificateFingerprints;
 import io.sessionlayer.controlplane.mtls.MtlsContext;
 import io.sessionlayer.controlplane.mtls.MtlsPeer;
@@ -35,13 +42,15 @@ import reactor.core.publisher.Mono;
 public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBase {
 
 	private final ConnectAuthorizationService authorization;
+	private final SessionLifecycleService lifecycle;
 	private final MtlsProperties properties;
 	private final CpTracing tracing;
 	private final SloMetrics metrics;
 
-	public AuthorizationService(ConnectAuthorizationService authorization, MtlsProperties properties, CpTracing tracing,
-			SloMetrics metrics) {
+	public AuthorizationService(ConnectAuthorizationService authorization, SessionLifecycleService lifecycle,
+			MtlsProperties properties, CpTracing tracing, SloMetrics metrics) {
 		this.authorization = authorization;
+		this.lifecycle = lifecycle;
 		this.properties = properties;
 		this.tracing = tracing;
 		this.metrics = metrics;
@@ -83,6 +92,61 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 				blankToNull(request.getNodeId()), metrics.timeEstablishment(decision))
 				.map(AuthorizationService::toResponse);
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "Authorize");
+	}
+
+	// S25 Part E: the Gateway's reliable session-end signal — releases the
+	// FR-SESS-3 lease (and stamps the session ended) on every teardown path,
+	// independent of FinalizeRecording. mTLS-required tier (any non-bootstrap
+	// method); the service enforces the caller-owns-session gate.
+	@Override
+	public void notifySessionEnd(NotifySessionEndRequest request, StreamObserver<NotifySessionEndResponse> observer) {
+		MtlsPeer peer = MtlsContext.peer();
+		UUID caller = peer == null ? null : peer.gatewayId();
+		Mono<NotifySessionEndResponse> result = lifecycle
+				.endSession(caller, parseUuid(request.getSessionId()), endReason(request.getReason()))
+				.map(released -> NotifySessionEndResponse.newBuilder().setReleased(released).build())
+				.doOnNext(response -> metrics.recordSessionLifecycle(SloMetrics.RPC_NOTIFY_SESSION_END,
+						response.getReleased() ? "released" : "not_released"))
+				.doOnError(error -> metrics.recordSessionLifecycle(SloMetrics.RPC_NOTIFY_SESSION_END,
+						lifecycleOutcome(error)));
+		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "NotifySessionEnd");
+	}
+
+	// S25 Part E: re-stamp a live session's lease expiry (RunToTtl exact
+	// accounting). The window is server-authoritative; the request carries none.
+	@Override
+	public void extendSessionLease(ExtendSessionLeaseRequest request,
+			StreamObserver<ExtendSessionLeaseResponse> observer) {
+		MtlsPeer peer = MtlsContext.peer();
+		UUID caller = peer == null ? null : peer.gatewayId();
+		Mono<ExtendSessionLeaseResponse> result = lifecycle.extendLease(caller, parseUuid(request.getSessionId()))
+				.map(expiry -> ExtendSessionLeaseResponse.newBuilder().setExpiresAtEpochSeconds(expiry.getEpochSecond())
+						.build())
+				.doOnNext(response -> metrics.recordSessionLifecycle(SloMetrics.RPC_EXTEND_SESSION_LEASE, "extended"))
+				.doOnError(error -> metrics.recordSessionLifecycle(SloMetrics.RPC_EXTEND_SESSION_LEASE,
+						lifecycleOutcome(error)));
+		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "ExtendSessionLease");
+	}
+
+	// A deliberate service refusal (ownership/state) vs an unexpected failure —
+	// enum-only outcomes (F3: the lease-partition / reaped-live-lease pattern
+	// becomes dashboard-visible without identity/session tags).
+	private static String lifecycleOutcome(Throwable error) {
+		return error instanceof GatewayRequestException ? "refused" : "error";
+	}
+
+	// The closed end_reason vocabulary stored on ssh_session (advisory
+	// diagnostics; the authoritative teardown "why" for a lock/expiry lives in
+	// the decision/lock audit chain). UNSPECIFIED/unknown maps to the orderly
+	// default.
+	private static String endReason(SessionEndReason reason) {
+		return switch (reason) {
+			case SESSION_END_REASON_EXPIRED -> "expired";
+			case SESSION_END_REASON_IDLE_TIMEOUT -> "idle_timeout";
+			case SESSION_END_REASON_LOCKED -> "locked";
+			case SESSION_END_REASON_ERROR -> "error";
+			default -> "closed";
+		};
 	}
 
 	private static AuthorizeResponse toResponse(ConnectDecision decision) {
