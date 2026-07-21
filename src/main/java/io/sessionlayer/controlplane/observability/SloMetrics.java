@@ -32,7 +32,14 @@ import reactor.core.publisher.Mono;
  * <li>{@code sessionlayer.session.lease.reaped} — leaked leases released by the
  * {@code SessionLeaseReaper} sweep.</li>
  * <li>{@code sessionlayer.session.lease.live} — fleet-wide live (unreleased +
- * unexpired) concurrency leases, refreshed on a schedule.</li>
+ * unexpired) concurrency leases, refreshed on a schedule. Reads 0 until the
+ * first refresh; every CP instance reports the SAME fleet-wide count, so
+ * scaled-out dashboards aggregate with max/last, never sum. Staleness is
+ * observable via {@code sessionlayer.session.lease.live.refresh.failed}.</li>
+ * <li>{@code sessionlayer.session.lifecycle} — the S25 lifecycle-RPC outcomes
+ * ({@code rpc=notify_session_end|extend_session_lease},
+ * {@code outcome=released|not_released|extended|refused|error}) — the
+ * lease-partition / reaped-live-lease signatures show up here.</li>
  * </ul>
  */
 @Component
@@ -44,6 +51,12 @@ public class SloMetrics {
 	static final String SESSION_LIMIT = "sessionlayer.session.limit";
 	static final String LEASE_REAPED = "sessionlayer.session.lease.reaped";
 	static final String LEASE_LIVE = "sessionlayer.session.lease.live";
+	static final String LEASE_GAUGE_REFRESH_FAILED = "sessionlayer.session.lease.live.refresh.failed";
+	static final String SESSION_LIFECYCLE = "sessionlayer.session.lifecycle";
+
+	static final String TAG_RPC = "rpc";
+	public static final String RPC_NOTIFY_SESSION_END = "notify_session_end";
+	public static final String RPC_EXTEND_SESSION_LEASE = "extend_session_lease";
 
 	static final String TAG_OUTCOME = "outcome";
 	static final String TAG_ACCESS_MODEL = "access_model";
@@ -85,6 +98,16 @@ public class SloMetrics {
 	/** Refresh the live-lease gauge (scheduled; no per-identity breakdown). */
 	public void updateLiveLeases(long count) {
 		liveLeases.set(count);
+	}
+
+	/** A failed gauge refresh — the live-lease gauge is now stale (F4). */
+	public void recordLeaseGaugeRefreshFailed() {
+		Counter.builder(LEASE_GAUGE_REFRESH_FAILED).register(registry).increment();
+	}
+
+	/** An S25 lifecycle-RPC outcome (enum tags only — never identity/session). */
+	public void recordSessionLifecycle(String rpc, String outcome) {
+		Counter.builder(SESSION_LIFECYCLE).tag(TAG_RPC, rpc).tag(TAG_OUTCOME, outcome).register(registry).increment();
 	}
 
 	/**

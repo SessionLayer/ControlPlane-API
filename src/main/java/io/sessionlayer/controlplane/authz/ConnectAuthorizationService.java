@@ -470,6 +470,12 @@ public class ConnectAuthorizationService {
 			// FR-SESS-3: a STANDING/JIT session takes a concurrency lease; the lease is
 			// saved AFTER the session row (its session_id FKs ssh_session) and inside the
 			// same tx, so acquire is atomic with the mint. Break-glass takes no lease.
+			// No-double-count-on-re-authorize is LOAD-BEARING here: a mid-session
+			// re-Authorize re-runs this with the SAME session_id, the ssh_session INSERT
+			// PK-conflicts, and the WHOLE tx (this lease included) rolls back — so a
+			// re-auth never acquires a second lease. If that INSERT is ever changed to an
+			// upsert, this acquire MUST become re-auth-aware (idempotent per session_id)
+			// or the cap will double-count.
 			boolean leased = !MODEL_BREAKGLASS.equals(accessModel);
 			Mono<Void> acquireLease = leased
 					? sessionLeases.save(SessionLease.acquire(identity, sessionId, gatewayName, now, grantExpiry))

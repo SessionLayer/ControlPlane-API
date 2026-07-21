@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.handler.ssl.SslContext;
 import io.sessionlayer.controlplane.audit.AuditEventStore;
 import io.sessionlayer.controlplane.audit.AuditEventStore.AuditQuery;
@@ -31,7 +32,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -46,6 +50,7 @@ import tools.jackson.databind.node.ObjectNode;
  * {@code grant_expiry} still occupies its slot; it never shortens a lease and
  * refuses ended sessions / released leases / foreign callers.
  */
+@ExtendWith(OutputCaptureExtension.class)
 class SessionLifecycleIT extends AbstractMtlsIT {
 
 	private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
@@ -61,6 +66,8 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 	private SessionLeaseRepository sessionLeases;
 	@Autowired
 	private AuditEventStore auditStore;
+	@Autowired
+	private MeterRegistry meters;
 
 	@Test
 	void notifySessionEndReleasesTheLeaseAndStampsTheSessionIdempotently() {
@@ -69,6 +76,7 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 		seedAllow(identity, nodeId);
 		EnrolledGateway gateway = enroll("gw-end-" + unique());
 		UUID sessionId = UUID.randomUUID();
+		double releasedBefore = lifecycleCount("notify_session_end", "released");
 		assertThat(authorize(gateway, identity, nodeId, sessionId).getDecision()).isEqualTo(Decision.DECISION_ALLOW);
 		assertThat(countLive(identity)).isEqualTo(1);
 
@@ -78,6 +86,8 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 		SshSession session = sshSessions.findById(sessionId).block();
 		assertThat(session.endedAt()).isNotNull();
 		assertThat(session.endReason()).isEqualTo("closed");
+		// F3: the lifecycle outcome is observable — enum-only tags, no identity.
+		assertThat(lifecycleCount("notify_session_end", "released")).isEqualTo(releasedBefore + 1);
 
 		// The lifecycle end joined the session's correlation chain.
 		var events = auditStore.search(new AuditQuery(null, identity, "session.end", "success", null, null, null, null,
@@ -118,6 +128,7 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 		EnrolledGateway owner = enroll("gw-owner-" + unique());
 		EnrolledGateway foreign = enroll("gw-foreign-" + unique());
 		UUID sessionId = UUID.randomUUID();
+		double refusedBefore = lifecycleCount("notify_session_end", "refused");
 		authorize(owner, identity, nodeId, sessionId);
 
 		assertThatThrownBy(() -> notifyEnd(foreign, sessionId, SessionEndReason.SESSION_END_REASON_CLOSED))
@@ -125,6 +136,8 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 						e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED));
 		assertThat(countLive(identity)).isEqualTo(1);
 		assertThat(sshSessions.findById(sessionId).block().endedAt()).isNull();
+		// F3: the refusal is counted (enum tags only).
+		assertThat(lifecycleCount("notify_session_end", "refused")).isEqualTo(refusedBefore + 1);
 
 		assertThatThrownBy(() -> extend(foreign, sessionId)).isInstanceOfSatisfying(StatusRuntimeException.class,
 				e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED));
@@ -207,6 +220,7 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 				.bind("sid", sessionId).fetch().rowsUpdated().block();
 		assertThat(countLive(identity)).isZero();
 
+		double extendedBefore = lifecycleCount("extend_session_lease", "extended");
 		ExtendSessionLeaseResponse response = extend(gateway, sessionId);
 		long delta = response.getExpiresAtEpochSeconds() - Instant.now().getEpochSecond();
 		assertThat(delta).isBetween(850L, 910L); // the PT15M server-authoritative window
@@ -215,6 +229,7 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 		assertThat(countLive(identity)).isEqualTo(1);
 		SessionLease lease = sessionLeases.findBySessionId(sessionId).block();
 		assertThat(lease.expiresAt().getEpochSecond()).isEqualTo(response.getExpiresAtEpochSeconds());
+		assertThat(lifecycleCount("extend_session_lease", "extended")).isEqualTo(extendedBefore + 1);
 	}
 
 	// The re-stamp can only EXTEND the counted window (GREATEST): an early call
@@ -236,7 +251,7 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 	}
 
 	@Test
-	void extendIsRefusedForAnEndedSessionOrAReleasedLease() {
+	void extendIsRefusedForAnEndedSessionOrAReleasedLease(CapturedOutput output) {
 		String identity = "extend-refuse-" + unique();
 		UUID nodeId = seedProdNode();
 		seedAllow(identity, nodeId);
@@ -254,12 +269,23 @@ class SessionLifecycleIT extends AbstractMtlsIT {
 		UUID released = UUID.randomUUID();
 		authorize(gateway, identity, nodeId, released);
 		sessionLeases.releaseBySessionId(released, Instant.now()).block();
+		double refusedBefore = lifecycleCount("extend_session_lease", "refused");
 		assertThatThrownBy(() -> extend(gateway, released)).isInstanceOfSatisfying(StatusRuntimeException.class,
 				e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION));
 		assertThat(sessionLeases.findBySessionId(released).block().releasedAt()).isNotNull();
+		// F3: the reaped-a-live-session signature is LOUD — a refused extend for a
+		// session that is NOT ended warns (silent under-count would otherwise be
+		// invisible) and the refusal is counted.
+		assertThat(lifecycleCount("extend_session_lease", "refused")).isEqualTo(refusedBefore + 1);
+		assertThat(output.getOut()).contains("ExtendSessionLease refused for live session " + released);
 	}
 
 	// ----------------------- helpers -----------------------
+
+	private double lifecycleCount(String rpc, String outcome) {
+		var counter = meters.find("sessionlayer.session.lifecycle").tag("rpc", rpc).tag("outcome", outcome).counter();
+		return counter == null ? 0 : counter.count();
+	}
 
 	private AuthorizeResponse authorize(EnrolledGateway gateway, String identity, UUID nodeId, UUID sessionId) {
 		AuthorizeRequest request = AuthorizeRequest.newBuilder().setIdentity(identity).setNodeId(nodeId.toString())

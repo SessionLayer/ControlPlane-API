@@ -12,6 +12,8 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -40,6 +42,8 @@ import tools.jackson.databind.JsonNode;
  */
 @Service
 public class SessionLifecycleService {
+
+	private static final Logger LOG = LoggerFactory.getLogger(SessionLifecycleService.class);
 
 	private final SshSessionRepository sshSessions;
 	private final SessionLeaseRepository sessionLeases;
@@ -96,9 +100,18 @@ public class SessionLifecycleService {
 				return Mono.error(new GatewayRequestException(Reason.FAILED_PRECONDITION, "session already ended"));
 			}
 			Instant expiry = Instant.now().plus(properties.getLeaseExtension());
-			return sessionLeases.extendBySessionId(sessionId, expiry).flatMap(rows -> rows > 0
-					? Mono.just(expiry)
-					: Mono.error(new GatewayRequestException(Reason.FAILED_PRECONDITION, "lease not extendable")));
+			return sessionLeases.extendBySessionId(sessionId, expiry).flatMap(rows -> {
+				if (rows > 0) {
+					return Mono.just(expiry);
+				}
+				// A LIVE session whose lease is released/absent is the signature of a
+				// reaped-while-alive lease (the one permanent exactness break, F3) — say
+				// so loudly: the identity under-counts until this session actually ends.
+				LOG.warn("ExtendSessionLease refused for live session {}: lease already released/absent — if the "
+						+ "reaper released it mid-run, concurrency under-counts until the session ends (check "
+						+ "sessionlayer.session-limits.reaper.grace vs the Gateway extend cadence)", sessionId);
+				return Mono.error(new GatewayRequestException(Reason.FAILED_PRECONDITION, "lease not extendable"));
+			});
 		});
 	}
 

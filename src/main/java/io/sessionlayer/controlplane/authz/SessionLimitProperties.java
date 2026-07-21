@@ -1,6 +1,9 @@
 package io.sessionlayer.controlplane.authz;
 
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -23,11 +26,28 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 15m.</li>
  * <li><b>reaper.grace</b> — how far past a lease's {@code expires_at} the
  * leaked- lease sweep waits before releasing it (belt, so a just-expiring
- * still-active lease is never touched; default 5m).</li>
+ * still-active lease is never touched; default = the lease-extension
+ * window).</li>
  * </ul>
+ *
+ * <p>
+ * Reap-safety invariant (F5, held BY CONSTRUCTION via {@link #applyFloors()}):
+ * a passed-expiry under-count is transient (the next successful extend
+ * resurrects the counted window — {@code GREATEST} + the
+ * {@code released_at IS NULL} guard); PERMANENT loss needs the reaper to stamp
+ * {@code released_at} during a CP partition. That takes a partition longer than
+ * {@code lease-extension/2 + reaper.grace} — with the grace floored to &ge; the
+ * window, the Gateway's self-heal always wins any partition shorter than
+ * {@code window + grace} (&gt; ~22.5m at defaults). The window is floored at
+ * 60s: below ~10s it would collapse under the Gateway's 5s tick floor and the
+ * count would flicker.
  */
 @ConfigurationProperties(prefix = "sessionlayer.session-limits")
 public class SessionLimitProperties {
+
+	static final Duration MIN_LEASE_EXTENSION = Duration.ofSeconds(60);
+
+	private static final Logger LOG = LoggerFactory.getLogger(SessionLimitProperties.class);
 
 	private Integer defaultMaxConcurrent;
 
@@ -38,6 +58,27 @@ public class SessionLimitProperties {
 	private Duration leaseExtension = Duration.ofMinutes(15);
 
 	private final Reaper reaper = new Reaper();
+
+	// The F-1/F-2 startup floors: never fail boot, clamp + WARN so a bad operator
+	// combo can't silently break the reap-safety invariant above.
+	@PostConstruct
+	void applyFloors() {
+		if (leaseExtension == null || leaseExtension.compareTo(MIN_LEASE_EXTENSION) < 0) {
+			LOG.warn(
+					"sessionlayer.session-limits.lease-extension={} is below the {} floor — clamping (a tiny "
+							+ "window collapses under the Gateway extend cadence and the concurrency count flickers)",
+					leaseExtension, MIN_LEASE_EXTENSION);
+			leaseExtension = MIN_LEASE_EXTENSION;
+		}
+		if (reaper.grace == null || reaper.grace.compareTo(leaseExtension) < 0) {
+			if (reaper.grace != null) {
+				LOG.warn("sessionlayer.session-limits.reaper.grace={} is below the lease-extension window {} — "
+						+ "clamping to the window (reap-safety: the Gateway's extend self-heal must win any CP "
+						+ "partition shorter than window + grace)", reaper.grace, leaseExtension);
+			}
+			reaper.grace = leaseExtension;
+		}
+	}
 
 	public Integer getDefaultMaxConcurrent() {
 		return defaultMaxConcurrent;
@@ -77,7 +118,9 @@ public class SessionLimitProperties {
 
 	public static class Reaper {
 
-		private Duration grace = Duration.ofMinutes(5);
+		// null = follow the lease-extension window (applyFloors resolves it), so
+		// the default config boots WARN-free and the invariant holds untouched.
+		private Duration grace;
 
 		public Duration getGrace() {
 			return grace;

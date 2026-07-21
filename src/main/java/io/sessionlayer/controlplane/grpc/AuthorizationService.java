@@ -7,6 +7,7 @@ import io.sessionlayer.controlplane.authz.ConnectDecision;
 import io.sessionlayer.controlplane.authz.NodeConnectionInfo;
 import io.sessionlayer.controlplane.authz.SessionLifecycleService;
 import io.sessionlayer.controlplane.authz.SignedDecisionContext;
+import io.sessionlayer.controlplane.gateway.GatewayRequestException;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizationGrpc;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeRequest;
 import io.sessionlayer.controlplane.grpc.v1.AuthorizeResponse;
@@ -103,7 +104,11 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		UUID caller = peer == null ? null : peer.gatewayId();
 		Mono<NotifySessionEndResponse> result = lifecycle
 				.endSession(caller, parseUuid(request.getSessionId()), endReason(request.getReason()))
-				.map(released -> NotifySessionEndResponse.newBuilder().setReleased(released).build());
+				.map(released -> NotifySessionEndResponse.newBuilder().setReleased(released).build())
+				.doOnNext(response -> metrics.recordSessionLifecycle(SloMetrics.RPC_NOTIFY_SESSION_END,
+						response.getReleased() ? "released" : "not_released"))
+				.doOnError(error -> metrics.recordSessionLifecycle(SloMetrics.RPC_NOTIFY_SESSION_END,
+						lifecycleOutcome(error)));
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "NotifySessionEnd");
 	}
 
@@ -116,8 +121,18 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
 		UUID caller = peer == null ? null : peer.gatewayId();
 		Mono<ExtendSessionLeaseResponse> result = lifecycle.extendLease(caller, parseUuid(request.getSessionId()))
 				.map(expiry -> ExtendSessionLeaseResponse.newBuilder().setExpiresAtEpochSeconds(expiry.getEpochSecond())
-						.build());
+						.build())
+				.doOnNext(response -> metrics.recordSessionLifecycle(SloMetrics.RPC_EXTEND_SESSION_LEASE, "extended"))
+				.doOnError(error -> metrics.recordSessionLifecycle(SloMetrics.RPC_EXTEND_SESSION_LEASE,
+						lifecycleOutcome(error)));
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "ExtendSessionLease");
+	}
+
+	// A deliberate service refusal (ownership/state) vs an unexpected failure —
+	// enum-only outcomes (F3: the lease-partition / reaped-live-lease pattern
+	// becomes dashboard-visible without identity/session tags).
+	private static String lifecycleOutcome(Throwable error) {
+		return error instanceof GatewayRequestException ? "refused" : "error";
 	}
 
 	// The closed end_reason vocabulary stored on ssh_session (advisory
