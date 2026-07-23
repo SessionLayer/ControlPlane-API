@@ -255,6 +255,35 @@ class AuthorizeIT extends AbstractMtlsIT {
 		assertThat(signed.getKeyId()).isEqualTo(sessionId + "+deploy");
 	}
 
+	// S29 (FR-SESS-2): the forwarding vocabulary reaches the signed context via
+	// exactly the same path as shell/exec/sftp — the CP-issued grant is the sole
+	// switch for port-forward/X11 admission (never a Gateway-side toggle).
+	@Test
+	void forwardingCapabilitiesReachTheSignedContextLikeAnyOther() throws Exception {
+		String identity = "fwd-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, nodeId, List.of("deploy"),
+				List.of("shell", "port_forward_local", "port_forward_remote", "x11"));
+		EnrolledGateway gateway = enroll("gw-fwd-" + unique());
+		UUID sessionId = UUID.randomUUID();
+
+		AuthorizeResponse response = authorize(gateway, request(identity, nodeId, "deploy", "10.0.0.5", sessionId));
+
+		assertThat(response.getDecision()).isEqualTo(Decision.DECISION_ALLOW);
+		assertThat(DecisionContextVerifier.verify(caCertificate(), response.getSignerCertificate().toByteArray(),
+				response.getSignedContext().toByteArray(), response.getSignature().toByteArray())).isTrue();
+
+		DecisionContext parsed = DecisionContext.parseFrom(response.getSignedContext());
+		assertThat(parsed.getCapabilitiesList()).containsExactlyInAnyOrder(Capability.CAPABILITY_SHELL,
+				Capability.CAPABILITY_PORT_FORWARD_LOCAL, Capability.CAPABILITY_PORT_FORWARD_REMOTE,
+				Capability.CAPABILITY_X11);
+
+		AuditEvent connect = auditEvents.findBySessionId(sessionId).collectList().block().stream()
+				.filter(e -> "authz.decision".equals(e.action())).findFirst().orElseThrow();
+		assertThat(connect.capabilities()).containsExactlyInAnyOrder("shell", "port_forward_local",
+				"port_forward_remote", "x11");
+	}
+
 	@Test
 	void noMatchingAllowDeniesWithNoToken() {
 		String identity = "nobody-" + unique();

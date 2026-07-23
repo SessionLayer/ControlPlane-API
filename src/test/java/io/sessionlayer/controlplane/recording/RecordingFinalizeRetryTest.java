@@ -70,7 +70,8 @@ class RecordingFinalizeRetryTest {
 		RecordingRegistrationService service = new RecordingRegistrationService(recordingTokens, operatorSettings,
 				sshSessions, sessionLeases, recordings, nodes, worm, audit, tx);
 
-		StepVerifier.create(service.finalizeRecording(gatewayId, recordingId, "finalized", null, null, null, 42, null))
+		StepVerifier.create(
+				service.finalizeRecording(gatewayId, recordingId, "finalized", null, null, null, 42, null, null))
 				.expectNext("finalized").verifyComplete();
 
 		// One failed stamp attempt, then the retried body committed the terminal

@@ -35,6 +35,7 @@ import io.sessionlayer.controlplane.grpc.v1.KeySealAlgorithm;
 import io.sessionlayer.controlplane.grpc.v1.RecordingGrpc;
 import io.sessionlayer.controlplane.grpc.v1.RecordingStatus;
 import io.sessionlayer.controlplane.grpc.v1.RequestUploadRequest;
+import io.sessionlayer.controlplane.grpc.v1.TunnelAudit;
 import io.sessionlayer.controlplane.grpc.v1.UploadCredential;
 import io.sessionlayer.controlplane.grpc.v1.WormMode;
 import io.sessionlayer.controlplane.recording.RecordingStore.PresignedAccess;
@@ -310,6 +311,55 @@ class RecordingIT extends AbstractMtlsIT {
 		AuditEvent sftp = events.stream().filter(e -> e.action().equals("sftp.write")).findFirst().orElseThrow();
 		assertThat(sftp.detail().get("path").asString()).isEqualTo("/etc/app.conf");
 		assertThat(sftp.detail().get("direction").asString()).isEqualTo("upload");
+	}
+
+	// S29 FR-SESS-2: per-tunnel audit lands at finalize (the sftp_audit
+	// precedent) as metadata-only `.closed` rows, capability-stamped for the
+	// FR-AUD-8 search dimension; a capability outside the forwarding vocabulary
+	// can neither forge an action nor violate the capabilities column CHECK.
+	@Test
+	void finalizeCorrelatesTunnelAuditAsClosedMetadataRows() {
+		configureCustomerKey("kms://customer-1", "governance");
+		String identity = "fred-" + unique();
+		UUID nodeId = seedProdNode();
+		seedAllow(identity, List.of("deploy"), List.of("shell", "port_forward_local", "x11"));
+		EnrolledGateway gateway = enroll("gw-tunnel-" + unique());
+		UUID sessionId = UUID.randomUUID();
+		AuthorizeResponse authz = authorize(gateway, identity, nodeId, "deploy", "10.0.0.5", sessionId);
+		BeginRecordingResponse begin = beginRecording(gateway, authz.getRecordingToken());
+
+		FinalizeRecordingRequest finalize = FinalizeRecordingRequest.newBuilder().setRecordingId(begin.getRecordingId())
+				.setStatus(RecordingStatus.RECORDING_STATUS_FINALIZED).setHashChainHead("sha256:" + "a".repeat(64))
+				.setContentDigest("sha256:" + "b".repeat(64)).setByteLen(1024)
+				.addTunnelAudit(TunnelAudit.newBuilder().setCapability("port_forward_local").setDirection("local")
+						.setTarget("db.internal:5432").setBytesIn(2048).setBytesOut(512).setDurationSeconds(30).build())
+				.addTunnelAudit(TunnelAudit.newBuilder().setCapability("x11").setDirection("x11").setBytesIn(64)
+						.setBytesOut(128).setDurationSeconds(5).build())
+				.addTunnelAudit(
+						TunnelAudit.newBuilder().setCapability("not-a-capability").setDirection("local").build())
+				.build();
+		finalizeRecording(gateway, finalize);
+
+		List<AuditEvent> events = audits.findBySessionId(sessionId).collectList().block();
+
+		AuditEvent forward = events.stream().filter(e -> "port_forward.closed".equals(e.action())).findFirst()
+				.orElseThrow();
+		assertThat(forward.subject()).isEqualTo("db.internal:5432");
+		assertThat(forward.capabilities()).containsExactly("port_forward_local");
+		assertThat(forward.detail().get("direction").asString()).isEqualTo("local");
+		assertThat(forward.detail().get("bytes_in").asString()).isEqualTo("2048");
+		assertThat(forward.detail().get("bytes_out").asString()).isEqualTo("512");
+		assertThat(forward.detail().get("duration_seconds").asString()).isEqualTo("30");
+
+		AuditEvent x11 = events.stream().filter(e -> "x11_forward.closed".equals(e.action())).findFirst().orElseThrow();
+		assertThat(x11.subject()).isEqualTo("x11");
+		assertThat(x11.capabilities()).containsExactly("x11");
+		assertThat(x11.detail().get("target")).isNull();
+
+		// The forged capability is neutralized: generic action, no capability stamp.
+		AuditEvent unknown = events.stream().filter(e -> "tunnel.unknown".equals(e.action())).findFirst().orElseThrow();
+		assertThat(unknown.capabilities()).isNull();
+		assertThat(unknown.detail().get("capability").asString()).isEqualTo("unknown");
 	}
 
 	// FR-SESS-3 lifecycle completion: the first terminal finalize closes the owning
