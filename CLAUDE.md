@@ -20,10 +20,14 @@ surface is generated from frozen contracts, never hand-written.
 
 ## Contracts are frozen upstream — generate, never hand-write
 
-- The canonical cross-repo contracts live in `contracts/` (OpenAPI + protobuf +
-  the agent↔gateway wire spec). **They are FROZEN.** Do not edit anything under
-  `contracts/` here; changes go through the versioning procedure in
-  `contracts/VERSIONING.md` and re-notify every consumer.
+- The canonical cross-repo contracts live upstream in the public
+  `SessionLayer/Contracts` repo; this repo is a consumer just like
+  Gateway/Agent/Dashboard. `contracts/` here is vendored — fetched + pinned by
+  `contracts.lock` (tag + resolved commit SHA) via `scripts/vendor-contracts.sh`
+  (`--check` in CI is the drift gate). **It is FROZEN and never hand-edited
+  here.** Changes go through the versioning procedure in
+  `contracts/VERSIONING.md` in the upstream repo, then a reviewed
+  `contracts.lock` bump + re-vendor in every consumer.
 - REST interfaces/models are generated from `contracts/openapi/openapi.yaml` by
   `openapi-generator-maven-plugin` (spring generator, `reactive`, `interfaceOnly`).
   gRPC stubs are generated from `contracts/proto` by the ascopes
