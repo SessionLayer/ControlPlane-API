@@ -43,8 +43,8 @@ import tools.jackson.databind.JsonNode;
  * 1:1 {@code recording_ref}) → <b>RequestUpload</b> (session end — authorize by
  * owner, issue a short-lived presigned PUT so the credential's life is the
  * upload, not the session) → <b>FinalizeRecording</b> (commit write-once
- * integrity + the correlated SFTP audit). No S3 network I/O ever runs inside a
- * DB transaction.
+ * integrity + the correlated SFTP/tunnel audit). No S3 network I/O ever runs
+ * inside a DB transaction.
  */
 @Service
 public class RecordingRegistrationService {
@@ -180,13 +180,14 @@ public class RecordingRegistrationService {
 	}
 
 	/**
-	 * Commit a recording's terminal integrity metadata + the file-transfer audit
-	 * (idempotent on the first terminal transition). Authorized by the mTLS caller
-	 * owning the recording's session; every mismatch fails closed generically.
-	 * Returns the stored terminal status.
+	 * Commit a recording's terminal integrity metadata + the file-transfer and
+	 * tunnel audit (idempotent on the first terminal transition). Authorized by the
+	 * mTLS caller owning the recording's session; every mismatch fails closed
+	 * generically. Returns the stored terminal status.
 	 */
 	public Mono<String> finalizeRecording(UUID callerGatewayId, UUID recordingId, String status, String hashChainHead,
-			String contentDigest, String objectVersionId, long byteLen, List<FileTransferAuditEntry> sftpAudit) {
+			String contentDigest, String objectVersionId, long byteLen, List<FileTransferAuditEntry> sftpAudit,
+			List<TunnelAuditEntry> tunnelAudit) {
 		if (callerGatewayId == null || recordingId == null) {
 			return Mono.error(refused());
 		}
@@ -195,6 +196,9 @@ public class RecordingRegistrationService {
 		}
 		if (sftpAudit != null && sftpAudit.size() > SftpAuditPolicy.MAX_BATCH) {
 			return Mono.error(new GatewayRequestException(Reason.INVALID_ARGUMENT, "sftp audit batch too large"));
+		}
+		if (tunnelAudit != null && tunnelAudit.size() > TunnelAuditPolicy.MAX_BATCH) {
+			return Mono.error(new GatewayRequestException(Reason.INVALID_ARGUMENT, "tunnel audit batch too large"));
 		}
 		String head = normalizedDigest(hashChainHead);
 		String digest = normalizedDigest(contentDigest);
@@ -220,6 +224,7 @@ public class RecordingRegistrationService {
 					RecordingRef finalized = ref.finalized(head, digest, versionId, size, status);
 					return nodeLabels(session.nodeId()).flatMap(labels -> recordings.save(finalized)
 							.then(endSession(session, status)).then(writeTransferAudit(session, labels, sftpAudit))
+							.then(writeTunnelAudit(session, labels, tunnelAudit))
 							.then(audit.record(sessionEvent(session, labels, session.identity(), recordingId.toString(),
 									"recording.finalize", finalizeOutcome(status))
 									.detail(finalizeDetail(callerGatewayId, recordingId, status, byteLen, digest, head))
@@ -276,6 +281,38 @@ public class RecordingRegistrationService {
 				.concatMap(entry -> audit.record(sessionEvent(session, nodeLabels, session.identity(), entry.path(),
 						"sftp." + entry.operation(), "success").detail(transferDetail(entry)).build()))
 				.then();
+	}
+
+	// One audit_event per admitted forward/X11 tunnel (S29 FR-SESS-2), metadata
+	// only — forwarded byte content is never captured (no universal decode).
+	// Sequential (concatMap) — one tx connection.
+	private Mono<Void> writeTunnelAudit(SshSession session, Map<String, String> nodeLabels,
+			List<TunnelAuditEntry> tunnelAudit) {
+		if (tunnelAudit == null || tunnelAudit.isEmpty()) {
+			return Mono.empty();
+		}
+		return Flux.fromIterable(tunnelAudit).map(TunnelAuditPolicy::normalize)
+				.concatMap(entry -> audit.record(sessionEvent(session, nodeLabels, session.identity(),
+						entry.target().isEmpty() ? entry.capability() : entry.target(), TunnelAuditPolicy.action(entry),
+						"success")
+						.capabilities(TunnelAuditPolicy.UNKNOWN.equals(entry.capability())
+								? null
+								: List.of(entry.capability()))
+						.detail(tunnelDetail(entry)).build()))
+				.then();
+	}
+
+	private static Map<String, String> tunnelDetail(TunnelAuditEntry entry) {
+		Map<String, String> detail = new HashMap<>();
+		detail.put("capability", entry.capability());
+		detail.put("direction", entry.direction());
+		if (!entry.target().isEmpty()) {
+			detail.put("target", entry.target());
+		}
+		detail.put("bytes_in", Long.toString(entry.bytesIn()));
+		detail.put("bytes_out", Long.toString(entry.bytesOut()));
+		detail.put("duration_seconds", Long.toString(entry.durationSeconds()));
+		return detail;
 	}
 
 	// Every in-session recording event inherits the session's access model, its

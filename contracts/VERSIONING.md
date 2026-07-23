@@ -416,6 +416,17 @@ already-bumped 1.1 minor — neither moves the number).
    Reads `rbac:read`; writes `settings:write` + audited. Adding paths/schemas/a
    tag is additive within URI major **v1**.
 
+**Session Twenty-Nine added one additive field + message — `FinalizeRecordingRequest.tunnel_audit`
+(field 8) + `TunnelAudit`** — the admission side of FR-SESS-2 (port-forward/X11
+data plane). Adding a field + message is additive and `buf breaking`-clean; it
+stays within **1.1** (a new field within an already-bumped minor does not move
+the number): the advertised range stays `[1.0, 1.1]`, `protocol_min` stays 1.0.
+`TunnelAudit` mirrors `FileTransferAudit`'s shape (metadata-only, no content
+capture — forwarded bytes have no universal decode, unlike SFTP's known wire
+format) and lands at `FinalizeRecording` time like `sftp_audit`, not live. An
+N-1 CP without the field simply never sees tunnel audit rows (an older Gateway
+correspondingly never populates it) — the window holds.
+
 ---
 
 ## 7. CP ↔ Gateway mTLS trust model (Session Four)

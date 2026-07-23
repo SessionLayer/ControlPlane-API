@@ -41,6 +41,15 @@ for r in origin/main main; do
   fi
 done
 if [ -z "$base_ref" ]; then
+  # In CI this must never be a silent skip — that is exactly the class of bug
+  # this repo exists to prevent (S28). A missing main ref there means the
+  # checkout step regressed (e.g. lost its fetch-depth: 0), not that there is
+  # nothing to compare against. Only an ad-hoc local shallow clone gets the
+  # quiet skip.
+  if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    red "    buf breaking: FAILED — no 'main' ref available in CI (checkout likely missing fetch-depth: 0)"
+    exit 1
+  fi
   grn "    buf breaking: no 'main' ref available locally (shallow checkout) — skipped"
 elif ! git -C "$here" cat-file -e "${base_ref}:contracts/proto/buf.yaml" 2>/dev/null; then
   grn "    buf breaking: 'main' has no contracts/proto baseline yet (first introduction) — skipped"

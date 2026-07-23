@@ -25,6 +25,7 @@ import io.sessionlayer.controlplane.recording.RecordingRegistration;
 import io.sessionlayer.controlplane.recording.RecordingRegistrationService;
 import io.sessionlayer.controlplane.recording.RecordingRequestContext;
 import io.sessionlayer.controlplane.recording.RecordingStore.PresignedAccess;
+import io.sessionlayer.controlplane.recording.TunnelAuditEntry;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -87,7 +88,7 @@ public class RecordingService extends RecordingGrpc.RecordingImplBase {
 		}).flatMap(args -> registration
 				.finalizeRecording(caller, args.recordingId(), args.status(), request.getHashChainHead(),
 						request.getContentDigest(), request.getObjectVersionId(), request.getByteLen(),
-						toEntries(request))
+						toEntries(request), toTunnelEntries(request))
 				.map(stored -> FinalizeRecordingResponse.newBuilder().setStatus(fromStatus(stored)).build()));
 		ReactiveBridge.forward(result, observer, properties.getRpcTimeout(), "FinalizeRecording");
 	}
@@ -122,6 +123,12 @@ public class RecordingService extends RecordingGrpc.RecordingImplBase {
 	private static List<FileTransferAuditEntry> toEntries(FinalizeRecordingRequest request) {
 		return request.getSftpAuditList().stream().map(fta -> new FileTransferAuditEntry(fta.getOperation(),
 				fta.getPath(), fta.getDirection(), fta.getSize(), fta.getSha256())).toList();
+	}
+
+	private static List<TunnelAuditEntry> toTunnelEntries(FinalizeRecordingRequest request) {
+		return request.getTunnelAuditList().stream().map(ta -> new TunnelAuditEntry(ta.getCapability(),
+				ta.getDirection(), ta.getTarget(), ta.getBytesIn(), ta.getBytesOut(), ta.getDurationSeconds()))
+				.toList();
 	}
 
 	private static WormMode toWormMode(String mode) {
