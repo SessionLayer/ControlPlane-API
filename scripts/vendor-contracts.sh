@@ -38,13 +38,11 @@ SRC="$tmp/src/contracts"
 
 case "$mode" in
   --check)
-    if diff -rq "$SRC" "$DST" >/tmp/cp-contracts-diff.$$ 2>&1; then
+    if diff -rq "$SRC" "$DST" >"$tmp/diff" 2>&1; then
       echo "in sync: ${DST}/ matches ${repo}@${tag}:contracts/"
-      rm -f /tmp/cp-contracts-diff.$$
     else
       echo "DRIFT: ${DST}/ differs from ${repo}@${tag}:contracts/" >&2
-      cat /tmp/cp-contracts-diff.$$ >&2
-      rm -f /tmp/cp-contracts-diff.$$
+      cat "$tmp/diff" >&2
       exit 1
     fi
     ;;
