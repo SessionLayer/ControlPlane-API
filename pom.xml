@@ -91,7 +91,7 @@
 		  and the presigner. Version pinned via the awssdk BOM (imported below); CVE
 		  management is Dependabot's (the OWASP plugin was retired in #2).
 		-->
-		<awssdk.version>2.48.2</awssdk.version>
+		<awssdk.version>2.49.2</awssdk.version>
 
 		<!--
 		  Override the Boot-managed PostgreSQL JDBC driver (42.7.11) to 42.7.13:
