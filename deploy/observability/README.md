@@ -46,17 +46,21 @@ tagged `{service_name, span_name, span_kind, status_code, sessionlayer_outcome, 
 ## Missing metrics — the enumerated follow-up (A8 F-OBS-1/3/4/5)
 
 The Tier-0 Gateway/Agent deliberately emit **no Prometheus metrics** (no new listener on
-the plaintext-MITM box). The RED half is delivered above via span-metrics; the following
-**saturation gauges / counters are not span-derivable** and are the clean next increment
-(out of the S23 "no new features" scope; the fail-closed events they'd count are captured
-in the structured logs today and can be shipped to the same collector):
+the plaintext-MITM box). The RED half is delivered above via span-metrics. Two of the
+originally-enumerated Gateway gauges shipped in **S24** (`gateway-core/src/telemetry.rs`):
+`sessionlayer.gateway.live_sessions` (from `LiveSessionRegistry::len()`) and
+`sessionlayer.gateway.lock_feed_healthy` (0/1 from the live `LockSet`), wired via
+`register_gateway_gauges`/`register_gateway_gauges_on`. The remaining **saturation gauges /
+counters are not span-derivable** and are still the clean next increment (out of the S23
+"no new features" scope; the fail-closed events they'd count are captured in the
+structured logs today and can be shipped to the same collector):
 
-- **Gateway:** `gateway_live_sessions` (from `LiveSessionRegistry::len()`),
-  `gateway_lock_feed_healthy` (0/1 from `LockSet::healthy()`) + `gateway_lock_feed_disconnect_total`,
+- **Gateway:** `gateway_lock_feed_disconnect_total`,
   `gateway_cp_rpc_total{rpc,outcome}` (the fail-closed CP-down signal), `gateway_channel_open_total{outcome,reason}`,
   `gateway_pending_relays`, recorder spool bytes, `gateway_open_fds`.
 - **Agent:** `agent_dial_back{outcome}`, `agent_renew{outcome}` (renew-storm/clone signal),
   a `control_channels` gauge (FR-HA-6 ≥2), + a bind-guarded `/metrics` or OTLP-metrics emitter.
+  (`src/telemetry.rs` today emits OTel **spans** only, no metrics.)
 - **CP:** a gRPC `MetricCollectingServerInterceptor` on `GrpcMtlsServer` (per-method RED for
   all ~15 RPCs), `sessionlayer.lockfeed.subscribers` gauge, `sessionlayer.authz.decision_total{outcome,reason,access_model}`,
   `sessionlayer.breakglass.activation_total`.
@@ -67,17 +71,17 @@ same low-attack-surface pattern as the span-metrics here.
 
 ## Preconditions & corrections for the span-derived Gateway RED (A8)
 
-- **LOAD-BEARING — span status on fail-closed paths.** The Gateway currently stamps
-  `sessionlayer.outcome` (and, effectively, span success) **only on the ALLOW path**
-  (`handler.rs`); the fail-closed close paths (policy_denied / cp_unavailable /
-  node_unreachable / recording_unavailable) set no outcome and no span `status=error`.
-  So a span-metrics **error-rate keyed on `status_code` reads ~0 even when every session
-  is failing closed** — the exact 3am signal is invisible. **Before relying on the
-  Gateway span-RED error-rate,** the Gateway must set span `status=error` on the
-  outage-class fail-closed closes and stamp `sessionlayer.outcome=<reason enum>` on
-  policy denies. Until then, use the CP `sessionlayer_session_establishment_seconds_count{outcome=~"error|cancelled"}`
-  (this dir) as the authoritative fail-closed signal, and treat the Gateway span
-  error-rate as rate/latency only. (This is part of the native-emission follow-up above.)
+- **Fixed in S24 — span status on fail-closed paths.** Every deny/fault path in the Gateway
+  funnels through the single choke-point `close_with()` (`gateway-core/src/ssh/handler.rs`),
+  which unconditionally calls `telemetry::record_span_fail_closed(&session_span,
+  outcome.span_label())` before closing the channel — covering every `SshOutcome` variant
+  (`policy_denied` in all its `reason`s, `cp_unavailable`, `node_unreachable`,
+  `recording_unavailable`). The allow path separately stamps
+  `session_span.record("sessionlayer.outcome", "allow")`. So a span-metrics error-rate keyed
+  on `status_code` now **does** see fail-closed sessions — the Gateway span-RED error-rate is
+  a reliable 3am signal, not rate/latency-only. The CP
+  `sessionlayer_session_establishment_seconds_count{outcome=~"error|cancelled"}` metric (this
+  dir) remains a valid corroborating signal, just no longer the *only* trustworthy one.
 - **Metric names are collector-version-dependent.** Depending on the `spanmetrics`
   connector version the series are either `calls_total` / `duration_milliseconds_bucket`
   (used in the alert rules here) or `traces_spanmetrics_calls_total` /
