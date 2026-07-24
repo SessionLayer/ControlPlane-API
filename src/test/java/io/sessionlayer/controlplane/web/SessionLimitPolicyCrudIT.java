@@ -69,7 +69,7 @@ class SessionLimitPolicyCrudIT extends AbstractConfigApiIT {
 				.expectStatus().isOk().expectBody().jsonPath("$.items").isArray();
 		List<AuditEvent> audit = auditEvents.findByActor(admin).collectList().block();
 		assertThat(audit).anySatisfy(e -> {
-			assertThat(e.action()).isEqualTo("session-limit-policy.create");
+			assertThat(e.action()).isEqualTo("session_limit_policy.create");
 			// FR-PADM-3 before/after: a create has no before-state and a full after
 			// snapshot.
 			assertThat(e.detail().get("before")).isNull();
@@ -163,7 +163,7 @@ class SessionLimitPolicyCrudIT extends AbstractConfigApiIT {
 		// The update was audited with before/after states.
 		List<AuditEvent> audit = auditEvents.findByActor(admin).collectList().block();
 		assertThat(audit).anySatisfy(e -> {
-			assertThat(e.action()).isEqualTo("session-limit-policy.update");
+			assertThat(e.action()).isEqualTo("session_limit_policy.update");
 			assertThat(e.detail().get("before")).isNotNull();
 			assertThat(e.detail().get("after")).isNotNull();
 			assertThat(e.detail().get("before").get("maxConcurrentSessions").intValue()).isEqualTo(2);
@@ -184,7 +184,7 @@ class SessionLimitPolicyCrudIT extends AbstractConfigApiIT {
 		client.get().uri("/v1/session-limit-policies/" + id).header("Authorization", "Bearer " + token).exchange()
 				.expectStatus().isNotFound();
 		assertThat(auditEvents.findByActor(admin).collectList().block())
-				.anySatisfy(e -> assertThat(e.action()).isEqualTo("session-limit-policy.delete"));
+				.anySatisfy(e -> assertThat(e.action()).isEqualTo("session_limit_policy.delete"));
 	}
 
 	@Test
