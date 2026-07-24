@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.sessionlayer.controlplane.authz.ConnectDecision;
+import io.sessionlayer.controlplane.data.runtime.JitRequest;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
@@ -40,6 +41,11 @@ import reactor.core.publisher.Mono;
  * ({@code rpc=notify_session_end|extend_session_lease},
  * {@code outcome=released|not_released|extended|refused|error}) — the
  * lease-partition / reaped-live-lease signatures show up here.</li>
+ * <li>{@code sessionlayer.jit.lookup} — the S30 unconditional-per-connect JIT
+ * grant lookup latency, {@code outcome=hit|miss|error|cancelled} (a
+ * {@code lookup-timeout} degrades to {@code cancelled}) — isolates this
+ * lookup's contribution to establishment latency from dp_rule/lock load and the
+ * session-row write.</li>
  * </ul>
  */
 @Component
@@ -53,6 +59,7 @@ public class SloMetrics {
 	static final String LEASE_LIVE = "sessionlayer.session.lease.live";
 	static final String LEASE_GAUGE_REFRESH_FAILED = "sessionlayer.session.lease.live.refresh.failed";
 	static final String SESSION_LIFECYCLE = "sessionlayer.session.lifecycle";
+	static final String JIT_LOOKUP = "sessionlayer.jit.lookup";
 
 	static final String TAG_RPC = "rpc";
 	public static final String RPC_NOTIFY_SESSION_END = "notify_session_end";
@@ -133,6 +140,26 @@ public class SloMetrics {
 					.doOnError(error -> recordCertSign(start, kind, OUTCOME_ERROR))
 					.doOnCancel(() -> recordCertSign(start, kind, "cancelled"));
 		});
+	}
+
+	/**
+	 * Time the S30 unconditional per-connect JIT grant lookup. {@code cancelled} is
+	 * the {@code lookup-timeout} signature — distinguish it from a genuine
+	 * {@code miss} (query answered, no usable grant) so a degraded jit_request
+	 * table is attributable, not just visible in aggregate establishment p95.
+	 */
+	public Mono<JitRequest> timeJitLookup(Mono<JitRequest> source) {
+		return Mono.defer(() -> {
+			long start = System.nanoTime();
+			return source.doOnSuccess(grant -> recordJitLookup(start, grant != null ? "hit" : "miss"))
+					.doOnError(error -> recordJitLookup(start, OUTCOME_ERROR))
+					.doOnCancel(() -> recordJitLookup(start, "cancelled"));
+		});
+	}
+
+	private void recordJitLookup(long startNanos, String outcome) {
+		Timer.builder(JIT_LOOKUP).tag(TAG_OUTCOME, outcome).register(registry).record(System.nanoTime() - startNanos,
+				TimeUnit.NANOSECONDS);
 	}
 
 	/** NFR-3 availability signal from {@code CaSignerService.activeSigner}. */

@@ -14,9 +14,9 @@ import io.sessionlayer.controlplane.data.runtime.Node;
 import io.sessionlayer.controlplane.data.runtime.NodeRepository;
 import io.sessionlayer.controlplane.grpc.LockFeedHub;
 import io.sessionlayer.controlplane.jit.JitApprovalChain.Level;
+import io.sessionlayer.controlplane.observability.SloMetrics;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,10 +70,11 @@ public class JitLifecycleService {
 	private final JitProperties properties;
 	private final TransactionalOperator tx;
 	private final ObjectMapper objectMapper;
+	private final SloMetrics metrics;
 
 	public JitLifecycleService(JitRequestRepository requests, JitPolicyRepository policies, NodeRepository nodes,
 			AccessLockRepository accessLocks, LockFeedHub lockFeedHub, AuditEventStore audit, JitProperties properties,
-			TransactionalOperator tx, ObjectMapper objectMapper) {
+			TransactionalOperator tx, ObjectMapper objectMapper, SloMetrics metrics) {
 		this.requests = requests;
 		this.policies = policies;
 		this.nodes = nodes;
@@ -83,6 +84,7 @@ public class JitLifecycleService {
 		this.properties = properties;
 		this.tx = tx;
 		this.objectMapper = objectMapper;
+		this.metrics = metrics;
 	}
 
 	// ----- submit (FR-ACC-2) -----
@@ -354,15 +356,25 @@ public class JitLifecycleService {
 	 * elapsed. Deterministic — the earliest-expiring usable grant. Never serves an
 	 * overdue grant (lazy expiry on read); the scheduler/{@link #expireOverdue()}
 	 * does the durable state flip.
+	 *
+	 * <p>
+	 * S30: Authorize calls this UNCONDITIONALLY on every connect (not only when
+	 * standing access fails), so it is a direct, indexed point query
+	 * ({@code idx_jit_request_usable}) rather than a per-requester scan filtered in
+	 * the application — and it is bounded by {@code lookup-timeout}: a degraded
+	 * {@code jit_request} table degrades this to "no usable grant" (narrows, never
+	 * widens access) instead of riding the pool's default statement timeout into a
+	 * fleet-wide fail-closed deny.
 	 */
 	public Mono<JitRequest> findUsableGrant(String requester, UUID nodeId, String principal, Instant now) {
 		if (blank(requester) || nodeId == null || blank(principal)) {
 			return Mono.empty();
 		}
-		return requests.findByRequester(requester)
-				.filter(request -> request.usableAt(now) && nodeId.equals(request.targetNodeId())
-						&& principal.equals(request.principal()))
-				.sort(Comparator.comparing(JitRequest::grantExpiresAt)).next();
+		// .timeout(duration, fallback) switches to the fallback on expiry rather than
+		// erroring, so a slow query degrades straight to "no usable grant" — never a
+		// fail-closed deny of the whole connect.
+		return metrics.timeJitLookup(requests.findUsableGrant(requester, nodeId, principal, now))
+				.timeout(properties.getLookupTimeout(), Mono.empty());
 	}
 
 	/** APPROVED → ACTIVE on first consumption at Authorize (idempotent). */
