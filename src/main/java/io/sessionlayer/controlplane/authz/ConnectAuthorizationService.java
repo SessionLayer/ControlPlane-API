@@ -64,11 +64,17 @@ import tools.jackson.databind.node.ObjectNode;
  *
  * <ul>
  * <li><b>STANDING</b> — a standing allow proceeds unchanged.</li>
- * <li><b>JIT</b> — a standing default-deny ({@code NO_MATCHING_ALLOW} only,
- * never a Lock or explicit deny) may be satisfied by an ACTIVE/APPROVED JIT
- * grant: the grant is synthesized as an in-memory allow and the engine is
- * <b>re-run</b>, so a Lock or explicit deny still wins (deny wins). A usable
- * grant flips APPROVED → ACTIVE.</li>
+ * <li><b>JIT</b> — an ACTIVE/APPROVED JIT grant for the requested principal is
+ * looked up UNCONDITIONALLY (S30, not gated on a prior standing failure) and,
+ * if usable, synthesized as an in-memory allow folded into the SAME
+ * {@link PolicyEngine#evaluate} call as standing access — a true union, so a
+ * standing allow and a JIT grant can both contribute capabilities to one
+ * connect. Lock-wins/deny-overrides run inside that one call, so a Lock or
+ * explicit deny still wins unconditionally (deny wins). A second, standing-
+ * only evaluate is used purely to attribute whether the grant was load- bearing
+ * for THIS connect (never to gate the decision above); only a load- bearing
+ * grant flips APPROVED → ACTIVE — one that contributed nothing stays APPROVED,
+ * unconsumed, for a later connect that needs it.</li>
  * <li><b>BREAK-GLASS</b> — a present {@code breakglass_token} is consumed
  * atomically; on a valid token the {@code breakglass_activation} +
  * high-priority alert are raised UNCONDITIONALLY (before the decision), then
@@ -264,49 +270,87 @@ public class ConnectAuthorizationService {
 								locks, epoch, now);
 					}
 
-					DataPlaneDecision decision = engine.evaluate(request, grants, locks, now);
-					if (decision.allowed()) {
-						return emitAllow(callerGatewayId, node, gatewayName, request, sessionId,
-								decision.sortedLogins(), decision.sortedCapabilities(), decision.matchedRuleId(),
-								decision.matchedRuleName(), MODEL_STANDING, null, null, decision.grantTtlSeconds(),
-								epoch, now);
-					}
-					// JIT elevates ONLY a default-deny (no standing allow matched). A Lock or an
-					// explicit deny in the first pass is terminal — JIT never overrides it.
-					if (decision.reason() == DataPlaneDecision.Reason.NO_MATCHING_ALLOW) {
-						return tryJit(callerGatewayId, node, gatewayName, request, sessionId, grants, locks, epoch,
-								now);
-					}
-					return auditDeny(callerGatewayId, request.identity(), node.id(), sourceIp, decision, null,
-							MODEL_STANDING, null).thenReturn(ConnectDecision.denied());
+					// §1.1-A (S30/OBS-1): the JIT lookup is UNCONDITIONAL — not gated on a prior
+					// standing-only failure — so an approved, in-window grant is always folded
+					// into the SAME evaluation as standing access (a true union), whether
+					// standing matches nothing, matches a different principal, or already
+					// matches the requested one. This is a restructure of WHEN JIT is
+					// consulted, not a reimplementation of the engine's algebra.
+					return jit.findUsableGrant(identity, node.id(), requestedPrincipal, now).map(java.util.Optional::of)
+							.defaultIfEmpty(java.util.Optional.empty())
+							.flatMap(usable -> resolveDecision(callerGatewayId, node, gatewayName, request, sessionId,
+									grants, locks, usable.orElse(null), epoch, now));
 				})));
 	}
 
-	// ----- JIT two-pass (Part E) -----
+	// ----- union decision + attribution (Part E, S30) -----
 
-	private Mono<ConnectDecision> tryJit(UUID callerGatewayId, Node node, String gatewayName,
-			AuthorizationRequest request, UUID sessionId, Collection<DpRule> grants, Collection<AccessLock> locks,
-			long epoch, Instant now) {
-		return jit.findUsableGrant(request.identity(), node.id(), request.requestedPrincipal(), now).flatMap(grant -> {
-			// Synthesize the JIT allow in-memory and RE-RUN the engine: the lock is then
-			// re-evaluated with the JIT-granted login present, so a Lock targeting that
-			// login/principal now denies (deny wins). The synthetic rule is NEVER
-			// persisted.
-			List<DpRule> augmented = new ArrayList<>(grants);
-			augmented.add(syntheticJitRule(grant, request.identity(), now));
-			DataPlaneDecision decision = engine.evaluate(request, augmented, locks, now);
-			if (!decision.allowed()) {
-				return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(), decision, "jit",
-						MODEL_JIT, grant.id()).thenReturn(ConnectDecision.denied());
-			}
-			// The grant is usable: flip APPROVED → ACTIVE (audited), then emit the allow.
-			return jit.markActive(grant)
-					.then(emitAllow(callerGatewayId, node, gatewayName, request, sessionId, decision.sortedLogins(),
-							decision.sortedCapabilities(), null, "jit:" + nullSafe(grant.jitPolicyName()), MODEL_JIT,
-							grant.id(), null, remainingSeconds(grant.grantExpiresAt(), now), epoch, now));
-		}).switchIfEmpty(auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(),
-				DataPlaneDecision.deny(DataPlaneDecision.Reason.NO_MATCHING_ALLOW, null, null), "no_jit_grant",
-				MODEL_JIT, null).thenReturn(ConnectDecision.denied()));
+	private Mono<ConnectDecision> resolveDecision(UUID callerGatewayId, Node node, String gatewayName,
+			AuthorizationRequest request, UUID sessionId, List<DpRule> grants, Collection<AccessLock> locks,
+			JitRequest grant, long epoch, Instant now) {
+		DpRule jitRule = grant == null ? null : syntheticJitRule(grant, request.identity(), now);
+		List<DpRule> augmented = jitRule == null ? grants : withJitRule(grants, jitRule);
+		// THE security decision (§1.1-A): one evaluate() over standing ∪ JIT (or over
+		// standing alone when no usable grant exists). Lock-wins/deny-overrides are
+		// checked before the principal/allow logic inside the engine, so they are
+		// terminal regardless of whether the JIT rule is present — deny/Lock beat JIT
+		// unconditionally, by construction (§8.4), not by a guard here.
+		DataPlaneDecision union = engine.evaluate(request, augmented, locks, now);
+		if (!union.allowed()) {
+			// A usable grant that didn't matter (blocked by Lock/explicit-deny, or simply
+			// irrelevant to why this denied) is still forensically tagged so an operator
+			// can see one existed — never gates the deny itself.
+			String note = jitRule == null ? null : "jit";
+			String model = jitRule == null ? MODEL_STANDING : MODEL_JIT;
+			UUID correlation = jitRule == null ? null : grant.id();
+			return auditDeny(callerGatewayId, request.identity(), node.id(), request.sourceIp(), union, note, model,
+					correlation).thenReturn(ConnectDecision.denied());
+		}
+		if (jitRule == null) {
+			return emitAllow(callerGatewayId, node, gatewayName, request, sessionId, union.sortedLogins(),
+					union.sortedCapabilities(), union.matchedRuleId(), union.matchedRuleName(), MODEL_STANDING, null,
+					null, union.grantTtlSeconds(), epoch, now);
+		}
+
+		// §1.1-B: attribution ONLY — this never gates the security decision above,
+		// which is already final. A second, pure, in-memory evaluate() over standing
+		// alone (cheap — no I/O) tells us whether the grant actually changed THIS
+		// connect's outcome. allowedLogins can't differ between the two calls here:
+		// union.allowed() already proved the requested login is in scope, and the
+		// synthetic rule's principal is always exactly the requested one
+		// (findUsableGrant filters on it) — so if standing alone also allows it,
+		// standing's own allowedLogins already contained it. Only the capability set
+		// (gated per grant, per the engine's own algebra) can differ.
+		DataPlaneDecision standingAlone = engine.evaluate(request, grants, locks, now);
+		boolean loadBearing = !standingAlone.allowed()
+				|| !standingAlone.sortedCapabilities().equals(union.sortedCapabilities());
+		if (!loadBearing) {
+			// The grant contributed nothing beyond what standing already grants: leave it
+			// APPROVED, unconsumed, for a connect that actually needs it later (doctrine
+			// §2.3) — record accessModel = standing exactly as a pure-standing connect
+			// would.
+			return emitAllow(callerGatewayId, node, gatewayName, request, sessionId, standingAlone.sortedLogins(),
+					standingAlone.sortedCapabilities(), standingAlone.matchedRuleId(), standingAlone.matchedRuleName(),
+					MODEL_STANDING, null, null, standingAlone.grantTtlSeconds(), epoch, now);
+		}
+		// The grant was load-bearing: consume it (APPROVED → ACTIVE, idempotent) and
+		// audit the real union outcome. matchedRuleId snapshots a REAL config.dp_rule
+		// row only (runtime.ssh_session carries no FK there) — the synthetic rule is
+		// in-memory-only and never persisted, so when it IS the representative (no
+		// standing rule also contributed), record null rather than a dangling id; the
+		// jitRequestId column already carries the provenance.
+		boolean representativeIsSynthetic = jitRule.id().equals(union.matchedRuleId());
+		UUID matchedRuleId = representativeIsSynthetic ? null : union.matchedRuleId();
+		return jit.markActive(grant)
+				.then(emitAllow(callerGatewayId, node, gatewayName, request, sessionId, union.sortedLogins(),
+						union.sortedCapabilities(), matchedRuleId, union.matchedRuleName(), MODEL_JIT, grant.id(), null,
+						union.grantTtlSeconds(), epoch, now));
+	}
+
+	private static List<DpRule> withJitRule(List<DpRule> grants, DpRule jitRule) {
+		List<DpRule> augmented = new ArrayList<>(grants);
+		augmented.add(jitRule);
+		return augmented;
 	}
 
 	private DpRule syntheticJitRule(JitRequest grant, String identity, Instant now) {
