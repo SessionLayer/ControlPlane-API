@@ -57,7 +57,7 @@ public class SessionLimitPolicyConfigService {
 		validate(identitySelector, maxConcurrentSessions, maxSessionSeconds, idleTimeoutSeconds);
 		SessionLimitPolicy policy = SessionLimitPolicy.create(name, identitySelector, maxConcurrentSessions,
 				maxSessionSeconds, idleTimeoutSeconds, ORIGIN_API);
-		return persist(null, policy, actor, "session-limit-policy.create", name);
+		return persist(null, policy, actor, "session_limit_policy.create", name);
 	}
 
 	public Mono<SessionLimitPolicy> update(UUID id, String actor, Long expectedVersion, JsonNode identitySelector,
@@ -68,7 +68,7 @@ public class SessionLimitPolicyConfigService {
 			SessionLimitPolicy updated = new SessionLimitPolicy(existing.id(), existing.name(), identitySelector,
 					maxConcurrentSessions, maxSessionSeconds, idleTimeoutSeconds, ORIGIN_API, existing.version(),
 					existing.createdAt(), existing.updatedAt());
-			return persist(existing, updated, actor, "session-limit-policy.update", existing.name());
+			return persist(existing, updated, actor, "session_limit_policy.update", existing.name());
 		});
 	}
 
@@ -81,7 +81,7 @@ public class SessionLimitPolicyConfigService {
 
 	private Mono<Void> deleteWithAudit(UUID id, String actor, SessionLimitPolicy before) {
 		return tx.transactional(policies.deleteById(id)
-				.then(audit.recordChange(actor, id.toString(), "session-limit-policy.delete", Map.of(), before, null)));
+				.then(audit.recordChange(actor, id.toString(), "session_limit_policy.delete", Map.of(), before, null)));
 	}
 
 	private Mono<SessionLimitPolicy> persist(SessionLimitPolicy before, SessionLimitPolicy policy, String actor,
