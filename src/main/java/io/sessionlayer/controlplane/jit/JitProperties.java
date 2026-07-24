@@ -19,6 +19,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * state already blocks re-auth), so it needs to live only long enough to
  * propagate to every Gateway, then auto-clear — never permanent (default
  * 120s).</li>
+ * <li><b>lookup-timeout</b> — bounds {@code findUsableGrant} (S30: now called
+ * UNCONDITIONALLY on every connect, standing-allowed or not). A degraded
+ * {@code jit_request} table must never turn into a fleet-wide connect stall — a
+ * timeout here degrades to "no usable grant" (§8.4: JIT only ever ADDS access,
+ * so losing it narrows, never widens; the standing-only decision still
+ * proceeds) rather than riding the pool's default statement timeout into a mass
+ * fail-closed deny (default 150ms, well inside the NFR-4 250ms p95
+ * establishment budget).</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "sessionlayer.jit")
@@ -29,6 +37,8 @@ public class JitProperties {
 	private Duration maxGrantTtl = Duration.ofHours(8);
 
 	private Duration revokeLockTtl = Duration.ofSeconds(120);
+
+	private Duration lookupTimeout = Duration.ofMillis(150);
 
 	public Duration getApprovalWindow() {
 		return approvalWindow;
@@ -52,5 +62,13 @@ public class JitProperties {
 
 	public void setRevokeLockTtl(Duration revokeLockTtl) {
 		this.revokeLockTtl = revokeLockTtl;
+	}
+
+	public Duration getLookupTimeout() {
+		return lookupTimeout;
+	}
+
+	public void setLookupTimeout(Duration lookupTimeout) {
+		this.lookupTimeout = lookupTimeout;
 	}
 }

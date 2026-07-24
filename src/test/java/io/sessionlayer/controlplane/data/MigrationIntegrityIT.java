@@ -38,8 +38,10 @@ class MigrationIntegrityIT extends AbstractDataIT {
 		// recording_ref retention/governance columns — no new table). S23 adds V24
 		// (recording_ref.object_version_id write-once column — WORM version pin, no new
 		// table). S24 adds V25 (partial index on active ssh_session by identity for the
-		// FR-SESS-3 session listing — index only, no new table/column).
-		assertThat(maxVersion).isEqualTo(25);
+		// FR-SESS-3 session listing — index only, no new table/column). S30 adds V26
+		// (partial composite index backing the now-unconditional JIT usable-grant
+		// lookup — index only, no new table/column).
+		assertThat(maxVersion).isEqualTo(26);
 
 		Long failed = db.sql("SELECT count(*) AS c FROM flyway_schema_history WHERE success = false")
 				.map(row -> row.get("c", Long.class)).one().block();
